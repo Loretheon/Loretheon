@@ -1,2 +1,4 @@
-# Noted
-My notes, as well as the app to view them. Codebase features no intellectual input from large language models.
+# Episteme
+A note taking app.
+
+Codebase features no intellectual input from large language models, aside from the QF-ML submodule.
