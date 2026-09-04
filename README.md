@@ -1,4 +1,4 @@
+*AI Disclaimer: This project makes no use of generative AI*
+
 # Episteme
 A note taking app.
-
-Codebase features no intellectual input from large language models, aside from the QF-ML submodule.
