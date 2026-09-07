@@ -1,6 +1,8 @@
 #include <iostream>
 #include <QApplication>
+#include <qsettings.h>
 
+#include "Settings.h"
 #include "../include/app/MainWindow.h"
 
 int main(int argc, char ** argv) {
@@ -8,6 +10,9 @@ int main(int argc, char ** argv) {
     QCoreApplication::setOrganizationName("QuestFarer");
     QCoreApplication::setApplicationName("Episteme");
     QCoreApplication::setApplicationVersion("0.0");
+    const QString root = Settings::getRootDirectory();
+
+    qDebug() << "ROOT:" << root;
 
     MainWindow window;
     window.show();

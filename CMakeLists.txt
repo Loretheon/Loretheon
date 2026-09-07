@@ -19,12 +19,27 @@ add_executable(Episteme src/main.cpp
         src/text/TextBrowser.cpp
         include/text/TextBrowser.h
         src/text/TextEdit.cpp
-        include/text/TextEdit.h)
+        include/text/TextEdit.h
+        src/text/TextWidget.cpp
+        include/text/TextWidget.h
+        src/file/model/FileSystemModel.cpp
+        include/file/model/FileSystemModel.h
+        src/file/FileSystemView.cpp
+        include/file/FileSystemView.h
+        src/app/Settings.cpp
+        include/app/Settings.h
+        src/file/FileWidget.cpp
+        include/file/FileWidget.h
+        src/app/DocumentManager.cpp
+        include/app/DocumentManager.h
+)
 
 target_include_directories(Episteme PUBLIC
 ${CMAKE_CURRENT_SOURCE_DIR}/include/app/
 ${CMAKE_CURRENT_SOURCE_DIR}/include/text/
 ${CMAKE_CURRENT_SOURCE_DIR}/include/text/model
+${CMAKE_CURRENT_SOURCE_DIR}/include/file/
+${CMAKE_CURRENT_SOURCE_DIR}/include/file/model
 )
 
 target_link_libraries(Episteme PRIVATE

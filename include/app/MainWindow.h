@@ -3,9 +3,12 @@
 #include <QMainWindow>
 #include <QLabel>
 
+#include "DocumentManager.h"
 #include "TextBrowser.h"
 #include "TextDocument.h"
 #include "TextEdit.h"
+#include "TextWidget.h"
+#include "FileWidget.h"
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -18,44 +21,6 @@ protected:
     void contextMenuEvent(QContextMenuEvent *event) override;
 #endif // QT_NO_CONTEXTMENU
 
-private slots:
-    void newFile();
-
-    void open();
-
-    void save();
-
-    void print();
-
-    void undo();
-
-    void redo();
-
-    void cut();
-
-    void copy();
-
-    void paste();
-
-    void bold();
-
-    void italic();
-
-    void leftAlign();
-
-    void rightAlign();
-
-    void justify();
-
-    void center();
-
-    void setLineSpacing();
-
-    void setParagraphSpacing();
-
-    void about();
-
-    void aboutQt();
 
 private:
     void createActions();
@@ -70,7 +35,6 @@ private:
     QAction *newAct;
     QAction *openAct;
     QAction *saveAct;
-    QAction *printAct;
     QAction *exitAct;
     QAction *undoAct;
     QAction *redoAct;
@@ -87,9 +51,18 @@ private:
     QAction *setParagraphSpacingAct;
     QAction *aboutAct;
     QAction *aboutQtAct;
-    TextDocument *textDocument;
-    TextBrowser *textBrowser;
-    TextEdit *textEdit;
+
+    DocumentManager* documentManager;
+
+    TextWidget* textWidget;
+    FileWidget* fileWidget;
+
+private slots :
+
+    void about();
+
+    void aboutQt();
+
 };
 
 

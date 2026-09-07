@@ -1,15 +1,12 @@
-#ifndef EPISTEME_TEXTEDITOR_H
-#define EPISTEME_TEXTEDITOR_H
-#include <qtextdocument.h>
+#ifndef EPISTEME_TEXTDOCUMENT_H
+#define EPISTEME_TEXTDOCUMENT_H
+#include <QTextDocument>
 
-
-class TextDocument: public QTextDocument {
+class TextDocument : public QTextDocument {
     Q_OBJECT
 
 public:
-     TextDocument(QObject *parent = nullptr);
+    explicit TextDocument(QObject *parent = nullptr);
 };
 
-
-
-#endif //EPISTEME_TEXTEDITOR_H
+#endif //EPISTEME_TEXTDOCUMENT_H

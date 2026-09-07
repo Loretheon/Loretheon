@@ -1,21 +1,25 @@
-MIT License
-
 Copyright (c) 2026 Sujan
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+Source-Available Personal Use License
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+Permission is granted to use this software free of charge.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+You may:
+- use the software for personal, educational, and non-commercial purposes;
+- view and study the source code.
+
+You may not:
+- redistribute, publish, mirror, or share copies of this software;
+- create, publish, or distribute forks or modified versions of this software;
+- sell, sublicense, rent, or otherwise commercially exploit this software;
+- include this software or derivative works in another product or service;
+- use the source code to create a competing product.
+
+Any modifications, improvements, or derivative works may only be made for
+private use unless explicit written permission is granted by the copyright
+holder.
+
+The copyright holder retains all rights not expressly granted by this license.
+
+The software is provided "AS IS", without warranty of any kind, express or
+implied.
