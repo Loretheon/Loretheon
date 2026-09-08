@@ -3,7 +3,7 @@
 #include <QVBoxLayout>
 
 #include "Settings.h"
-
+#include <QDir>
 
 FileWidget::FileWidget(QWidget *parent)
     : QWidget(parent)
@@ -24,14 +24,17 @@ FileWidget::FileWidget(QWidget *parent)
                 emit fileSelected(fileSystemModel->filePath(index));
             });
 
-    connect(fileSystemView,
-            &FileSystemView::renameFinished,
-            this,
-            [this](const QString &oldPath, const QString &newPath)
-            {
-                emit renameRequested(oldPath, newPath);
-            });
-
+    connect(fileSystemModel,
+        &FileSystemModel::fileRenamed,
+        this,
+        [this](const QString &path,
+               const QString &oldName,
+               const QString &newName)
+        {
+            emit renameRequested(
+                QDir(path).filePath(oldName),
+                QDir(path).filePath(newName));
+        });
     connect(fileSystemModel,
         &QAbstractItemModel::rowsInserted,
         this,

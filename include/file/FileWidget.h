@@ -18,7 +18,7 @@ public slots:
 
     signals:
         void fileSelected(const QString &path);
-    void renameRequested(const QString &oldPath, const QString &newPath);
+        void renameRequested(const QString &oldPath, const QString &newPath);
 
 private:
     FileSystemModel *fileSystemModel;

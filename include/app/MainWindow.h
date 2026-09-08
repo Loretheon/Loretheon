@@ -1,14 +1,14 @@
 #ifndef EPISTEME_MAINWINDOW_H
 #define EPISTEME_MAINWINDOW_H
+
 #include <QMainWindow>
-#include <QLabel>
 
 #include "DocumentManager.h"
-#include "TextBrowser.h"
-#include "TextDocument.h"
-#include "TextEdit.h"
 #include "TextWidget.h"
 #include "FileWidget.h"
+
+class QMenu;
+class QAction;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -16,56 +16,29 @@ class MainWindow : public QMainWindow {
 public:
     MainWindow();
 
-protected:
-#ifndef QT_NO_CONTEXTMENU
-    void contextMenuEvent(QContextMenuEvent *event) override;
-#endif // QT_NO_CONTEXTMENU
-
-
 private:
     void createActions();
-
     void createMenus();
 
-    QMenu *fileMenu;
-    QMenu *newMenu;
-    QMenu *editMenu;
-    QMenu *formatMenu;
-    QMenu *helpMenu;
-    QActionGroup *alignmentGroup;
-    QAction *newTextAct;
-    QAction *newMarkdownAct;
-    QAction *openAct;
-    QAction *saveAct;
-    QAction *exitAct;
-    QAction *undoAct;
-    QAction *redoAct;
-    QAction *cutAct;
-    QAction *copyAct;
-    QAction *pasteAct;
-    QAction *boldAct;
-    QAction *italicAct;
-    QAction *leftAlignAct;
-    QAction *rightAlignAct;
-    QAction *justifyAct;
-    QAction *centerAct;
-    QAction *setLineSpacingAct;
-    QAction *setParagraphSpacingAct;
-    QAction *aboutAct;
-    QAction *aboutQtAct;
+    QMenu *fileMenu = nullptr;
+    QMenu *newMenu = nullptr;
+    QMenu *helpMenu = nullptr;
 
-    DocumentManager* documentManager;
+    QAction *newTextAct = nullptr;
+    QAction *newMarkdownAct = nullptr;
+    QAction *openAct = nullptr;
+    QAction *saveAct = nullptr;
+    QAction *exitAct = nullptr;
+    QAction *aboutAct = nullptr;
+    QAction *aboutQtAct = nullptr;
 
-    TextWidget* textWidget;
-    FileWidget* fileWidget;
+    DocumentManager *documentManager = nullptr;
+    TextWidget *textWidget = nullptr;
+    FileWidget *fileWidget = nullptr;
 
-private slots :
-
+private slots:
     void about();
-
     void aboutQt();
-
 };
 
-
-#endif //EPISTEME_MAINWINDOW_H
+#endif // EPISTEME_MAINWINDOW_H

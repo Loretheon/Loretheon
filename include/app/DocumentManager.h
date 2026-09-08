@@ -29,10 +29,10 @@ public slots:
     void fileRenamed(const QString& oldPath, const QString& newPath);
 
 private:
-    static TextDocument::Type typeForExtension(const QString& extension);
+    static DocumentMode typeForExtension(const QString& extension);
 
     QString uniqueDefaultPath(const QString& baseName, const QString& extension) const;
-    void createDocument(TextDocument::Type type, const QString& extension);
+    void createDocument(DocumentMode type, const QString& extension);
 
     QList<TextDocument*> documents;
 

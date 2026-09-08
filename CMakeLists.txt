@@ -32,6 +32,15 @@ add_executable(Episteme src/main.cpp
         include/file/FileWidget.h
         src/app/DocumentManager.cpp
         include/app/DocumentManager.h
+        src/text/Toolbar.cpp
+        include/text/Toolbar.h
+        include/text/Toolbar.h
+        include/text/TextFormatDelegate.h
+        src/text/MarkdownFormatDelegate.cpp
+        include/text/MarkdownFormatDelegate.h
+        src/text/HTMLFormatDelegate.cpp
+        include/text/HTMLFormatDelegate.h
+        include/text/DocumentMode.h
 )
 
 target_include_directories(Episteme PUBLIC

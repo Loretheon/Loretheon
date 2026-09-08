@@ -30,6 +30,11 @@ public:
     Qt::ItemFlags flags(const QModelIndex &index) const override;
     QVariant headerData(int section, Qt::Orientation orientation, int role = Qt::DisplayRole) const override;
 
+    signals:
+    void fileRenamed(const QString &path,
+                     const QString &oldName,
+                     const QString &newName);
+    
 private:
     QFileSystemModel *fsModel;
 

@@ -15,35 +15,21 @@ class TextWidget : public QTabWidget
 public:
     explicit TextWidget(QWidget *parent = nullptr);
 
+    TextEdit* editor() const { return textEdit; }
+    TextBrowser* browser() const { return textBrowser; }
+
 public slots:
     void setActiveDocument(TextDocument *newDocument);
-
-    void undo();
-    void redo();
-    void cut();
-    void copy();
-    void paste();
-
-    void bold();
-    void italic();
-
-    void leftAlign();
-    void rightAlign();
-    void justify();
-    void center();
-
-    void setLineSpacing();
-    void setParagraphSpacing();
 
 private slots:
     void syncPreview();
 
 private:
-    TextBrowser *textBrowser;
-    TextEdit *textEdit;
+    TextBrowser *textBrowser = nullptr;
+    TextEdit *textEdit = nullptr;
 
     QTextDocument *previewDocument = nullptr;
     TextDocument *activeDocument = nullptr;
 };
 
-#endif //EPISTEME_TEXTWIDGET_H
+#endif // EPISTEME_TEXTWIDGET_H

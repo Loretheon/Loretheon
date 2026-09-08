@@ -11,6 +11,8 @@ FileSystemModel::FileSystemModel(QObject *parent)
     fsModel->setReadOnly(false);
 
     setSourceModel(fsModel);
+
+    connect(fsModel, &QFileSystemModel::fileRenamed, this, &FileSystemModel::fileRenamed);
 }
 
 QModelIndex FileSystemModel::setRootPath(const QString &path)

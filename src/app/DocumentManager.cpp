@@ -20,12 +20,12 @@ TextDocument *DocumentManager::currentDocument() const
     return current;
 }
 
-TextDocument::Type DocumentManager::typeForExtension(const QString &extension)
+DocumentMode DocumentManager::typeForExtension(const QString &extension)
 {
     if (extension.compare("md", Qt::CaseInsensitive) == 0)
-        return TextDocument::Type::Markdown;
+        return DocumentMode::Markdown;
 
-    return TextDocument::Type::PlainText;
+    return DocumentMode::PlainText;
 }
 
 QString DocumentManager::uniqueDefaultPath(const QString &baseName, const QString &extension) const
@@ -45,7 +45,7 @@ QString DocumentManager::uniqueDefaultPath(const QString &baseName, const QStrin
     return candidate;
 }
 
-void DocumentManager::createDocument(TextDocument::Type type, const QString &extension)
+void DocumentManager::createDocument(DocumentMode type, const QString &extension)
 {
     const QString path = uniqueDefaultPath("Untitled", extension);
 
@@ -81,12 +81,12 @@ void DocumentManager::createDocument(TextDocument::Type type, const QString &ext
 
 void DocumentManager::newTextFile()
 {
-    createDocument(TextDocument::Type::PlainText, "txt");
+    createDocument(DocumentMode::PlainText, "txt");
 }
 
 void DocumentManager::newMarkdownFile()
 {
-    createDocument(TextDocument::Type::Markdown, "md");
+    createDocument(DocumentMode::Markdown, "md");
 }
 
 bool DocumentManager::openFile(const QString &path)
@@ -115,7 +115,7 @@ bool DocumentManager::openFile(const QString &path)
 
     qDebug() << "[OPEN] raw text length:" << text.length() << "content:" << text.left(200);
 
-    const TextDocument::Type type = typeForExtension(QFileInfo(path).suffix());
+    const DocumentMode type = typeForExtension(QFileInfo(path).suffix());
 
     auto *document = new TextDocument(this);
     document->setPlainText(text);
@@ -192,23 +192,11 @@ bool DocumentManager::save()
 
 bool DocumentManager::renameFile(const QString &oldPath, const QString &newPath)
 {
+    qDebug() << "[RENAME] Updating open document path:"
+             << oldPath << "->" << newPath;
+
     if (oldPath == newPath)
         return true;
-
-    if (QFile::exists(newPath))
-    {
-        qWarning() << "[RENAME] Target already exists:" << newPath;
-        return false;
-    }
-
-    if (!QFile::rename(oldPath, newPath))
-    {
-        qWarning() << "[RENAME] Failed:"
-                   << oldPath
-                   << "->"
-                   << newPath;
-        return false;
-    }
 
     for (TextDocument *document : std::as_const(documents))
     {
@@ -216,13 +204,26 @@ bool DocumentManager::renameFile(const QString &oldPath, const QString &newPath)
             continue;
 
         document->setFilePath(newPath);
-        document->setType(typeForExtension(QFileInfo(newPath).suffix()));
+        document->setType(
+            typeForExtension(QFileInfo(newPath).suffix())
+        );
+
+        qDebug() << "[RENAME] Document path updated:"
+                 << newPath;
+
+        // The document object is still the same, so there is
+        // no need to open the file again.
+        if (document == current)
+            emit documentChanged(current);
+
         break;
     }
 
     emit fileRenamed(oldPath, newPath);
     return true;
 }
+
+
 
 void DocumentManager::closeCurrent()
 {

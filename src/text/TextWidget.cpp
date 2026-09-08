@@ -1,131 +1,88 @@
 #include "TextWidget.h"
 
-#include <QTextCursor>
-#include <QTextCharFormat>
-
-
-TextWidget::TextWidget(QWidget* parent)
+TextWidget::TextWidget(QWidget *parent)
     : QTabWidget(parent)
 {
-    textBrowser = new TextBrowser(this);
     textEdit = new TextEdit(this);
+    textBrowser = new TextBrowser(this);
 
-    addTab(textEdit, "edit");
-    addTab(textBrowser, "view");
+    addTab(textEdit, tr("Edit"));
+    addTab(textBrowser, tr("View"));
 
     previewDocument = new QTextDocument(this);
     textBrowser->setDocument(previewDocument);
+
 }
 
-
-void TextWidget::setActiveDocument(TextDocument* newDocument)
+void TextWidget::setActiveDocument(TextDocument *newDocument)
 {
-    if (activeDocument)
-        disconnect(activeDocument, &QTextDocument::contentsChanged, this, &TextWidget::syncPreview);
+    qDebug() << "setActiveDocument called";
+
+    if (activeDocument) {
+        qDebug() << "Disconnecting previous document";
+        disconnect(activeDocument,
+                   &QTextDocument::contentsChanged,
+                   this,
+                   &TextWidget::syncPreview);
+    }
 
     activeDocument = newDocument;
 
-    textEdit->setDocument(newDocument);
-
-    if (!newDocument)
+    if (!activeDocument) {
+        qDebug() << "No active document";
         return;
-
-    if (newDocument->type() == TextDocument::Type::Markdown)
-    {
-        connect(newDocument, &QTextDocument::contentsChanged, this, &TextWidget::syncPreview);
-        syncPreview();
     }
-    else
-    {
-        textBrowser->setDocument(newDocument);
+
+    qDebug() << "Document pointer:" << activeDocument;
+    qDebug() << "Document type:" << static_cast<int>(activeDocument->type());
+    qDebug() << "Plain text length:" << activeDocument->toPlainText().length();
+    qDebug() << "Plain text preview:" << activeDocument->toPlainText().left(100);
+
+    textEdit->setDocument(activeDocument);
+
+    textEdit->setDocumentMode(activeDocument->type());
+
+    if (activeDocument->type() == DocumentMode::Markdown) {
+        qDebug() << "Markdown document";
+
+        connect(activeDocument,
+                &QTextDocument::contentsChanged,
+                this,
+                &TextWidget::syncPreview);
+
+        syncPreview();
+
+        qDebug() << "Preview document length after markdown:"
+                 << previewDocument->toPlainText().length();
+    }
+    else {
+        qDebug() << "Plain text document";
+
+        previewDocument->setPlainText(activeDocument->toPlainText());
+
+        qDebug() << "Preview document length after plain text:"
+                 << previewDocument->toPlainText().length();
+
+        textBrowser->setDocument(previewDocument);
+
+        qDebug() << "Text browser document:"
+                 << textBrowser->document();
     }
 }
 
 void TextWidget::syncPreview()
 {
-    if (!activeDocument || activeDocument->type() != TextDocument::Type::Markdown)
+    if (!activeDocument || activeDocument->type() != DocumentMode::Markdown) {
         return;
+    }
 
-    if (textBrowser->document() != previewDocument)
+    if (textBrowser->document() != previewDocument) {
         textBrowser->setDocument(previewDocument);
+    }
 
-    previewDocument->setMarkdown(activeDocument->toPlainText());
-}
+    previewDocument->setMarkdown(
+        activeDocument->toPlainText(),
+        QTextDocument::MarkdownDialectGitHub
+    );
 
-
-void TextWidget::undo()
-{
-    textEdit->undo();
-}
-
-
-void TextWidget::redo()
-{
-    textEdit->redo();
-}
-
-
-void TextWidget::cut()
-{
-    textEdit->cut();
-}
-
-
-void TextWidget::copy()
-{
-    textEdit->copy();
-}
-
-
-void TextWidget::paste()
-{
-    textEdit->paste();
-}
-
-
-void TextWidget::bold()
-{
-    textEdit->bold();
-}
-
-
-void TextWidget::italic()
-{
-    textEdit->italic();
-}
-
-
-void TextWidget::leftAlign()
-{
-    textEdit->leftAlign();
-}
-
-
-void TextWidget::rightAlign()
-{
-    textEdit->rightAlign();
-}
-
-
-void TextWidget::justify()
-{
-    textEdit->justify();
-}
-
-
-void TextWidget::center()
-{
-    textEdit->center();
-}
-
-
-void TextWidget::setLineSpacing()
-{
-    textEdit->setLineSpacing();
-}
-
-
-void TextWidget::setParagraphSpacing()
-{
-    textEdit->setParagraphSpacing();
 }
