@@ -1,4 +1,3 @@
-
 #include <QtWidgets>
 #include "MainWindow.h"
 #include <QIcon>
@@ -25,6 +24,15 @@ MainWindow::MainWindow()
         documentManager,
         &DocumentManager::openFile);
 
+    connect(documentManager,
+        &DocumentManager::documentCreated,
+        fileWidget,
+        &FileWidget::beginEditingPath);
+
+    connect(fileWidget,
+        &FileWidget::renameRequested,
+        documentManager,
+        &DocumentManager::renameFile);
 
     auto signal = &DocumentManager::documentChanged;
     auto slot = &TextWidget::setActiveDocument;
@@ -80,18 +88,32 @@ void MainWindow::aboutQt() {
 }
 
 void MainWindow::createActions() {
-    newAct = new QAction(QIcon::fromTheme(QIcon::ThemeIcon::DocumentNew),
-                         tr("&New"), this);
-    newAct->setShortcuts(QKeySequence::New);
-    newAct->setStatusTip(tr("Create a new file"));
-    connect(newAct, &QAction::triggered, documentManager, &DocumentManager::newFile);
+    newTextAct = new QAction(QIcon::fromTheme(QIcon::ThemeIcon::DocumentNew),
+                         tr("&Text File"), this);
+    newTextAct->setShortcuts(QKeySequence::New);
+    newTextAct->setStatusTip(tr("Create a new plain text file"));
+    connect(newTextAct, &QAction::triggered, documentManager, &DocumentManager::newTextFile);
+
+    newMarkdownAct = new QAction(QIcon::fromTheme(QIcon::ThemeIcon::DocumentNew),
+                         tr("&Markdown File"), this);
+    newMarkdownAct->setStatusTip(tr("Create a new markdown file"));
+    connect(newMarkdownAct, &QAction::triggered, documentManager, &DocumentManager::newMarkdownFile);
 
     openAct = new QAction(QIcon::fromTheme(QIcon::ThemeIcon::DocumentOpen),
                           tr("&Open..."), this);
     openAct->setShortcuts(QKeySequence::Open);
     openAct->setStatusTip(tr("Open an existing file"));
+    connect(openAct, &QAction::triggered, this, [this]() {
+        const QString path = QFileDialog::getOpenFileName(
+            this,
+            tr("Open File"),
+            QString(),
+            tr("Text Files (*.txt);;Markdown Files (*.md);;All Files (*)")
+        );
 
-    // connect(openAct, &QAction::triggered, documentManager, &DocumentManager::newFile);
+        if (!path.isEmpty())
+            documentManager->openFile(path);
+    });
 
     saveAct = new QAction(QIcon::fromTheme(QIcon::ThemeIcon::DocumentSave),
                           tr("&Save"), this);
@@ -218,7 +240,10 @@ void MainWindow::createActions() {
 
 void MainWindow::createMenus() {
     fileMenu = menuBar()->addMenu(tr("&File"));
-    fileMenu->addAction(newAct);
+
+    newMenu = fileMenu->addMenu(tr("&New"));
+    newMenu->addAction(newTextAct);
+    newMenu->addAction(newMarkdownAct);
 
     fileMenu->addAction(openAct);
 

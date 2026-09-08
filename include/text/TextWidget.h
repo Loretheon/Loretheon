@@ -2,25 +2,24 @@
 #define EPISTEME_TEXTWIDGET_H
 
 #include <QTabWidget>
+#include <QTextDocument>
 
 #include "TextBrowser.h"
-#include "TextDocument.h"
 #include "TextEdit.h"
-
+#include "TextDocument.h"
 
 class TextWidget : public QTabWidget
 {
     Q_OBJECT
 
 public:
-    explicit TextWidget(QWidget* parent = nullptr);
+    explicit TextWidget(QWidget *parent = nullptr);
 
 public slots:
-    void setActiveDocument(TextDocument* newDocument);
+    void setActiveDocument(TextDocument *newDocument);
 
     void undo();
     void redo();
-
     void cut();
     void copy();
     void paste();
@@ -36,9 +35,15 @@ public slots:
     void setLineSpacing();
     void setParagraphSpacing();
 
+private slots:
+    void syncPreview();
+
 private:
     TextBrowser *textBrowser;
     TextEdit *textEdit;
+
+    QTextDocument *previewDocument = nullptr;
+    TextDocument *activeDocument = nullptr;
 };
 
-#endif // EPISTEME_TEXTWIDGET_H
+#endif //EPISTEME_TEXTWIDGET_H

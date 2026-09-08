@@ -7,18 +7,49 @@
 TextWidget::TextWidget(QWidget* parent)
     : QTabWidget(parent)
 {
-    textBrowser = new TextBrowser;
-    textEdit = new TextEdit;
+    textBrowser = new TextBrowser(this);
+    textEdit = new TextEdit(this);
 
     addTab(textEdit, "edit");
     addTab(textBrowser, "view");
+
+    previewDocument = new QTextDocument(this);
+    textBrowser->setDocument(previewDocument);
 }
 
 
 void TextWidget::setActiveDocument(TextDocument* newDocument)
 {
-    textBrowser->setDocument(newDocument);
+    if (activeDocument)
+        disconnect(activeDocument, &QTextDocument::contentsChanged, this, &TextWidget::syncPreview);
+
+    activeDocument = newDocument;
+
     textEdit->setDocument(newDocument);
+
+    if (!newDocument)
+        return;
+
+    if (newDocument->type() == TextDocument::Type::Markdown)
+    {
+        connect(newDocument, &QTextDocument::contentsChanged, this, &TextWidget::syncPreview);
+        syncPreview();
+    }
+    else
+    {
+        textBrowser->setDocument(newDocument);
+    }
+}
+
+void TextWidget::syncPreview()
+{
+    if (!activeDocument || activeDocument->type() != TextDocument::Type::Markdown)
+        return;
+
+    if (textBrowser->document() != previewDocument)
+        textBrowser->setDocument(previewDocument);
+
+    previewDocument->setMarkdown(activeDocument->toPlainText());
 }
 
 
@@ -54,55 +85,47 @@ void TextWidget::paste()
 
 void TextWidget::bold()
 {
-    QTextCharFormat format;
-    format.setFontWeight(QFont::Bold);
-
-    textEdit->textCursor().mergeCharFormat(format);
+    textEdit->bold();
 }
 
 
 void TextWidget::italic()
 {
-    QTextCharFormat format;
-    format.setFontItalic(true);
-
-    textEdit->textCursor().mergeCharFormat(format);
+    textEdit->italic();
 }
 
 
 void TextWidget::leftAlign()
 {
-    textEdit->setAlignment(Qt::AlignLeft);
+    textEdit->leftAlign();
 }
 
 
 void TextWidget::rightAlign()
 {
-    textEdit->setAlignment(Qt::AlignRight);
+    textEdit->rightAlign();
 }
 
 
 void TextWidget::justify()
 {
-    textEdit->setAlignment(Qt::AlignJustify);
+    textEdit->justify();
 }
 
 
 void TextWidget::center()
 {
-    textEdit->setAlignment(Qt::AlignCenter);
+    textEdit->center();
 }
 
 
 void TextWidget::setLineSpacing()
 {
-    // Placeholder:
-    // requires QTextBlockFormat and QTextCursor
+    textEdit->setLineSpacing();
 }
 
 
 void TextWidget::setParagraphSpacing()
 {
-    // Placeholder:
-    // requires QTextBlockFormat and QTextCursor
+    textEdit->setParagraphSpacing();
 }

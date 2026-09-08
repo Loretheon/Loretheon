@@ -28,11 +28,13 @@ private:
     void createMenus();
 
     QMenu *fileMenu;
+    QMenu *newMenu;
     QMenu *editMenu;
     QMenu *formatMenu;
     QMenu *helpMenu;
     QActionGroup *alignmentGroup;
-    QAction *newAct;
+    QAction *newTextAct;
+    QAction *newMarkdownAct;
     QAction *openAct;
     QAction *saveAct;
     QAction *exitAct;

@@ -24,6 +24,37 @@ FileWidget::FileWidget(QWidget *parent)
                 emit fileSelected(fileSystemModel->filePath(index));
             });
 
+    connect(fileSystemView,
+            &FileSystemView::renameFinished,
+            this,
+            [this](const QString &oldPath, const QString &newPath)
+            {
+                emit renameRequested(oldPath, newPath);
+            });
+
+    connect(fileSystemModel,
+        &QAbstractItemModel::rowsInserted,
+        this,
+        [this](const QModelIndex &parent, int first, int last)
+        {
+            if (pendingEditPath.isEmpty())
+                return;
+
+            for (int row = first; row <= last; ++row)
+            {
+                const QModelIndex index = fileSystemModel->index(row, 0, parent);
+
+                if (fileSystemModel->filePath(index) == pendingEditPath)
+                {
+                    fileSystemView->setFocus();
+                    fileSystemView->setCurrentIndex(index);
+                    fileSystemView->edit(index);
+                    pendingEditPath.clear();
+                    break;
+                }
+            }
+        });
+
 
     const QString root = Settings::getRootDirectory();
 
@@ -34,4 +65,19 @@ FileWidget::FileWidget(QWidget *parent)
     auto *layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->addWidget(fileSystemView);
+}
+
+void FileWidget::beginEditingPath(const QString &path)
+{
+    const QModelIndex existing = fileSystemModel->index(path);
+
+    if (existing.isValid())
+    {
+        fileSystemView->setFocus();
+        fileSystemView->setCurrentIndex(existing);
+        fileSystemView->edit(existing);
+        return;
+    }
+
+    pendingEditPath = path;
 }

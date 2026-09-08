@@ -2,8 +2,8 @@
 
 #include "Settings.h"
 
+#include <QDir>
 #include <QFile>
-#include <QFileDialog>
 #include <QFileInfo>
 #include <QSaveFile>
 #include <QTextStream>
@@ -20,14 +20,73 @@ TextDocument *DocumentManager::currentDocument() const
     return current;
 }
 
-void DocumentManager::newFile()
+TextDocument::Type DocumentManager::typeForExtension(const QString &extension)
 {
+    if (extension.compare("md", Qt::CaseInsensitive) == 0)
+        return TextDocument::Type::Markdown;
+
+    return TextDocument::Type::PlainText;
+}
+
+QString DocumentManager::uniqueDefaultPath(const QString &baseName, const QString &extension) const
+{
+    const QDir root(Settings::getRootDirectory());
+
+    QString candidate = root.filePath(baseName + "." + extension);
+
+    int suffix = 2;
+
+    while (QFile::exists(candidate))
+    {
+        candidate = root.filePath(QString("%1 %2.%3").arg(baseName).arg(suffix).arg(extension));
+        ++suffix;
+    }
+
+    return candidate;
+}
+
+void DocumentManager::createDocument(TextDocument::Type type, const QString &extension)
+{
+    const QString path = uniqueDefaultPath("Untitled", extension);
+
+    QSaveFile file(path);
+
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text))
+    {
+        qWarning() << "[NEW] Failed to create:"
+                   << path
+                   << "Error:" << file.errorString();
+        return;
+    }
+
+    if (!file.commit())
+    {
+        qWarning() << "[NEW] Commit failed:"
+                   << path
+                   << "Error:" << file.errorString();
+        return;
+    }
+
     auto *document = new TextDocument(this);
+    document->setType(type);
+    document->setFilePath(path);
+    document->setModified(false);
 
     documents.append(document);
     current = document;
 
     emit documentChanged(current);
+    emit documentCreated(path);
+}
+
+void DocumentManager::newTextFile()
+{
+    createDocument(TextDocument::Type::PlainText, "txt");
+}
+
+void DocumentManager::newMarkdownFile()
+{
+    createDocument(TextDocument::Type::Markdown, "md");
 }
 
 bool DocumentManager::openFile(const QString &path)
@@ -54,19 +113,24 @@ bool DocumentManager::openFile(const QString &path)
         return false;
     }
 
+    qDebug() << "[OPEN] raw text length:" << text.length() << "content:" << text.left(200);
+
+    const TextDocument::Type type = typeForExtension(QFileInfo(path).suffix());
+
     auto *document = new TextDocument(this);
     document->setPlainText(text);
+
+    document->setType(type);
+    document->setFilePath(path);
     document->setModified(false);
 
     documents.append(document);
-    filePaths.insert(document, path);
 
     current = document;
 
     emit documentChanged(current);
     return true;
 }
-
 bool DocumentManager::save()
 {
     if (!current)
@@ -75,36 +139,12 @@ bool DocumentManager::save()
         return false;
     }
 
-    QString path = filePaths.value(current);
+    const QString path = current->filePath();
 
     if (path.isEmpty())
     {
-        const QString textFilter = tr("Text Files (*.txt)");
-        const QString allFilesFilter = tr("All Files (*)");
-
-        QString selectedFilter;
-
-        path = QFileDialog::getSaveFileName(
-            nullptr,
-            tr("Save File"),
-            Settings::getRootDirectory(),
-            textFilter + ";;" + allFilesFilter,
-            &selectedFilter
-        );
-
-        if (path.isEmpty())
-        {
-            qDebug() << "[SAVE] Save cancelled";
-            return false;
-        }
-
-        if (selectedFilter == textFilter)
-        {
-            const QFileInfo fileInfo(path);
-
-            if (fileInfo.suffix().isEmpty())
-                path += ".txt";
-        }
+        qWarning() << "[SAVE] Document has no path; cannot save";
+        return false;
     }
 
     qDebug() << "[SAVE] Path:" << path;
@@ -143,11 +183,44 @@ bool DocumentManager::save()
         return false;
     }
 
-    filePaths.insert(current, path);
     current->setModified(false);
 
     qDebug() << "[SAVE] Saved successfully:" << path;
 
+    return true;
+}
+
+bool DocumentManager::renameFile(const QString &oldPath, const QString &newPath)
+{
+    if (oldPath == newPath)
+        return true;
+
+    if (QFile::exists(newPath))
+    {
+        qWarning() << "[RENAME] Target already exists:" << newPath;
+        return false;
+    }
+
+    if (!QFile::rename(oldPath, newPath))
+    {
+        qWarning() << "[RENAME] Failed:"
+                   << oldPath
+                   << "->"
+                   << newPath;
+        return false;
+    }
+
+    for (TextDocument *document : std::as_const(documents))
+    {
+        if (document->filePath() != oldPath)
+            continue;
+
+        document->setFilePath(newPath);
+        document->setType(typeForExtension(QFileInfo(newPath).suffix()));
+        break;
+    }
+
+    emit fileRenamed(oldPath, newPath);
     return true;
 }
 
@@ -158,7 +231,6 @@ void DocumentManager::closeCurrent()
 
     TextDocument *toClose = current;
 
-    filePaths.remove(toClose);
     documents.removeOne(toClose);
 
     current = documents.isEmpty()
