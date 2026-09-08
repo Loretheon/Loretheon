@@ -10,8 +10,8 @@ TextWidget::TextWidget(QWidget* parent)
     textBrowser = new TextBrowser;
     textEdit = new TextEdit;
 
-    addTab(textBrowser, "view");
     addTab(textEdit, "edit");
+    addTab(textBrowser, "view");
 }
 
 

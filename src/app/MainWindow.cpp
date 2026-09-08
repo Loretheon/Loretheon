@@ -90,6 +90,7 @@ void MainWindow::createActions() {
                           tr("&Open..."), this);
     openAct->setShortcuts(QKeySequence::Open);
     openAct->setStatusTip(tr("Open an existing file"));
+
     // connect(openAct, &QAction::triggered, documentManager, &DocumentManager::newFile);
 
     saveAct = new QAction(QIcon::fromTheme(QIcon::ThemeIcon::DocumentSave),

@@ -1,20 +1,24 @@
 #include "DocumentManager.h"
 
-#include <QFile>
-#include <QTextStream>
+#include "Settings.h"
 
+#include <QFile>
+#include <QFileDialog>
+#include <QFileInfo>
+#include <QSaveFile>
+#include <QTextStream>
+#include <QDebug>
 
 DocumentManager::DocumentManager(QObject *parent)
-    : QObject(parent)
+    : QObject(parent),
+      current(nullptr)
 {
 }
 
-
-TextDocument* DocumentManager::currentDocument() const
+TextDocument *DocumentManager::currentDocument() const
 {
     return current;
 }
-
 
 void DocumentManager::newFile()
 {
@@ -26,21 +30,33 @@ void DocumentManager::newFile()
     emit documentChanged(current);
 }
 
-
-void DocumentManager::openFile(const QString& path)
+bool DocumentManager::openFile(const QString &path)
 {
-    auto *document = new TextDocument(this);
-
     QFile file(path);
 
     if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
     {
-        delete document;
-        return;
+        qWarning() << "[OPEN] Failed to open:"
+                   << path
+                   << file.errorString();
+        return false;
     }
 
     QTextStream stream(&file);
-    document->setPlainText(stream.readAll());
+    stream.setEncoding(QStringConverter::Utf8);
+
+    const QString text = stream.readAll();
+
+    if (stream.status() != QTextStream::Ok)
+    {
+        qWarning() << "[OPEN] Failed while reading:"
+                   << path;
+        return false;
+    }
+
+    auto *document = new TextDocument(this);
+    document->setPlainText(text);
+    document->setModified(false);
 
     documents.append(document);
     filePaths.insert(document, path);
@@ -48,45 +64,91 @@ void DocumentManager::openFile(const QString& path)
     current = document;
 
     emit documentChanged(current);
+    return true;
 }
 
-
-void DocumentManager::save()
+bool DocumentManager::save()
 {
     if (!current)
     {
-        qDebug() << "[SAVE] No current document";
-        return;
+        qWarning() << "[SAVE] No current document";
+        return false;
     }
 
-    const QString path = filePaths.value(current);
-
-    qDebug() << "[SAVE] Path:" << path;
-    qDebug() << "[SAVE] Document contents:";
-    qDebug().noquote() << current->toPlainText();
+    QString path = filePaths.value(current);
 
     if (path.isEmpty())
     {
-        qDebug() << "[SAVE] No file path associated with document";
-        return;
+        const QString textFilter = tr("Text Files (*.txt)");
+        const QString allFilesFilter = tr("All Files (*)");
+
+        QString selectedFilter;
+
+        path = QFileDialog::getSaveFileName(
+            nullptr,
+            tr("Save File"),
+            Settings::getRootDirectory(),
+            textFilter + ";;" + allFilesFilter,
+            &selectedFilter
+        );
+
+        if (path.isEmpty())
+        {
+            qDebug() << "[SAVE] Save cancelled";
+            return false;
+        }
+
+        if (selectedFilter == textFilter)
+        {
+            const QFileInfo fileInfo(path);
+
+            if (fileInfo.suffix().isEmpty())
+                path += ".txt";
+        }
     }
 
-    QFile file(path);
+    qDebug() << "[SAVE] Path:" << path;
+
+    QSaveFile file(path);
 
     if (!file.open(QIODevice::WriteOnly | QIODevice::Text))
     {
-        qDebug() << "[SAVE] Failed to open file:" << file.errorString();
-        return;
+        qWarning() << "[SAVE] Failed to open:"
+                   << path
+                   << "Error:" << file.errorString();
+        return false;
     }
 
     QTextStream stream(&file);
+    stream.setEncoding(QStringConverter::Utf8);
+
     stream << current->toPlainText();
+    stream.flush();
 
-    file.close();
+    if (stream.status() != QTextStream::Ok)
+    {
+        qWarning() << "[SAVE] Failed while writing:"
+                   << path
+                   << "Error:" << file.errorString();
 
+        file.cancelWriting();
+        return false;
+    }
+
+    if (!file.commit())
+    {
+        qWarning() << "[SAVE] Commit failed:"
+                   << path
+                   << "Error:" << file.errorString();
+        return false;
+    }
+
+    filePaths.insert(current, path);
     current->setModified(false);
 
-    qDebug() << "[SAVE] Saved successfully:" << !current->isModified();
+    qDebug() << "[SAVE] Saved successfully:" << path;
+
+    return true;
 }
 
 void DocumentManager::closeCurrent()
@@ -94,14 +156,16 @@ void DocumentManager::closeCurrent()
     if (!current)
         return;
 
-    filePaths.remove(current);
-    documents.removeOne(current);
+    TextDocument *toClose = current;
 
-    delete current;
+    filePaths.remove(toClose);
+    documents.removeOne(toClose);
 
     current = documents.isEmpty()
         ? nullptr
         : documents.last();
+
+    delete toClose;
 
     emit documentChanged(current);
 }

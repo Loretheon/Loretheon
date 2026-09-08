@@ -18,8 +18,8 @@ public:
 
 public slots:
     void newFile();
-    void openFile(const QString& path);
-    void save();
+    bool openFile(const QString& path);
+    bool save();
     void closeCurrent();
 
     signals:
