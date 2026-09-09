@@ -4,41 +4,38 @@
 #include <QFileSystemModel>
 #include <QIdentityProxyModel>
 
-class FileSystemModel : public QIdentityProxyModel
-{
-    Q_OBJECT
+class FileSystemModel : public QIdentityProxyModel {
+  Q_OBJECT
 
 public:
-    enum Column
-    {
-        NameColumn = 0,
-        ExtensionColumn = 1
-    };
+  enum Column { NameColumn = 0, ExtensionColumn = 1 };
 
-    explicit FileSystemModel(QObject *parent = nullptr);
+  explicit FileSystemModel(QObject *parent = nullptr);
 
-    using QIdentityProxyModel::index;
+  using QIdentityProxyModel::index;
 
-    QModelIndex setRootPath(const QString &path);
-    QModelIndex index(const QString &path) const;
-    QString filePath(const QModelIndex &index) const;
-    bool isDir(const QModelIndex &index) const;
+  QModelIndex setRootPath(const QString &path);
+  QModelIndex index(const QString &path) const;
+  QString filePath(const QModelIndex &index) const;
+  bool isDir(const QModelIndex &index) const;
 
-    int columnCount(const QModelIndex &parent = QModelIndex()) const override;
-    QVariant data(const QModelIndex &index, int role = Qt::DisplayRole) const override;
-    bool setData(const QModelIndex &index, const QVariant &value, int role = Qt::EditRole) override;
-    Qt::ItemFlags flags(const QModelIndex &index) const override;
-    QVariant headerData(int section, Qt::Orientation orientation, int role = Qt::DisplayRole) const override;
+  int columnCount(const QModelIndex &parent = QModelIndex()) const override;
+  QVariant data(const QModelIndex &index,
+                int role = Qt::DisplayRole) const override;
+  bool setData(const QModelIndex &index, const QVariant &value,
+               int role = Qt::EditRole) override;
+  Qt::ItemFlags flags(const QModelIndex &index) const override;
+  QVariant headerData(int section, Qt::Orientation orientation,
+                      int role = Qt::DisplayRole) const override;
 
-    signals:
-    void fileRenamed(const QString &path,
-                     const QString &oldName,
-                     const QString &newName);
-    
+signals:
+  void fileRenamed(const QString &path, const QString &oldName,
+                   const QString &newName);
+
 private:
-    QFileSystemModel *fsModel;
+  QFileSystemModel *fsModel;
 
-    QModelIndex mapToSourceColumn(const QModelIndex &proxyIndex) const;
+  QModelIndex mapToSourceColumn(const QModelIndex &proxyIndex) const;
 };
 
-#endif //EPISTEME_FILESYSTEMMODEL_H
+#endif // EPISTEME_FILESYSTEMMODEL_H

@@ -7,7 +7,8 @@ set(CMAKE_AUTOMOC ON)
 find_package(Qt6 6 REQUIRED COMPONENTS Core Gui Widgets
         OPTIONAL_COMPONENTS PrintSupport Pdf PdfWidgets)
 
-
+add_subdirectory(external/QF-ML)
+add_subdirectory(external/edlib EXCLUDE_FROM_ALL)
 
 qt_standard_project_setup()
 
@@ -40,16 +41,40 @@ add_executable(Episteme src/main.cpp
         include/text/MarkdownFormatDelegate.h
         src/text/HTMLFormatDelegate.cpp
         include/text/HTMLFormatDelegate.h
-        include/text/DocumentMode.h
+        src/ai/ChatWidget.cpp
+        include/ai/ChatWidget.h
+        src/ai/edit/EditApplier.cpp
+        include/ai/edit/EditApplier.h
+        include/ai/edit/EditGrammar.h
+        src/ai/edit/EditMatcher.cpp
+        include/ai/edit/EditMatcher.h
+        src/ai/edit/EditCommand.cpp
+        include/ai/edit/EditCommand.h
+        src/ai/edit/EditCandidateView.cpp
+        include/ai/edit/EditCandidateView.h
+        src/ai/edit/EditSession.cpp
+        include/ai/edit/EditSession.h
+        include/ai/edit/EditMatch.h
 )
 
 target_include_directories(Episteme PUBLIC
-${CMAKE_CURRENT_SOURCE_DIR}/include/app/
-${CMAKE_CURRENT_SOURCE_DIR}/include/text/
-${CMAKE_CURRENT_SOURCE_DIR}/include/text/model
-${CMAKE_CURRENT_SOURCE_DIR}/include/file/
-${CMAKE_CURRENT_SOURCE_DIR}/include/file/model
+        ${CMAKE_CURRENT_SOURCE_DIR}/include/app/
+        ${CMAKE_CURRENT_SOURCE_DIR}/include/text/
+        ${CMAKE_CURRENT_SOURCE_DIR}/include/text/model
+        ${CMAKE_CURRENT_SOURCE_DIR}/include/file/
+        ${CMAKE_CURRENT_SOURCE_DIR}/include/file/model
+        ${CMAKE_CURRENT_SOURCE_DIR}/include/ai
+        ${CMAKE_CURRENT_SOURCE_DIR}/include/ai/edit
+        external/QF-ML/include
 )
 
 target_link_libraries(Episteme PRIVATE
-        Qt6::Core Qt6::Gui Qt6::Widgets Qt6::PrintSupport Qt6::Pdf Qt6::PdfWidgets )
+        Qt6::Core
+        Qt6::Gui
+        Qt6::Widgets
+        Qt6::PrintSupport
+        Qt6::Pdf
+        Qt6::PdfWidgets
+        qf-inference
+        edlib
+)

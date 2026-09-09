@@ -5,26 +5,25 @@
 #include <QLineEdit>
 #include <QMenu>
 
-FileSystemView::FileSystemView(QWidget* parent): QTreeView(parent)
-{
-  setEditTriggers(QAbstractItemView::EditKeyPressed | QAbstractItemView::SelectedClicked);
+FileSystemView::FileSystemView(QWidget *parent) : QTreeView(parent) {
+  setEditTriggers(QAbstractItemView::EditKeyPressed |
+                  QAbstractItemView::SelectedClicked);
 }
 
-void FileSystemView::currentChanged(const QModelIndex &current, const QModelIndex &previous)
-{
+void FileSystemView::currentChanged(const QModelIndex &current,
+                                    const QModelIndex &previous) {
   QTreeView::currentChanged(current, previous);
 
-  if (auto *fsModel = qobject_cast<QFileSystemModel*>(model()))
+  if (auto *fsModel = qobject_cast<QFileSystemModel *>(model()))
     editingOldPath = fsModel->filePath(current);
 }
 
-void FileSystemView::closeEditor(QWidget *editor, QAbstractItemDelegate::EndEditHint hint)
-{
-  auto *fsModel = qobject_cast<QFileSystemModel*>(model());
-  auto *lineEdit = qobject_cast<QLineEdit*>(editor);
+void FileSystemView::closeEditor(QWidget *editor,
+                                 QAbstractItemDelegate::EndEditHint hint) {
+  auto *fsModel = qobject_cast<QFileSystemModel *>(model());
+  auto *lineEdit = qobject_cast<QLineEdit *>(editor);
 
-  if (fsModel && lineEdit && hint == QAbstractItemDelegate::SubmitModelCache)
-  {
+  if (fsModel && lineEdit && hint == QAbstractItemDelegate::SubmitModelCache) {
     const QFileInfo info(editingOldPath);
     const QString newPath = info.dir().filePath(lineEdit->text());
 
@@ -39,8 +38,7 @@ void FileSystemView::closeEditor(QWidget *editor, QAbstractItemDelegate::EndEdit
   QTreeView::closeEditor(editor, hint);
 }
 
-void FileSystemView::contextMenuEvent(QContextMenuEvent *event)
-{
+void FileSystemView::contextMenuEvent(QContextMenuEvent *event) {
   const QModelIndex index = indexAt(event->pos());
 
   if (!index.isValid())
