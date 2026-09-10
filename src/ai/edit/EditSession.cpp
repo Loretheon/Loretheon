@@ -4,200 +4,593 @@
 #include "EditCandidateView.h"
 
 #include "../../text/TextEdit.h"
+#include "../../text/model/TextDocument.h"
 
-#include <QTextDocument>
+#include <QDebug>
 
-EditSession::EditSession(TextEdit *editor, QObject *parent)
-    : QObject(parent), m_editor(editor), m_applier(new EditApplier(this)),
-      m_candidateView(new EditCandidateView(editor, this)) {
-  connect(m_candidateView, &EditCandidateView::candidateSelected, this,
-          &EditSession::onCandidateSelected);
+EditSession::EditSession(
+    TextEdit *editor,
+    QObject *parent)
+    : QObject(parent)
+    , m_editor(editor) {
+    m_applier =
+        new EditApplier(this);
 
-  connect(m_applier, &EditApplier::applied, this, &EditSession::applied);
+    m_candidateView =
+        new EditCandidateView();
 
-  connect(m_applier, &EditApplier::failed, this, &EditSession::failed);
+    connect(
+        m_candidateView,
+        &EditCandidateView::candidateSelected,
+        this,
+        &EditSession::onCandidateSelected);
 
-  if (m_editor) {
-    m_documentRevision = m_editor->document()->revision();
-  }
+    connect(
+        m_applier,
+        &EditApplier::applied,
+        this,
+        &EditSession::applied);
+
+    connect(
+        m_applier,
+        &EditApplier::failed,
+        this,
+        &EditSession::failed);
 }
 
-void EditSession::setEditor(TextEdit *editor) {
-  if (m_candidateView) {
-    m_candidateView->setEditor(editor);
-  }
+void EditSession::setEditor(
+    TextEdit *editor) {
+    if (m_editor == editor) {
+        return;
+    }
 
-  m_editor = editor;
+    abort();
 
-  m_pendingCommand.reset();
-  m_pendingCandidates.clear();
-
-  if (m_editor) {
-    m_documentRevision = m_editor->document()->revision();
-  } else {
-    m_documentRevision = -1;
-  }
-
-  setState(State::Idle);
+    m_editor =
+        editor;
 }
 
-bool EditSession::propose(const EditCommand &command) {
-  abort();
+bool EditSession::propose(
+    const EditCommand &command) {
+    abort();
 
-  if (!m_editor) {
-    emit failed(QStringLiteral("No editor attached"));
-    return false;
-  }
+    if (!m_editor) {
+        emit failed(
+            QStringLiteral(
+                "No active editor."));
 
-  if (!command.isValid()) {
-    emit failed(QStringLiteral(
-        "old_string and new_string must be non-empty and different"));
-    return false;
-  }
+        return false;
+    }
 
-  m_pendingCommand = command;
+    if (!command.isValid()) {
+        emit failed(
+            QStringLiteral(
+                "Invalid edit command."));
 
-  m_documentRevision = m_editor->document()->revision();
+        return false;
+    }
 
-  setState(State::Matching);
+    auto *document =
+        qobject_cast<TextDocument *>(
+            m_editor->document());
 
-  const EditMatcher::Result result =
-      m_matcher.find(*m_editor->document(), command);
+    if (!document) {
+        emit failed(
+            QStringLiteral(
+                "Active editor does not use TextDocument."));
 
-  /*
-   * The document could theoretically change between taking the
-   * revision snapshot and completing matching. Do not use stale
-   * offsets.
-   */
-  if (m_editor->document()->revision() != m_documentRevision) {
-    m_pendingCommand.reset();
+        return false;
+    }
 
-    setState(State::Idle);
+    setState(
+        State::Matching);
 
-    emit failed(QStringLiteral("Document changed while locating the edit"));
+    document->rebuildStructure();
 
-    return false;
-  }
+    m_documentRevision =
+        document->revision();
 
-  if (result.candidates.isEmpty()) {
-    m_pendingCommand.reset();
+    m_pendingCommand =
+        command;
 
-    setState(State::Idle);
+    m_pendingCandidates.clear();
 
-    emit failed(QStringLiteral("No matching text found"));
+    EditMatcher::Result result;
 
-    return false;
-  }
+    if (command.operation ==
+        EditCommand::Operation::Insert) {
+        EditMatch insertionMatch;
 
-  if (result.candidates.size() == 1) {
-    applyCandidate(result.candidates.first());
+        if (!createInsertionMatch(
+                command,
+                insertionMatch)) {
+            setState(
+                State::Idle);
+
+            return false;
+        }
+
+        result.candidates.append(
+            insertionMatch);
+    } else {
+        result =
+            m_matcher.find(
+                *document,
+                command);
+    }
+
+    if (result.candidates.isEmpty()) {
+        setState(
+            State::Idle);
+
+        emit failed(
+            QStringLiteral(
+                "No matching text found in scope '%1'.")
+            .arg(command.scopeId));
+
+        return false;
+    }
+
+    m_pendingCandidates =
+        result.candidates;
+
+    if (m_pendingCandidates.size() == 1) {
+        applyCandidate(
+            m_pendingCandidates.first());
+
+        return m_state !=
+               State::Idle ||
+               !m_pendingCandidates.isEmpty();
+    }
+
+    setState(
+        State::AwaitingSelection);
+
+    emit candidatesReady(
+        m_pendingCandidates);
 
     return true;
-  }
+}
 
-  /*
-   * Multiple candidates are never resolved automatically.
-   *
-   * The user chooses the intended occurrence.
-   */
-  m_pendingCandidates = result.candidates;
+bool EditSession::proposeMany(
+    const QVector<EditCommand> &commands) {
+    abort();
 
-  m_candidateView->showCandidates(m_pendingCandidates);
+    if (!m_editor) {
+        emit failed(
+            QStringLiteral(
+                "No active editor."));
 
-  setState(State::AwaitingSelection);
+        return false;
+    }
 
-  emit candidatesReady(m_pendingCandidates, result.fuzzy);
+    if (commands.isEmpty()) {
+        emit failed(
+            QStringLiteral(
+                "Edit batch is empty."));
 
-  return true;
+        return false;
+    }
+
+    auto *document =
+        qobject_cast<TextDocument *>(
+            m_editor->document());
+
+    if (!document) {
+        emit failed(
+            QStringLiteral(
+                "Active editor does not use TextDocument."));
+
+        return false;
+    }
+
+    for (int i = 0;
+         i < commands.size();
+         ++i) {
+        if (!commands.at(i).isValid()) {
+            emit failed(
+                QStringLiteral(
+                    "Edit %1 is invalid.")
+                .arg(i + 1));
+
+            return false;
+        }
+    }
+
+    setState(
+        State::Matching);
+
+    document->rebuildStructure();
+
+    m_documentRevision =
+        document->revision();
+
+    QVector<EditMatch> matches;
+
+    if (!resolveBatch(
+            commands,
+            matches)) {
+        setState(
+            State::Idle);
+
+        return false;
+    }
+
+    /*
+     * At this point every command has been resolved
+     * against the same document revision.
+     *
+     * Do not modify the document until every edit is
+     * known to be valid.
+     */
+
+    setState(
+        State::Applying);
+
+    const bool applied =
+        m_applier->applyBatch(
+            *document,
+            commands,
+            matches);
+
+    m_pendingCandidates.clear();
+
+    setState(
+        State::Idle);
+
+    return applied;
 }
 
 void EditSession::abort() {
-  const bool wasActive = m_state != State::Idle || m_pendingCommand.has_value();
+    if (m_state == State::Idle) {
+        m_pendingCandidates.clear();
 
-  m_pendingCommand.reset();
-  m_pendingCandidates.clear();
+        return;
+    }
 
-  if (m_candidateView) {
-    m_candidateView->clear();
-  }
+    m_pendingCandidates.clear();
 
-  setState(State::Idle);
+    setState(
+        State::Idle);
 
-  if (wasActive) {
     emit aborted();
-  }
 }
 
-void EditSession::onCandidateSelected(int index) {
-  if (m_state != State::AwaitingSelection) {
-    return;
-  }
+void EditSession::setState(
+    State state) {
+    if (m_state == state) {
+        return;
+    }
 
-  if (index < 0 || index >= m_pendingCandidates.size()) {
-    return;
-  }
+    m_state =
+        state;
 
-  if (!m_pendingCommand.has_value()) {
-    abort();
-
-    emit failed(QStringLiteral("No pending edit"));
-
-    return;
-  }
-
-  if (!m_editor || m_editor->document()->revision() != m_documentRevision) {
-    abort();
-
-    emit failed(
-        QStringLiteral("Document changed before the edit was selected"));
-
-    return;
-  }
-
-  const EditMatch match = m_pendingCandidates[index];
-
-  applyCandidate(match);
+    emit stateChanged(
+        m_state);
 }
 
-void EditSession::applyCandidate(const EditMatch &match) {
-  if (!m_pendingCommand.has_value()) {
-    emit failed(QStringLiteral("No pending edit command"));
-    return;
-  }
+void EditSession::applyCandidate(
+    const EditMatch &match) {
+    if (!m_editor) {
+        setState(
+            State::Idle);
 
-  if (!m_editor) {
-    emit failed(QStringLiteral("No editor attached"));
-    return;
-  }
+        emit failed(
+            QStringLiteral(
+                "No active editor."));
 
-  if (m_editor->document()->revision() != m_documentRevision) {
-    abort();
+        return;
+    }
 
-    emit failed(QStringLiteral("Document changed before the edit was applied"));
+    auto *document =
+        qobject_cast<TextDocument *>(
+            m_editor->document());
 
-    return;
-  }
+    if (!document) {
+        setState(
+            State::Idle);
 
-  setState(State::Applying);
+        emit failed(
+            QStringLiteral(
+                "Active editor does not use TextDocument."));
 
-  m_candidateView->clear();
+        return;
+    }
 
-  const EditCommand command = *m_pendingCommand;
+    if (document->revision() !=
+        m_documentRevision) {
+        m_pendingCandidates.clear();
 
-  m_pendingCommand.reset();
-  m_pendingCandidates.clear();
+        setState(
+            State::Idle);
 
-  m_applier->apply(*m_editor->document(), command, match);
+        emit failed(
+            QStringLiteral(
+                "Document changed before the edit was applied."));
 
-  setState(State::Idle);
+        return;
+    }
+
+    if (!match.isValid()) {
+        setState(
+            State::Idle);
+
+        emit failed(
+            QStringLiteral(
+                "Invalid edit match."));
+
+        return;
+    }
+
+    setState(
+        State::Applying);
+
+    m_applier->apply(
+        *document,
+        m_pendingCommand,
+        match);
+
+    m_pendingCandidates.clear();
+
+    setState(
+        State::Idle);
 }
 
-void EditSession::setState(State state) {
-  if (m_state == state) {
-    return;
-  }
+bool EditSession::resolveSingle(
+    const EditCommand &command,
+    EditMatch &match) {
+    auto *document =
+        qobject_cast<TextDocument *>(
+            m_editor->document());
 
-  m_state = state;
+    if (!document) {
+        emit failed(
+            QStringLiteral(
+                "Active editor does not use TextDocument."));
 
-  emit stateChanged(m_state);
+        return false;
+    }
+
+    if (command.operation ==
+        EditCommand::Operation::Insert) {
+        return createInsertionMatch(
+            command,
+            match);
+    }
+
+    const EditMatcher::Result result =
+        m_matcher.find(
+            *document,
+            command);
+
+    if (result.candidates.isEmpty()) {
+        emit failed(
+            QStringLiteral(
+                "No matching text found in scope '%1'.")
+            .arg(command.scopeId));
+
+        return false;
+    }
+
+    if (result.candidates.size() > 1 &&
+        !command.replaceAll) {
+        emit failed(
+    QStringLiteral(
+        "Edit has %1 possible matches in scope '%2'.")
+        .arg(result.candidates.size())
+        .arg(command.scopeId));
+
+        return false;
+    }
+
+    match =
+        result.candidates.first();
+
+    return true;
+}
+
+bool EditSession::resolveBatch(
+    const QVector<EditCommand> &commands,
+    QVector<EditMatch> &matches) {
+    auto *document =
+        qobject_cast<TextDocument *>(
+            m_editor->document());
+
+    if (!document) {
+        emit failed(
+            QStringLiteral(
+                "Active editor does not use TextDocument."));
+
+        return false;
+    }
+
+    matches.clear();
+
+    matches.reserve(
+        commands.size());
+
+    for (int i = 0;
+         i < commands.size();
+         ++i) {
+        const EditCommand &command =
+            commands.at(i);
+
+        EditMatch match;
+
+        if (!resolveSingle(
+                command,
+                match)) {
+            emit failed(
+                QStringLiteral(
+                    "Edit %1 could not be resolved.")
+                .arg(i + 1));
+
+            return false;
+        }
+
+        matches.append(
+            match);
+    }
+
+    if (document->revision() !=
+        m_documentRevision) {
+        emit failed(
+            QStringLiteral(
+                "Document changed while resolving edits."));
+
+        return false;
+    }
+
+    return true;
+}
+
+bool EditSession::createInsertionMatch(
+    const EditCommand &command,
+    EditMatch &match) {
+    auto *document =
+        qobject_cast<TextDocument *>(
+            m_editor->document());
+
+    if (!document) {
+        emit failed(
+            QStringLiteral(
+                "Active editor does not use TextDocument."));
+
+        return false;
+    }
+
+    if (!command.findString.isEmpty()) {
+        emit failed(
+            QStringLiteral(
+                "Insert operations must have an empty find string."));
+
+        return false;
+    }
+
+    document->rebuildStructure();
+
+    const DocumentStructure &structure =
+        document->structure();
+
+    const DocumentNode *scope =
+        structure.find(
+            command.scopeId);
+
+    if (!scope) {
+        emit failed(
+            QStringLiteral(
+                "Insertion scope '%1' was not found.")
+            .arg(command.scopeId));
+
+        return false;
+    }
+
+    const int scopeStart =
+        scope->start;
+
+    const int scopeEnd =
+        scope->end;
+
+    const int documentLength =
+        document->toPlainText().size();
+
+    const bool validStart =
+        scopeStart >= 0 &&
+        scopeStart <= documentLength;
+
+    const bool validEnd =
+        scopeEnd >= scopeStart &&
+        scopeEnd <= documentLength;
+
+    if (!validStart ||
+        !validEnd) {
+        emit failed(
+            QStringLiteral(
+                "Insertion scope '%1' has an invalid range.")
+            .arg(command.scopeId));
+
+        return false;
+    }
+
+    int position = scopeStart;
+
+    if (command.position ==
+        EditCommand::Position::After) {
+        position =
+            scopeEnd;
+    }
+
+    match.start =
+        position;
+
+    match.end =
+        position;
+
+    match.editDistance =
+        0;
+
+    match.matchedText.clear();
+
+    return true;
+}
+
+void EditSession::onCandidateSelected(
+    int index) {
+    if (m_state !=
+        State::AwaitingSelection) {
+        return;
+    }
+
+    if (!m_editor) {
+        abort();
+
+        emit failed(
+            QStringLiteral(
+                "No active editor."));
+
+        return;
+    }
+
+    auto *document =
+        qobject_cast<TextDocument *>(
+            m_editor->document());
+
+    if (!document) {
+        abort();
+
+        emit failed(
+            QStringLiteral(
+                "Active editor does not use TextDocument."));
+
+        return;
+    }
+
+    if (document->revision() !=
+        m_documentRevision) {
+        m_pendingCandidates.clear();
+
+        setState(
+            State::Idle);
+
+        emit failed(
+            QStringLiteral(
+                "Document changed before candidate selection."));
+
+        return;
+    }
+
+    if (index < 0 ||
+        index >= m_pendingCandidates.size()) {
+        emit failed(
+            QStringLiteral(
+                "Invalid edit candidate."));
+
+        return;
+    }
+
+    const EditMatch match =
+        m_pendingCandidates.at(index);
+
+    applyCandidate(
+        match);
 }

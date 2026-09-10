@@ -6,3 +6,9 @@
 [submodule "external/edlib"]
 	path = external/edlib
 	url = https://github.com/Martinsos/edlib
+[submodule "external/tree-sitter"]
+	path = external/tree-sitter
+	url = https://github.com/tree-sitter/tree-sitter.git
+[submodule "external/tree-sitter-markdown"]
+	path = external/tree-sitter-markdown
+	url = https://github.com/tree-sitter-grammars/tree-sitter-markdown.git

@@ -12,8 +12,8 @@ QVector<EditMatch> deduplicateCandidates(const QVector<EditMatch> &input) {
   QSet<QString> seen;
 
   for (const EditMatch &candidate : input) {
-    const QString key = QString::number(candidate.start) + QLatin1Char(':') +
-                        QString::number(candidate.end);
+    const QString key =
+        QStringLiteral("%1:%2").arg(candidate.start).arg(candidate.end);
 
     if (seen.contains(key)) {
       continue;
@@ -28,35 +28,54 @@ QVector<EditMatch> deduplicateCandidates(const QVector<EditMatch> &input) {
 
 } // namespace
 
-EditMatcher::Result EditMatcher::find(const QTextDocument &document,
+EditMatcher::Result EditMatcher::find(const TextDocument &document,
                                       const EditCommand &command) const {
+  Result result;
+
   if (!command.isValid()) {
-    return {};
+    return result;
   }
 
-  const QString text = document.toPlainText();
+  document.rebuildStructure();
 
-  if (text.isEmpty()) {
-    return {};
+  const DocumentStructure &structure = document.structure();
+
+  const DocumentNode *scope = structure.find(command.scopeId);
+
+  if (!scope || !scope->isValid()) {
+    return result;
   }
 
-  /*
-   * Exact matching always gets first refusal.
-   *
-   * This is important: fuzzy matching must never override an exact
-   * occurrence.
-   */
-  const Result exact = findExact(text, command.oldString);
+  const QString documentText = document.toPlainText();
 
-  if (!exact.isEmpty()) {
-    return exact;
+  if (scope->start < 0 || scope->end > static_cast<int>(documentText.size()) ||
+      scope->end <= scope->start) {
+    return result;
   }
 
-  return findFuzzy(text, command.oldString);
+  const QString scopeText =
+      documentText.mid(scope->start, scope->end - scope->start);
+
+  if (scopeText.isEmpty()) {
+    return result;
+  }
+
+  if (command.operation == EditCommand::Operation::Insert) {
+    return result;
+  }
+
+  result = findExact(scopeText, command.findString, scope->start);
+
+  if (!result.isEmpty()) {
+    return result;
+  }
+
+  return findFuzzy(scopeText, command.findString, scope->start);
 }
 
 EditMatcher::Result EditMatcher::findExact(const QString &text,
-                                           const QString &needle) const {
+                                           const QString &needle,
+                                           int offset) const {
   Result result;
 
   if (needle.isEmpty()) {
@@ -67,38 +86,32 @@ EditMatcher::Result EditMatcher::findExact(const QString &text,
 
   while ((position = text.indexOf(needle, position)) >= 0) {
     EditMatch match;
-    match.start = position;
-    match.end = position + needle.length();
+
+    match.start = offset + position;
+
+    match.end = match.start + needle.size();
+
     match.editDistance = 0;
+    match.matchedText = needle;
 
-    result.candidates.append(match);
+    result.candidates.append(std::move(match));
 
-    position += needle.length();
+    position += needle.size();
   }
 
   return result;
 }
 
 EditMatcher::Result EditMatcher::findFuzzy(const QString &text,
-                                           const QString &needle) const {
+                                           const QString &needle,
+                                           int offset) const {
   Result result;
   result.fuzzy = true;
 
-  /*
-   * Hard input bounds.
-   *
-   * The matcher never receives arbitrarily large input.
-   */
-  if (text.length() > kMaxDocumentLength ||
-      needle.length() > kMaxNeedleLength) {
-    return {};
+  if (text.isEmpty() || needle.isEmpty()) {
+    return result;
   }
 
-  /*
-   * Keep the current Edlib adapter deliberately conservative.
-   * QString offsets are directly usable because ASCII means one byte
-   * per QString character here.
-   */
   if (!isAsciiSafe(text) || !isAsciiSafe(needle)) {
     return {};
   }
@@ -107,8 +120,10 @@ EditMatcher::Result EditMatcher::findFuzzy(const QString &text,
 
   const QByteArray needleBytes = needle.toLatin1();
 
+  constexpr double kMaxEditDistanceFraction = 0.20;
+
   const int maxEditDistance =
-      qMax(1, static_cast<int>(needle.length() * kMaxEditDistanceFraction));
+      qMax(1, static_cast<int>(needle.size() * kMaxEditDistanceFraction));
 
   const EdlibAlignConfig config = edlibNewAlignConfig(
       maxEditDistance, EDLIB_MODE_HW, EDLIB_TASK_LOC, nullptr, 0);
@@ -124,25 +139,30 @@ EditMatcher::Result EditMatcher::findFuzzy(const QString &text,
     return {};
   }
 
-  const int locationCount = qMin(edlibResult.numLocations, kMaxFuzzyCandidates);
+  const int locationCount = qMin(edlibResult.numLocations, 16);
 
   result.candidates.reserve(locationCount);
 
   for (int i = 0; i < locationCount; ++i) {
-    const int start = edlibResult.startLocations[i];
+    const int localStart = edlibResult.startLocations[i];
 
-    const int end = edlibResult.endLocations[i] + 1;
+    const int localEnd = edlibResult.endLocations[i] + 1;
 
-    if (start < 0 || end <= start || end > text.length()) {
+    if (localStart < 0 || localEnd <= localStart || localEnd > text.size()) {
       continue;
     }
 
     EditMatch match;
-    match.start = start;
-    match.end = end;
+
+    match.start = offset + localStart;
+
+    match.end = offset + localEnd;
+
     match.editDistance = edlibResult.editDistance;
 
-    result.candidates.append(match);
+    match.matchedText = text.mid(localStart, localEnd - localStart);
+
+    result.candidates.append(std::move(match));
   }
 
   edlibFreeAlignResult(edlibResult);

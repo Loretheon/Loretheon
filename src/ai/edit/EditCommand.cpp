@@ -1,1 +1,1 @@
-#include "../../../include/ai/edit/EditCommand.h"
+#include "EditCommand.h"

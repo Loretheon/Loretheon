@@ -1,90 +1,109 @@
 #include "ChatWidget.h"
 
 #include "EditGrammar.h"
+#include "edit/EditCommand.h"
 #include "edit/EditSession.h"
+#include "edit/EditMatch.h"
+
 #include "../text/TextEdit.h"
+#include "../text/model/TextDocument.h"
 
 #include "inference/InferenceService.h"
 
 #include <QCheckBox>
+#include <QDebug>
+#include <QElapsedTimer>
 #include <QHBoxLayout>
-#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonParseError>
-#include <QLabel>
+#include <QJsonValue>
 #include <QLineEdit>
 #include <QPushButton>
+#include <QTextCursor>
 #include <QTextEdit>
-#include <QTimer>
 #include <QVBoxLayout>
-
-#include <QDebug>
 
 ChatWidget::ChatWidget(
     InferenceService *inferenceService,
     EditSession *editSession,
-    QWidget *parent
-)
+    QWidget *parent)
     : QWidget(parent)
     , m_inferenceService(inferenceService)
-    , m_editSession(editSession)
-{
-    m_transcript = new QTextEdit(this);
-    m_transcript->setReadOnly(true);
+    , m_editSession(editSession) {
+    m_transcript =
+        new QTextEdit(this);
 
-    m_input = new QLineEdit(this);
+    m_transcript->setReadOnly(
+        true);
 
-    m_sendButton = new QPushButton(tr("Send"), this);
+    m_input =
+        new QLineEdit(this);
 
-    m_editModeCheckbox = new QCheckBox(tr("Edit document"), this);
+    m_sendButton =
+        new QPushButton(
+            tr("Send"),
+            this);
 
-    auto *controlsLayout = new QHBoxLayout;
-    controlsLayout->addWidget(m_input);
-    controlsLayout->addWidget(m_editModeCheckbox);
-    controlsLayout->addWidget(m_sendButton);
+    m_editModeCheckbox =
+        new QCheckBox(
+            tr("Edit document"),
+            this);
 
-    m_layout = new QVBoxLayout(this);
-    m_layout->addWidget(m_transcript);
-    m_layout->addLayout(controlsLayout);
+    auto *controlsLayout =
+        new QHBoxLayout;
 
-    setLayout(m_layout);
+    controlsLayout->addWidget(
+        m_input);
+
+    controlsLayout->addWidget(
+        m_editModeCheckbox);
+
+    controlsLayout->addWidget(
+        m_sendButton);
+
+    m_layout =
+        new QVBoxLayout(this);
+
+    m_layout->addWidget(
+        m_transcript);
+
+    m_layout->addLayout(
+        controlsLayout);
+
+    setLayout(
+        m_layout);
 
     connect(
         m_sendButton,
         &QPushButton::clicked,
         this,
-        &ChatWidget::onSendClicked
-    );
+        &ChatWidget::onSendClicked);
 
     connect(
         m_input,
         &QLineEdit::returnPressed,
         this,
-        &ChatWidget::onSendClicked
-    );
+        &ChatWidget::onSendClicked);
 
     if (m_inferenceService) {
         connect(
             m_inferenceService,
             &InferenceService::llmDelta,
             this,
-            &ChatWidget::onLlmDelta
-        );
+            &ChatWidget::onLlmDelta);
 
         connect(
             m_inferenceService,
             &InferenceService::llmFinished,
             this,
-            &ChatWidget::onLlmFinished
-        );
+            &ChatWidget::onLlmFinished);
 
         connect(
             m_inferenceService,
             &InferenceService::llmError,
             this,
-            &ChatWidget::onLlmError
-        );
+            &ChatWidget::onLlmError);
     }
 
     if (m_editSession) {
@@ -92,67 +111,73 @@ ChatWidget::ChatWidget(
             m_editSession,
             &EditSession::candidatesReady,
             this,
-            &ChatWidget::onEditCandidatesReady
-        );
+            &ChatWidget::onEditCandidatesReady);
 
         connect(
             m_editSession,
             &EditSession::applied,
             this,
-            &ChatWidget::onEditApplied
-        );
+            &ChatWidget::onEditApplied);
 
         connect(
             m_editSession,
             &EditSession::failed,
             this,
-            &ChatWidget::onEditFailed
-        );
+            &ChatWidget::onEditFailed);
 
         connect(
             m_editSession,
             &EditSession::aborted,
             this,
-            &ChatWidget::onEditAborted
-        );
+            &ChatWidget::onEditAborted);
     }
 }
 
-void ChatWidget::setActiveEditor(TextEdit *editor)
-{
-    m_activeEditor = editor;
+void ChatWidget::setActiveEditor(
+    TextEdit *editor) {
+    m_activeEditor =
+        editor;
 
     if (m_editSession) {
-        m_editSession->setEditor(editor);
+        m_editSession->setEditor(
+            editor);
     }
 }
 
-void ChatWidget::submitTranscribedText(const QString &text)
-{
+void ChatWidget::submitTranscribedText(
+    const QString &text) {
     if (text.trimmed().isEmpty()) {
         return;
     }
 
-    m_input->setText(text);
-    sendPrompt(text);
+    m_input->setText(
+        text);
+
+    sendPrompt(
+        text);
 }
 
-void ChatWidget::onSendClicked()
-{
-    const QString prompt = m_input->text().trimmed();
+void ChatWidget::onSendClicked() {
+    const QString prompt =
+        m_input->text().trimmed();
 
     if (prompt.isEmpty()) {
         return;
     }
 
     m_input->clear();
-    sendPrompt(prompt);
+
+    sendPrompt(
+        prompt);
 }
 
-void ChatWidget::sendPrompt(const QString &prompt)
-{
+void ChatWidget::sendPrompt(
+    const QString &prompt) {
     if (!m_inferenceService) {
-        appendStatusMessage(tr("Inference service is unavailable."));
+        appendStatusMessage(
+            tr(
+                "Inference service is unavailable."));
+
         return;
     }
 
@@ -160,268 +185,311 @@ void ChatWidget::sendPrompt(const QString &prompt)
         m_editModeCheckbox &&
         m_editModeCheckbox->isChecked();
 
-    /*
-     * Cancel any previous edit session before starting a new request.
-     */
     if (m_editSession) {
         m_editSession->abort();
     }
 
-    /*
-     * Reset streamed-response state.
-     */
     m_streamingResponse.clear();
-    m_streamingEditCount = 0;
-    m_assistantMessageOpen = false;
-    m_awaitingEdit = editMode;
-    m_editGenerationStopped = false;
-    m_editAbortRequested = false;
 
-    appendUserMessage(prompt);
+    m_streamingEditCount =
+        0;
+
+    m_assistantMessageOpen =
+        false;
+
+    m_awaitingEdit =
+        editMode;
+
+    m_editGenerationStopped =
+        false;
+
+    m_editAbortRequested =
+        false;
+
+    if (editMode) {
+        m_editTimer.start();
+
+        appendStatusMessage(
+            tr(
+                "Edit: generating changes..."));
+    }
+
+    appendUserMessage(
+        prompt);
 
     QJsonArray messages;
 
     if (editMode) {
         if (!m_activeEditor) {
-            appendStatusMessage(tr("No active document."));
-            m_awaitingEdit = false;
+            appendStatusMessage(
+                tr(
+                    "No active document."));
+
+            m_awaitingEdit =
+                false;
+
             return;
         }
 
-        const QString selectedText =
-            m_activeEditor->textCursor().selectedText();
+        auto *document =
+            qobject_cast<TextDocument *>(
+                m_activeEditor->document());
+
+        if (!document) {
+            appendStatusMessage(
+                tr(
+                    "Active editor does not use TextDocument."));
+
+            m_awaitingEdit =
+                false;
+
+            return;
+        }
+
+        document->rebuildStructure();
+
+        const QString structure =
+            document->structure().indexForModel();
 
         const QString documentText =
-            selectedText.isEmpty()
-                ? m_activeEditor->toPlainText()
-                : selectedText;
+            m_activeEditor->toPlainText();
 
-        /*
-         * The model is allowed to emit any number of edit objects,
-         * but it must emit only the edits actually requested by
-         * the user. It must not reinterpret a single replacement as
-         * a sequence of transformations.
-         */
-        const QString systemPrompt = QStringLiteral(
-            "You are editing a text document.\n"
-            "\n"
-            "Respond only with one or more JSON edit objects, one after another.\n"
-            "Do not use a JSON array.\n"
-            "Emit each object on its own line when possible.\n"
-            "Do not use Markdown or code fences.\n"
-            "Do not use replace_all.\n"
-            "\n"
-            "Each object has exactly this form:\n"
-            "{\"old_string\":\"...\",\"new_string\":\"...\"}\n"
-            "\n"
-            "Perform exactly the changes requested by the user.\n"
-            "Do not make additional changes.\n"
-            "Do not turn one requested replacement into a sequence of other "
-            "replacements.\n"
-            "If the user asks for one edit, normally emit one edit object.\n"
-            "If the user asks for multiple distinct edits, emit one object "
-            "for each requested edit.\n"
-            "\n"
-            "old_string identifies the exact document text to replace.\n"
-            "Use the smallest amount of surrounding document text that "
-            "uniquely identifies the intended target.\n"
-            "Do not guess which repeated occurrence the user means.\n"
-        );
+        const QString selectedText =
+            m_activeEditor
+                ->textCursor()
+                .selectedText();
+
+        QString selectionContext;
+
+        if (!selectedText.isEmpty()) {
+            selectionContext =
+                QStringLiteral(
+                    "\nCurrent selection:\n%1\n")
+                    .arg(
+                        selectedText);
+        }
+
+        const QString systemPrompt =
+            QStringLiteral(
+                "You are editing a text document.\n"
+                "\n"
+                "Return edit objects one at a time.\n"
+                "Each edit must be one complete JSON object.\n"
+                "Output one object, then a newline, then the next object.\n"
+                "Do not wrap the objects in a JSON array.\n"
+                "Never return markdown fences.\n"
+                "\n"
+                "Every edit object MUST contain exactly these seven fields:\n"
+                "operation, scope, position, find, new, all.\n"
+                "\n"
+                "Each edit has this form:\n"
+                "{"
+                "\"operation\":\"insert\","
+                "\"scope\":\"document\","
+                "\"position\":\"before\","
+                "\"find\":\"\","
+                "\"new\":\"text\","
+                "\"all\":false"
+                "}\n"
+                "\n"
+                "operation must be exactly one of: insert, replace, delete.\n"
+                "scope must be copied exactly from the document structure.\n"
+                "position must be exactly before or after.\n"
+                "all must always be present and must be true or false.\n"
+                "\n"
+                "For insert:\n"
+                "- find MUST be an empty string.\n"
+                "\n"
+                "For replace:\n"
+                "- find MUST be non-empty.\n"
+                "- find must be a short, distinctive piece of existing text "
+                "inside the selected scope.\n"
+                "\n"
+                "For delete:\n"
+                "- find MUST be non-empty.\n"
+                "- find must be a short, distinctive piece of existing text "
+                "inside the selected scope.\n"
+                "\n"
+                "Choose the smallest structural scope containing the change.\n"
+                "Do not use character offsets.\n"
+                "Do not invent scope IDs.\n"
+                "Do not count paragraphs or headings yourself.\n"
+                "Copy scope IDs exactly as provided.\n"
+                "\n"
+                "Prefer multiple small, precise edits when different parts "
+                "of the document need independent changes.\n"
+                "Do not replace an entire large section when smaller edits "
+                "can accomplish the request safely.\n"
+                "Use the fewest edits necessary.\n"
+                "\n"
+                "The document is Markdown. Write \"new\" text in Markdown.\n"
+                "\n"
+                "Edits are applied as they arrive. The document structure is "
+                "updated after each edit, so unchanged Tree-sitter scopes "
+                "remain usable while changed scopes may receive new IDs.\n"
+                "\n"
+                "Document structure:\n"
+                "%1\n"
+                "\n"
+                "User request:\n"
+                "%2\n"
+                "%3\n"
+                "Document:\n"
+                "%4")
+                .arg(
+                    structure,
+                    prompt,
+                    selectionContext,
+                    documentText);
 
         messages.append(
             QJsonObject{
-                {QStringLiteral("role"), QStringLiteral("system")},
-                {QStringLiteral("content"), systemPrompt}
-            }
-        );
-
-        const QString userContent =
-            QStringLiteral("User request:\n%1\n\nDocument:\n%2")
-                .arg(prompt, documentText);
-
-        messages.append(
-            QJsonObject{
-                {QStringLiteral("role"), QStringLiteral("user")},
-                {QStringLiteral("content"), userContent}
-            }
-        );
+                {
+                    QStringLiteral("role"),
+                    QStringLiteral("system")
+                },
+                {
+                    QStringLiteral("content"),
+                    systemPrompt
+                }
+            });
 
         m_inferenceService->sendChatRequest(
             messages,
             QString(),
             0.0,
             120000,
-            EditGrammar::gbnf()
-        );
+            EditGrammar::gbnf());
 
         return;
     }
 
-    /*
-     * Normal chat mode.
-     */
     messages.append(
         QJsonObject{
-            {QStringLiteral("role"), QStringLiteral("user")},
-            {QStringLiteral("content"), prompt}
-        }
-    );
+            {
+                QStringLiteral("role"),
+                QStringLiteral("user")
+            },
+            {
+                QStringLiteral("content"),
+                prompt
+            }
+        });
 
     m_inferenceService->sendChatRequest(
         messages,
         QString(),
         0.7,
-        120000
-    );
+        120000);
 }
 
-void ChatWidget::onLlmDelta(const QString &text)
-{
-    qDebug() << "LLM DELTA:" << text;
-
+void ChatWidget::onLlmDelta(
+    const QString &text) {
     if (text.isEmpty()) {
         return;
     }
 
-    /*
-     * Always show exactly what the model is producing.
-     *
-     * This is intentionally done before edit parsing so the user can
-     * see the raw streamed response rather than a "Generating edit..."
-     * placeholder.
-     */
-    appendAssistantChunk(text);
-
     if (!m_awaitingEdit) {
+        appendAssistantChunk(
+            text);
+
         return;
     }
 
-    /*
-     * When an edit has become ambiguous we have already asked the
-     * inference service to abort. Any queued delta that arrives after
-     * that point is still displayed, but must never be interpreted
-     * as another edit.
-     */
     if (m_editGenerationStopped) {
         return;
     }
 
-    m_streamingResponse += text;
+    m_streamingResponse +=
+        text;
 
     processEditStream();
 }
 
 bool ChatWidget::takeNextJsonObject(
     QString &buffer,
-    QString &objectText
-)
-{
+    QString &objectText) {
     objectText.clear();
 
-    /*
-     * Skip whitespace and optional separators from the previous object.
-     *
-     * We deliberately accept commas here even though the preferred
-     * protocol is newline-delimited JSON. This makes the stream robust
-     * against models that produce:
-     *
-     *   {"...":"..."},
-     *   {"...":"..."}
-     */
-    while (!buffer.isEmpty()) {
-        const QChar ch = buffer.at(0);
-
-        if (ch.isSpace() || ch == QChar(',')) {
-            buffer.remove(0, 1);
-            continue;
-        }
-
-        break;
+    while (!buffer.isEmpty() &&
+           buffer.at(0).isSpace()) {
+        buffer.remove(
+            0,
+            1);
     }
 
     if (buffer.isEmpty()) {
         return false;
     }
 
-    /*
-     * Strip an opening Markdown fence defensively.
-     *
-     * The system prompt explicitly forbids fences, but accepting one
-     * here costs very little and prevents the parser getting stuck if
-     * the model ignores that instruction.
-     */
-    if (buffer.startsWith(QStringLiteral("```"))) {
-        const int newlineIndex = buffer.indexOf(QChar('\n'));
-
-        if (newlineIndex < 0) {
-            return false;
-        }
-
-        buffer.remove(0, newlineIndex + 1);
-
-        while (!buffer.isEmpty() && buffer.at(0).isSpace()) {
-            buffer.remove(0, 1);
-        }
-
-        if (buffer.isEmpty()) {
-            return false;
-        }
-    }
-
-    if (buffer.at(0) != QChar('{')) {
-        /*
-         * There is unexpected non-JSON text at the front.
-         *
-         * Do not consume arbitrary text aggressively; wait for more
-         * data unless we can safely find the beginning of an object.
-         */
-        const int objectStart = buffer.indexOf(QChar('{'));
+    if (buffer.at(0) !=
+        QChar('{')) {
+        const int objectStart =
+            buffer.indexOf(
+                QChar('{'));
 
         if (objectStart < 0) {
             return false;
         }
 
-        if (objectStart > 0) {
-            buffer.remove(0, objectStart);
-        }
+        buffer.remove(
+            0,
+            objectStart);
     }
 
-    if (buffer.isEmpty() || buffer.at(0) != QChar('{')) {
+    if (buffer.isEmpty() ||
+        buffer.at(0) !=
+            QChar('{')) {
         return false;
     }
 
     int depth = 0;
-    bool inString = false;
-    bool escaped = false;
 
-    for (int i = 0; i < buffer.size(); ++i) {
-        const QChar ch = buffer.at(i);
+    bool inString =
+        false;
+
+    bool escaped =
+        false;
+
+    for (int i = 0;
+         i < buffer.size();
+         ++i) {
+        const QChar ch =
+            buffer.at(i);
 
         if (inString) {
             if (escaped) {
-                escaped = false;
+                escaped =
+                    false;
+
                 continue;
             }
 
             if (ch == QChar('\\')) {
-                escaped = true;
+                escaped =
+                    true;
+
                 continue;
             }
 
             if (ch == QChar('"')) {
-                inString = false;
+                inString =
+                    false;
             }
 
             continue;
         }
 
         if (ch == QChar('"')) {
-            inString = true;
+            inString =
+                true;
+
             continue;
         }
 
         if (ch == QChar('{')) {
             ++depth;
+
             continue;
         }
 
@@ -429,328 +497,474 @@ bool ChatWidget::takeNextJsonObject(
             --depth;
 
             if (depth == 0) {
-                objectText = buffer.left(i + 1);
-                buffer.remove(0, i + 1);
+                objectText =
+                    buffer.left(
+                        i + 1);
+
+                buffer.remove(
+                    0,
+                    i + 1);
+
                 return true;
             }
         }
     }
 
-    /*
-     * We have a partial JSON object. Leave it in the buffer until the
-     * next streamed delta arrives.
-     */
     return false;
 }
 
-void ChatWidget::processEditStream()
-{
-    if (!m_editSession) {
+void ChatWidget::processEditStream() {
+    if (!m_editSession ||
+        m_editGenerationStopped) {
         return;
     }
 
-    if (m_editGenerationStopped) {
-        return;
-    }
+    QString objectText;
 
-    for (;;) {
-        QString objectText;
-
-        if (!takeNextJsonObject(
-                m_streamingResponse,
-                objectText)) {
-            return;
-        }
-
+    while (takeNextJsonObject(
+        m_streamingResponse,
+        objectText)) {
         QJsonParseError parseError;
 
         const QJsonDocument document =
             QJsonDocument::fromJson(
                 objectText.toUtf8(),
-                &parseError
-            );
+                &parseError);
 
-        if (parseError.error != QJsonParseError::NoError ||
+        if (parseError.error !=
+            QJsonParseError::NoError ||
             !document.isObject()) {
-
             appendStatusMessage(
-                tr("Invalid edit object: %1")
-                    .arg(parseError.errorString())
-            );
+                tr(
+                    "Edit: invalid JSON object."));
 
-            /*
-             * Do not keep trying to interpret garbage as edits.
-             */
+            m_editGenerationStopped =
+                true;
+
+            m_editAbortRequested =
+                true;
+
+            m_inferenceService
+                ->abortChatRequest();
+
             return;
         }
 
-        const QJsonObject object = document.object();
+        const QJsonObject object =
+            document.object();
 
-        const QJsonValue oldValue =
-            object.value(QStringLiteral("old_string"));
+        const QJsonValue operationValue =
+            object.value(
+                QStringLiteral("operation"));
+
+        const QJsonValue scopeValue =
+            object.value(
+                QStringLiteral("scope"));
+
+        const QJsonValue positionValue =
+            object.value(
+                QStringLiteral("position"));
+
+        const QJsonValue findValue =
+            object.value(
+                QStringLiteral("find"));
 
         const QJsonValue newValue =
-            object.value(QStringLiteral("new_string"));
+            object.value(
+                QStringLiteral("new"));
 
-        if (!oldValue.isString() || !newValue.isString()) {
+        const QJsonValue allValue =
+            object.value(
+                QStringLiteral("all"));
+
+        if (!operationValue.isString() ||
+            !scopeValue.isString() ||
+            !positionValue.isString() ||
+            !findValue.isString() ||
+            !newValue.isString() ||
+            !allValue.isBool()) {
             appendStatusMessage(
-                tr("Edit object is missing old_string or new_string.")
-            );
+                tr(
+                    "Edit: missing required field."));
 
-            continue;
+            m_editGenerationStopped =
+                true;
+
+            m_editAbortRequested =
+                true;
+
+            m_inferenceService
+                ->abortChatRequest();
+
+            return;
         }
 
         EditCommand command;
-        command.oldString = oldValue.toString();
-        command.newString = newValue.toString();
 
-        ++m_streamingEditCount;
+        const QString operation =
+            operationValue.toString();
 
-        appendStatusMessage(
-            tr("Edit %1 received — locating text...")
-                .arg(m_streamingEditCount)
-        );
-
-        m_editSession->propose(command);
-
-        /*
-         * The session has found multiple matches and is now waiting
-         * for the user to choose the intended location.
-         *
-         * This is the critical safety boundary:
-         *
-         *   1. stop consuming further edit objects
-         *   2. abort the LLM generation
-         *   3. discard the parser buffer
-         *
-         * The user must resolve the ambiguity before generation can
-         * continue.
-         */
-        if (m_editSession->state() ==
-            EditSession::State::AwaitingSelection) {
-
-            m_editGenerationStopped = true;
-            m_editAbortRequested = true;
-
-            /*
-             * The visible transcript is already independent of this
-             * buffer, so it is safe to discard anything that followed
-             * the ambiguous object.
-             */
-            m_streamingResponse.clear();
-
-            m_inferenceService->abortChatRequest();
-
+        if (operation ==
+            QStringLiteral("insert")) {
+            command.operation =
+                EditCommand::Operation::Insert;
+        } else if (operation ==
+                   QStringLiteral("replace")) {
+            command.operation =
+                EditCommand::Operation::Replace;
+        } else if (operation ==
+                   QStringLiteral("delete")) {
+            command.operation =
+                EditCommand::Operation::Delete;
+        } else {
             appendStatusMessage(
-                tr("Generation stopped — choose the intended location.")
-            );
+                tr(
+                    "Edit: invalid operation '%1'.")
+                .arg(
+                    operation));
+
+            m_editGenerationStopped =
+                true;
+
+            m_editAbortRequested =
+                true;
+
+            m_inferenceService
+                ->abortChatRequest();
 
             return;
         }
+
+        const QString position =
+            positionValue.toString();
+
+        if (position ==
+            QStringLiteral("before")) {
+            command.position =
+                EditCommand::Position::Before;
+        } else if (position ==
+                   QStringLiteral("after")) {
+            command.position =
+                EditCommand::Position::After;
+        } else {
+            appendStatusMessage(
+                tr(
+                    "Edit: invalid position '%1'.")
+                .arg(
+                    position));
+
+            m_editGenerationStopped =
+                true;
+
+            m_editAbortRequested =
+                true;
+
+            m_inferenceService
+                ->abortChatRequest();
+
+            return;
+        }
+
+        command.scopeId =
+            scopeValue.toString();
+
+        command.findString =
+            findValue.toString();
+
+        command.newString =
+            newValue.toString();
+
+        command.replaceAll =
+            allValue.toBool();
+
+        if (!command.isValid()) {
+            appendStatusMessage(
+                tr(
+                    "Edit: operation violates the edit protocol."));
+
+            m_editGenerationStopped =
+                true;
+
+            m_editAbortRequested =
+                true;
+
+            m_inferenceService
+                ->abortChatRequest();
+
+            return;
+        }
+
+        ++m_streamingEditCount;
+
+        QString action;
+
+        switch (command.operation) {
+        case EditCommand::Operation::Insert:
+            action =
+                QStringLiteral(
+                    "inserting");
+            break;
+
+        case EditCommand::Operation::Replace:
+            action =
+                QStringLiteral(
+                    "updating");
+            break;
+
+        case EditCommand::Operation::Delete:
+            action =
+                QStringLiteral(
+                    "deleting");
+            break;
+        }
+
+        appendStatusMessage(
+            tr(
+                "Edit %1: %2 in %3...")
+            .arg(
+                m_streamingEditCount)
+            .arg(
+                action)
+            .arg(
+                command.scopeId));
+
+        if (!m_editSession->propose(
+                command)) {
+            m_editGenerationStopped =
+                true;
+
+            m_editAbortRequested =
+                true;
+
+            m_inferenceService
+                ->abortChatRequest();
+
+            return;
+        }
+
+        appendStatusMessage(
+            tr(
+                "Edit %1 applied in %2 ms.")
+            .arg(
+                m_streamingEditCount)
+            .arg(
+                m_editTimer.elapsed()));
+
+        objectText.clear();
     }
 }
 
-void ChatWidget::onLlmFinished()
-{
-    const bool waitingForSelection =
-        m_editSession &&
-        m_editSession->state() ==
-            EditSession::State::AwaitingSelection;
-
+void ChatWidget::onLlmFinished() {
     if (m_awaitingEdit) {
-        /*
-         * If the user is choosing among candidates, the model stream
-         * has intentionally ended. This is not an incomplete-edit
-         * error.
-         */
-        if (!waitingForSelection &&
-            !m_editGenerationStopped) {
-
-            QString remaining = m_streamingResponse;
-
-            while (!remaining.isEmpty() &&
-                   remaining.at(0).isSpace()) {
-                remaining.remove(0, 1);
-            }
-
-            if (remaining.endsWith(QStringLiteral("```"))) {
-                remaining.chop(3);
-
-                while (!remaining.isEmpty() &&
-                       remaining.at(0).isSpace()) {
-                    remaining.remove(0, 1);
-                }
-            }
-
-            if (!remaining.isEmpty()) {
+        if (!m_editGenerationStopped) {
+            if (!m_streamingResponse.trimmed().isEmpty()) {
                 appendStatusMessage(
-                    tr("Edit stream ended with incomplete JSON.")
-                );
-            }
-
-            if (m_streamingEditCount == 0 &&
-                remaining.isEmpty()) {
-
+                    tr(
+                        "Edit: stream ended with incomplete JSON."));
+            } else if (m_streamingEditCount == 0) {
                 appendStatusMessage(
-                    tr("Model did not produce an edit.")
-                );
+                    tr(
+                        "Edit: model did not produce any changes."));
+            } else {
+                appendStatusMessage(
+                    tr(
+                        "Edit: completed in %1 ms.")
+                        .arg(
+                            m_editTimer.elapsed()));
             }
         }
 
-        /*
-         * If the edit is currently waiting for the user's choice,
-         * EditSession remains responsible for that state.
-         */
-        m_awaitingEdit = false;
+        m_awaitingEdit =
+            false;
     }
 
-    /*
-     * A completed normal chat response is rendered as usual.
-     */
     if (m_assistantMessageOpen) {
         renderLastAssistantMessage();
     }
 
-    m_assistantMessageOpen = false;
+    m_assistantMessageOpen =
+        false;
+
     m_streamingResponse.clear();
-    m_streamingEditCount = 0;
-    m_editGenerationStopped = false;
-    m_editAbortRequested = false;
+
+    m_streamingEditCount =
+        0;
+
+    m_editGenerationStopped =
+        false;
+
+    m_editAbortRequested =
+        false;
 }
 
-void ChatWidget::onLlmError(const QString &error)
-{
-    /*
-     * Aborting because the edit became ambiguous is expected control
-     * flow, not an inference failure.
-     */
+void ChatWidget::onLlmError(
+    const QString &error) {
     if (m_editAbortRequested) {
         return;
     }
 
     appendStatusMessage(
-        tr("LLM error: %1").arg(error)
-    );
+        tr(
+            "LLM error: %1")
+            .arg(
+                error));
 
     if (m_editSession) {
         m_editSession->abort();
     }
 
     m_streamingResponse.clear();
-    m_streamingEditCount = 0;
-    m_assistantMessageOpen = false;
-    m_awaitingEdit = false;
-    m_editGenerationStopped = false;
-    m_editAbortRequested = false;
+
+    m_streamingEditCount =
+        0;
+
+    m_assistantMessageOpen =
+        false;
+
+    m_awaitingEdit =
+        false;
+
+    m_editGenerationStopped =
+        false;
+
+    m_editAbortRequested =
+        false;
 }
 
 void ChatWidget::onEditCandidatesReady(
-    const QVector<EditMatch> &candidates,
-    bool fuzzy
-)
-{
-    Q_UNUSED(fuzzy);
-
+    const QVector<EditMatch> &candidates) {
     appendStatusMessage(
-        tr("Multiple matches found — choose the intended location (%1 candidates).")
-            .arg(candidates.size())
-    );
+        tr(
+            "Multiple matches found — choose the intended location (%1 candidates).")
+            .arg(
+                candidates.size()));
 }
 
 void ChatWidget::onEditApplied(
     bool fuzzy,
-    int editDistance
-)
-{
+    int editDistance) {
     if (fuzzy) {
         appendStatusMessage(
-            tr("Edit applied using fuzzy matching (distance %1).")
-                .arg(editDistance)
-        );
-    } else {
-        appendStatusMessage(
-            tr("Edit applied.")
-        );
+            tr(
+                "Matched using fuzzy matching (distance %1).")
+                .arg(
+                    editDistance));
     }
 }
 
-void ChatWidget::onEditFailed(const QString &reason)
-{
+void ChatWidget::onEditFailed(
+    const QString &reason) {
     appendStatusMessage(
-        tr("Edit failed: %1").arg(reason)
-    );
+        tr(
+            "Edit failed: %1")
+            .arg(
+                reason));
 }
 
-void ChatWidget::onEditAborted()
-{
+void ChatWidget::onEditAborted() {
     appendStatusMessage(
-        tr("Edit aborted.")
-    );
+        tr(
+            "Edit aborted."));
 }
 
-void ChatWidget::appendUserMessage(const QString &text)
-{
+void ChatWidget::appendUserMessage(
+    const QString &text) {
     if (!m_transcript) {
         return;
     }
 
-    m_transcript->append(
-        QStringLiteral("<b>You:</b><br>%1")
-            .arg(text.toHtmlEscaped())
-    );
+    QTextCursor cursor =
+        m_transcript->textCursor();
+
+    cursor.movePosition(
+        QTextCursor::End);
+
+    QTextCharFormat format;
+
+    format.setFontWeight(
+        QFont::Bold);
+
+    cursor.insertText(
+        QStringLiteral("You:"),
+        format);
+
+    cursor.insertText(
+        QStringLiteral(" "));
+
+    cursor.insertText(
+        text);
+
+    cursor.insertText(
+        QStringLiteral("\n"));
+
+    m_transcript->setTextCursor(
+        cursor);
+
+    m_transcript->ensureCursorVisible();
 }
 
-void ChatWidget::appendAssistantChunk(const QString &text)
-{
+void ChatWidget::appendAssistantChunk(
+    const QString &text) {
     if (!m_transcript) {
         return;
     }
 
     if (!m_assistantMessageOpen) {
         m_transcript->append(
-            QStringLiteral("<b>Assistant:</b>")
-        );
+            QStringLiteral(
+                "<b>Assistant:</b>"));
 
-        m_assistantMessageOpen = true;
+        m_assistantMessageOpen =
+            true;
     }
 
-    /*
-     * Keep streamed output visible as it arrives.
-     *
-     * QTextEdit::append() creates a paragraph, which is not ideal for
-     * token streaming, so insert directly into the current document.
-     */
-    QTextCursor cursor = m_transcript->textCursor();
-    cursor.movePosition(QTextCursor::End);
+    QTextCursor cursor =
+        m_transcript->textCursor();
 
-    cursor.insertText(text);
+    cursor.movePosition(
+        QTextCursor::End);
 
-    m_transcript->setTextCursor(cursor);
+    cursor.insertText(
+        text);
+
+    m_transcript->setTextCursor(
+        cursor);
+
     m_transcript->ensureCursorVisible();
 }
 
-void ChatWidget::appendStatusMessage(const QString &text)
-{
+void ChatWidget::appendStatusMessage(
+    const QString &text) {
     if (!m_transcript) {
         return;
     }
 
-    m_transcript->append(
-        QStringLiteral("<i>%1</i>")
-            .arg(text.toHtmlEscaped())
-    );
+    QTextCursor cursor =
+        m_transcript->textCursor();
+
+    cursor.movePosition(
+        QTextCursor::End);
+
+    QTextCharFormat format;
+
+    format.setFontItalic(
+        true);
+
+    cursor.insertText(
+        text,
+        format);
+
+    cursor.insertText(
+        QStringLiteral("\n"));
+
+    m_transcript->setTextCursor(
+        cursor);
+
+    m_transcript->ensureCursorVisible();
 }
 
-void ChatWidget::renderLastAssistantMessage()
-{
+void ChatWidget::renderLastAssistantMessage() {
     if (!m_transcript) {
         return;
     }
-
-    /*
-     * Streaming output is already displayed live, so there is nothing
-     * else to generate here. Keep this hook because it is part of the
-     * existing ChatWidget structure and can later be used for markdown
-     * rendering after generation finishes.
-     */
 }

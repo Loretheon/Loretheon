@@ -7,8 +7,23 @@ set(CMAKE_AUTOMOC ON)
 find_package(Qt6 6 REQUIRED COMPONENTS Core Gui Widgets
         OPTIONAL_COMPONENTS PrintSupport Pdf PdfWidgets)
 
+# Make both Node.js and the tree-sitter CLI available to CMake
+# when using an NVM-managed Node installation.
+set(ENV{PATH}
+        "/home/sujan/.nvm/versions/node/v22.21.0/bin:$ENV{PATH}"
+)
+
+find_program(TREE_SITTER_CLI
+        NAMES tree-sitter
+        REQUIRED
+)
+
+message(STATUS "TREE_SITTER_CLI=${TREE_SITTER_CLI}")
+
 add_subdirectory(external/QF-ML)
 add_subdirectory(external/edlib EXCLUDE_FROM_ALL)
+add_subdirectory(external/tree-sitter)
+add_subdirectory(external/tree-sitter-markdown)
 
 qt_standard_project_setup()
 
@@ -55,17 +70,28 @@ add_executable(Episteme src/main.cpp
         src/ai/edit/EditSession.cpp
         include/ai/edit/EditSession.h
         include/ai/edit/EditMatch.h
+        src/text/structure/DocumentStructure.cpp
+        include/text/structure/DocumentStructure.h
+        src/text/structure/MarkdownStructureParser.cpp
+        include/text/structure/MarkdownStructureParser.h
+        src/text/structure/DocumentNode.cpp
+        include/text/structure/DocumentNode.h
+        src/text/structure/PlainTextStructureParser.cpp
+        include/text/structure/PlainTextStructureParser.h
 )
 
 target_include_directories(Episteme PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include/app/
         ${CMAKE_CURRENT_SOURCE_DIR}/include/text/
         ${CMAKE_CURRENT_SOURCE_DIR}/include/text/model
+        ${CMAKE_CURRENT_SOURCE_DIR}/include/text/structure
         ${CMAKE_CURRENT_SOURCE_DIR}/include/file/
         ${CMAKE_CURRENT_SOURCE_DIR}/include/file/model
         ${CMAKE_CURRENT_SOURCE_DIR}/include/ai
         ${CMAKE_CURRENT_SOURCE_DIR}/include/ai/edit
-        external/QF-ML/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/external/QF-ML/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/external/tree-sitter/lib/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/external/tree-sitter-markdown/tree-sitter-markdown/bindings/c
 )
 
 target_link_libraries(Episteme PRIVATE
@@ -77,4 +103,6 @@ target_link_libraries(Episteme PRIVATE
         Qt6::PdfWidgets
         qf-inference
         edlib
+        tree-sitter
+        tree-sitter-markdown
 )
