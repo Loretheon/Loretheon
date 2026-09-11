@@ -181,81 +181,121 @@ void MainWindow::manageModels() {
 }
 
 void MainWindow::createActions() {
-  newTextAct = new QAction(QIcon::fromTheme(QIcon::ThemeIcon::DocumentNew),
-                           tr("&Text File"), this);
+    // Helper function for safe icon loading
+    auto getSafeIcon = [](const QString& themeIcon,
+                          const QString& fallbackPath = "") -> QIcon {
+        QIcon icon = QIcon::fromTheme(themeIcon);
 
-  newTextAct->setShortcuts(QKeySequence::New);
+        if (icon.isNull() && !fallbackPath.isEmpty()) {
+            icon = QIcon(fallbackPath);
+        }
 
-  newTextAct->setStatusTip(tr("Create a new plain text file"));
+        return icon;
+    };
 
-  connect(newTextAct, &QAction::triggered, documentManager,
-          &DocumentManager::newTextFile);
+    // Do NOT force an icon theme.
+    // Qt will use the user's desktop theme (Adwaita, Breeze, etc.).
 
-  newMarkdownAct = new QAction(QIcon::fromTheme(QIcon::ThemeIcon::DocumentNew),
-                               tr("&Markdown File"), this);
+    // New Text File Action
+    newTextAct = new QAction(getSafeIcon("document-new",
+                                         ":/icons/document-new.png"),
+                             tr("&Text File"), this);
+    newTextAct->setShortcuts(QKeySequence::New);
+    newTextAct->setStatusTip(tr("Create a new plain text file"));
 
-  newMarkdownAct->setStatusTip(tr("Create a new markdown file"));
+    connect(newTextAct, &QAction::triggered,
+            documentManager,
+            &DocumentManager::newTextFile);
 
-  connect(newMarkdownAct, &QAction::triggered, documentManager,
-          &DocumentManager::newMarkdownFile);
 
-  openAct = new QAction(QIcon::fromTheme(QIcon::ThemeIcon::DocumentOpen),
-                        tr("&Open..."), this);
+    // New Markdown File Action
+    newMarkdownAct = new QAction(getSafeIcon("document-new",
+                                             ":/icons/document-new.png"),
+                                 tr("&Markdown File"), this);
+    newMarkdownAct->setStatusTip(tr("Create a new markdown file"));
 
-  openAct->setShortcuts(QKeySequence::Open);
+    connect(newMarkdownAct, &QAction::triggered,
+            documentManager,
+            &DocumentManager::newMarkdownFile);
 
-  openAct->setStatusTip(tr("Open an existing file"));
 
-  connect(openAct, &QAction::triggered, this, [this]() {
-    const QString path =
-        QFileDialog::getOpenFileName(this, tr("Open File"), QString(),
-                                     tr("Text Files (*.txt);;"
-                                        "Markdown Files (*.md);;"
-                                        "All Files (*)"));
+    // Open Action
+    openAct = new QAction(getSafeIcon("document-open",
+                                      ":/icons/document-open.png"),
+                          tr("&Open..."), this);
+    openAct->setShortcuts(QKeySequence::Open);
+    openAct->setStatusTip(tr("Open an existing file"));
 
-    if (!path.isEmpty()) {
-      documentManager->openFile(path);
-    }
-  });
+    connect(openAct, &QAction::triggered, this, [this]() {
+        const QString path =
+            QFileDialog::getOpenFileName(
+                this,
+                tr("Open File"),
+                QString(),
+                tr("Text Files (*.txt);;"
+                   "Markdown Files (*.md);;"
+                   "All Files (*)"));
 
-  saveAct = new QAction(QIcon::fromTheme(QIcon::ThemeIcon::DocumentSave),
-                        tr("&Save"), this);
+        if (!path.isEmpty()) {
+            documentManager->openFile(path);
+        }
+    });
 
-  saveAct->setShortcuts(QKeySequence::Save);
 
-  saveAct->setStatusTip(tr("Save the document to disk"));
+    // Save Action
+    saveAct = new QAction(getSafeIcon("document-save",
+                                      ":/icons/document-save.png"),
+                          tr("&Save"), this);
+    saveAct->setShortcuts(QKeySequence::Save);
+    saveAct->setStatusTip(tr("Save the document to disk"));
 
-  connect(saveAct, &QAction::triggered, documentManager,
-          &DocumentManager::save);
+    connect(saveAct, &QAction::triggered,
+            documentManager,
+            &DocumentManager::save);
 
-  exitAct = new QAction(QIcon::fromTheme(QIcon::ThemeIcon::ApplicationExit),
-                        tr("E&xit"), this);
 
-  exitAct->setShortcuts(QKeySequence::Quit);
+    // Exit Action
+    exitAct = new QAction(getSafeIcon("application-exit",
+                                      ":/icons/application-exit.png"),
+                          tr("E&xit"), this);
+    exitAct->setShortcuts(QKeySequence::Quit);
+    exitAct->setStatusTip(tr("Exit the application"));
 
-  exitAct->setStatusTip(tr("Exit the application"));
+    connect(exitAct, &QAction::triggered,
+            this,
+            &QWidget::close);
 
-  connect(exitAct, &QAction::triggered, this, &QWidget::close);
 
-  manageModelsAct = new QAction(tr("&Manage Models..."), this);
+    // Manage Models Action
+    manageModelsAct = new QAction(tr("&Manage Models..."), this);
+    manageModelsAct->setStatusTip(
+        tr("Download or select LLM and speech models"));
 
-  manageModelsAct->setStatusTip(tr("Download or select LLM and speech models"));
+    connect(manageModelsAct, &QAction::triggered,
+            this,
+            &MainWindow::manageModels);
 
-  connect(manageModelsAct, &QAction::triggered, this,
-          &MainWindow::manageModels);
 
-  aboutAct = new QAction(QIcon::fromTheme(QIcon::ThemeIcon::HelpAbout),
-                         tr("&About"), this);
+    // About Action
+    aboutAct = new QAction(getSafeIcon("help-about",
+                                       ":/icons/help-about.png"),
+                           tr("&About"), this);
+    aboutAct->setStatusTip(
+        tr("Show the application's About box"));
 
-  aboutAct->setStatusTip(tr("Show the application's About box"));
+    connect(aboutAct, &QAction::triggered,
+            this,
+            &MainWindow::about);
 
-  connect(aboutAct, &QAction::triggered, this, &MainWindow::about);
 
-  aboutQtAct = new QAction(tr("About &Qt"), this);
+    // About Qt Action
+    aboutQtAct = new QAction(tr("About &Qt"), this);
+    aboutQtAct->setStatusTip(
+        tr("Show the Qt library's About box"));
 
-  aboutQtAct->setStatusTip(tr("Show the Qt library's About box"));
-
-  connect(aboutQtAct, &QAction::triggered, this, &MainWindow::aboutQt);
+    connect(aboutQtAct, &QAction::triggered,
+            this,
+            &MainWindow::aboutQt);
 }
 
 void MainWindow::createMenus() {
