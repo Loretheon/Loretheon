@@ -47,6 +47,7 @@ private:
 
   static bool applyOne(QTextDocument &document, const EditCommand &command,
                        const EditMatch &match, QString &reason);
+  void resetStreamingState();
 
   static void sortBatch(QVector<BatchEdit> &edits);
 

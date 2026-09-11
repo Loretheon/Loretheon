@@ -16,6 +16,35 @@
 #include <QVBoxLayout>
 #include <QWidget>
 
+static InferenceService::LlmConfig configuredLlm() {
+  InferenceService::LlmConfig config;
+
+  const QString mode =
+      qEnvironmentVariable("TALOS_LLM_MODE").trimmed().toLower();
+
+  if (mode == QStringLiteral("remote")) {
+    config.mode = InferenceService::LlmMode::Remote;
+
+    config.endpoint = qEnvironmentVariable("TALOS_LLM_URL").trimmed();
+
+    config.model = qEnvironmentVariable("TALOS_LLM_MODEL").trimmed();
+
+    config.apiKey = qEnvironmentVariable("TALOS_LLM_API_KEY").trimmed();
+
+    const QString auth =
+        qEnvironmentVariable("TALOS_LLM_AUTH").trimmed().toLower();
+
+    config.authType = auth == QStringLiteral("none")
+                          ? InferenceService::LlmAuthType::None
+                          : InferenceService::LlmAuthType::Bearer;
+
+  } else {
+    config.mode = InferenceService::LlmMode::Local;
+  }
+
+  return config;
+}
+
 MainWindow::MainWindow() {
   QWidget *widget = new QWidget;
 
@@ -36,9 +65,15 @@ MainWindow::MainWindow() {
   documentManager = new DocumentManager(this);
 
   inferenceService = new InferenceService(this);
+  //
+  // inferenceService->initialize(LlamaManager::Backend::Vulkan,
+  //                              QFPaths::sttModelsDir());
 
-  inferenceService->initialize(LlamaManager::Backend::Vulkan,
-                               QFPaths::sttModelsDir());
+  const auto llmConfig = configuredLlm();
+
+  inferenceService->initialize(
+      LlamaManager::Backend::Vulkan, QFPaths::sttModelsDir(),
+      InferenceService::SttModel::Nemotron35, llmConfig);
 
   // inferenceService->setModelDirectory(QFPaths::llmModelsDir());
 

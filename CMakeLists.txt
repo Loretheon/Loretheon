@@ -88,6 +88,8 @@ add_executable(Episteme src/main.cpp
         include/ai/edit/EditConflict.h
         src/ai/edit/EditPlanner.cpp
         include/ai/edit/EditPlanner.h
+        src/app/NotificationManager.cpp
+        include/app/NotificationManager.h
 )
 
 target_include_directories(Episteme PUBLIC

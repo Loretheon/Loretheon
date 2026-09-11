@@ -2,7 +2,7 @@
 	path = external/QF-ML
 	url = git@github.com:Sujan-Naik/QF-ML.git
     ignore = dirty
-	branch = main
+	branch = remote-api
 [submodule "external/edlib"]
 	path = external/edlib
 	url = https://github.com/Martinsos/edlib

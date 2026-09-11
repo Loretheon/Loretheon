@@ -1,16 +1,17 @@
 #include "DocumentStructure.h"
 
-#include <QDebug>
+#include <utility>
 
 namespace {
 
 QString previewText(const QString &text, int start, int end,
                     int maximumCharacters) {
-  if (start < 0 || end < start || start > text.size()) {
+  if (start < 0 || end < start || start >= text.size() ||
+      maximumCharacters <= 0) {
     return {};
   }
 
-  const int safeEnd = qMin(end, text.size());
+  const int safeEnd = qBound(start, end, text.size());
 
   QString preview = text.mid(start, safeEnd - start).simplified();
 
@@ -18,14 +19,22 @@ QString previewText(const QString &text, int start, int end,
     return preview;
   }
 
+  if (maximumCharacters <= 3) {
+    return preview.left(maximumCharacters);
+  }
+
   return preview.left(maximumCharacters - 3) + QStringLiteral("...");
+}
+
+bool hasValidRange(const DocumentNode &node, int textLength) {
+  return node.start >= 0 && node.end >= node.start && node.end <= textLength &&
+         node.end > node.start;
 }
 
 } // namespace
 
 void DocumentStructure::clear() {
   m_text.clear();
-
   m_root = DocumentNode();
 }
 
@@ -38,33 +47,11 @@ const QString &DocumentStructure::text() const { return m_text; }
 const DocumentNode &DocumentStructure::root() const { return m_root; }
 
 const DocumentNode *DocumentStructure::find(const QString &id) const {
-  qDebug() << "DocumentStructure::find:"
-           << "requested id =" << id;
-
   if (id.isEmpty()) {
-    qDebug() << "DocumentStructure::find:"
-             << "empty id";
-
     return nullptr;
   }
 
-  const DocumentNode *result = findRecursive(m_root, id);
-
-  if (!result) {
-    qDebug() << "DocumentStructure::find:"
-             << "NOT FOUND:" << id;
-
-    qDebug().noquote() << "Available structure:\n" << indexForModel();
-  } else {
-    qDebug() << "DocumentStructure::find:"
-             << "FOUND:" << result->id << "type =" << result->type
-             << "range =" << result->start << "-" << result->end;
-
-    qDebug().noquote() << "Matched text:"
-                       << previewText(m_text, result->start, result->end, 120);
-  }
-
-  return result;
+  return findRecursive(m_root, id);
 }
 
 const DocumentNode *DocumentStructure::findRecursive(const DocumentNode &node,
@@ -74,9 +61,7 @@ const DocumentNode *DocumentStructure::findRecursive(const DocumentNode &node,
   }
 
   for (const DocumentNode &child : node.children) {
-    const DocumentNode *result = findRecursive(child, id);
-
-    if (result) {
+    if (const DocumentNode *result = findRecursive(child, id)) {
       return result;
     }
   }
@@ -92,24 +77,13 @@ QStringList DocumentStructure::scopeIds() const {
   }
 
   appendScopeIdsRecursive(m_root, ids);
-
   return ids;
 }
 
 void DocumentStructure::appendScopeIdsRecursive(const DocumentNode &node,
                                                 QStringList &ids) const {
-  /*
-   * The LLM should only choose meaningful structural
-   * editing scopes. For Markdown, sections are the
-   * natural top-level editing units.
-   *
-   * The matcher can still search inside the complete
-   * section range after the command is resolved.
-   */
-  if (node.type == QStringLiteral("section")) {
-    if (!node.id.isEmpty()) {
-      ids.append(node.id);
-    }
+  if (node.type == QStringLiteral("section") && !node.id.isEmpty()) {
+    ids.append(node.id);
   }
 
   for (const DocumentNode &child : node.children) {
@@ -119,12 +93,11 @@ void DocumentStructure::appendScopeIdsRecursive(const DocumentNode &node,
 
 QString
 DocumentStructure::sectionIndexForModel(int maxPreviewCharacters) const {
-  QString output;
-
   if (m_root.id.isEmpty()) {
-    return output;
+    return {};
   }
 
+  QString output;
   appendSectionIndexRecursive(m_root, output, 0, maxPreviewCharacters);
 
   return output;
@@ -134,26 +107,20 @@ void DocumentStructure::appendSectionIndexRecursive(
     const DocumentNode &node, QString &output, int depth,
     int maxPreviewCharacters) const {
   if (node.type == QStringLiteral("section")) {
-    for (int i = 0; i < depth; ++i) {
-      output += QStringLiteral("  ");
-    }
+    output += QString(depth * 2, QChar(' '));
+    output += node.id;
+    output += QStringLiteral(" [section]");
 
-    QString line = QStringLiteral("%1 [section]").arg(node.id);
-
-    if (node.start >= 0 && node.end >= node.start &&
-        node.end <= m_text.size() && node.end > node.start) {
+    if (hasValidRange(node, m_text.size())) {
       const QString preview =
           previewText(m_text, node.start, node.end, maxPreviewCharacters);
 
       if (!preview.isEmpty()) {
-        line += QStringLiteral(" \"%1\"").arg(preview);
+        output += QStringLiteral(" \"%1\"").arg(preview);
       }
     }
 
-    output += line;
-
     output += QChar('\n');
-
     ++depth;
   }
 
@@ -163,12 +130,11 @@ void DocumentStructure::appendSectionIndexRecursive(
 }
 
 QString DocumentStructure::indexForModel(int maxPreviewCharacters) const {
-  QString output;
-
   if (m_root.id.isEmpty()) {
-    return output;
+    return {};
   }
 
+  QString output;
   appendIndexRecursive(m_root, output, 0, maxPreviewCharacters);
 
   return output;
@@ -177,23 +143,18 @@ QString DocumentStructure::indexForModel(int maxPreviewCharacters) const {
 void DocumentStructure::appendIndexRecursive(const DocumentNode &node,
                                              QString &output, int depth,
                                              int maxPreviewCharacters) const {
-  for (int i = 0; i < depth; ++i) {
-    output += QStringLiteral("  ");
-  }
+  output += QString(depth * 2, QChar(' '));
+  output += node.id;
+  output += QStringLiteral(" [%1]").arg(node.type);
 
-  QString line = QStringLiteral("%1 [%2]").arg(node.id).arg(node.type);
-
-  if (node.start >= 0 && node.end >= node.start && node.end <= m_text.size() &&
-      node.end > node.start) {
+  if (hasValidRange(node, m_text.size())) {
     const QString preview =
         previewText(m_text, node.start, node.end, maxPreviewCharacters);
 
     if (!preview.isEmpty()) {
-      line += QStringLiteral(" \"%1\"").arg(preview);
+      output += QStringLiteral(" \"%1\"").arg(preview);
     }
   }
-
-  output += line;
 
   output += QChar('\n');
 

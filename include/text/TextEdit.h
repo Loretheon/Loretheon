@@ -1,11 +1,11 @@
 #ifndef EPISTEME_TEXTEDIT_H
 #define EPISTEME_TEXTEDIT_H
 
+#include "../ai/edit/PendingEdit.h"
 #include "DocumentMode.h"
 #include "TextFormatDelegate.h"
 #include "Toolbar.h"
 #include <QMouseEvent>
-#include "../ai/edit/PendingEdit.h"
 
 #include <QHash>
 #include <QPlainTextEdit>
@@ -141,6 +141,7 @@ signals:
 protected:
   void resizeEvent(QResizeEvent *event) override;
   void mouseMoveEvent(QMouseEvent *event) override;
+
 private:
   QString pendingEditPreview(const PendingEdit &edit) const;
 

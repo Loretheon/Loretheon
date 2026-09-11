@@ -3,22 +3,59 @@
 #include "../structure/MarkdownStructureParser.h"
 #include "../structure/PlainTextStructureParser.h"
 
-#include <QDebug>
 #include <QPlainTextDocumentLayout>
+
+namespace {
+
+void resetMarkdownState(TSParser *&parser, TSTree *&tree) {
+  MarkdownStructureParser::destroyParser(parser);
+  MarkdownStructureParser::destroyTree(tree);
+}
+
+DocumentStructure buildStructure(DocumentMode mode, const QString &text,
+                                 TSParser *&markdownParser,
+                                 TSTree *&markdownTree,
+                                 const QString &previousText) {
+  switch (mode) {
+  case DocumentMode::Markdown: {
+    MarkdownStructureParser parser;
+
+    return parser.parse(text, markdownParser, markdownTree, previousText);
+  }
+
+  case DocumentMode::PlainText: {
+    PlainTextStructureParser parser;
+    return parser.parse(text);
+  }
+
+  case DocumentMode::Html: {
+    PlainTextStructureParser parser;
+    return parser.parse(text);
+  }
+  }
+
+  return {};
+}
+
+} // namespace
 
 TextDocument::TextDocument(QObject *parent) : QTextDocument(parent) {
   setDocumentLayout(new QPlainTextDocumentLayout(this));
 }
 
 TextDocument::~TextDocument() {
-  MarkdownStructureParser::destroyParser(m_markdownParser);
-
-  MarkdownStructureParser::destroyTree(m_markdownTree);
+  resetMarkdownState(m_markdownParser, m_markdownTree);
 }
 
 QString TextDocument::filePath() const { return path; }
 
-void TextDocument::setFilePath(const QString &newPath) { path = newPath; }
+void TextDocument::setFilePath(const QString &newPath) {
+  if (path == newPath) {
+    return;
+  }
+
+  path = newPath;
+}
 
 DocumentMode TextDocument::type() const { return docType; }
 
@@ -27,16 +64,10 @@ void TextDocument::setType(DocumentMode newType) {
     return;
   }
 
-  qDebug() << "TextDocument::setType:" << static_cast<int>(newType)
-           << "file:" << path;
-
   docType = newType;
-
   m_structureRevision = -1;
 
-  MarkdownStructureParser::destroyParser(m_markdownParser);
-
-  MarkdownStructureParser::destroyTree(m_markdownTree);
+  resetMarkdownState(m_markdownParser, m_markdownTree);
 }
 
 const DocumentStructure &TextDocument::structure() const { return m_structure; }
@@ -48,69 +79,12 @@ void TextDocument::rebuildStructure() const {
     return;
   }
 
-  const QString text = toPlainText();
+  const QString currentText = toPlainText();
+  const QString previousText = m_structure.text();
 
-  const QString modeName =
-      docType == DocumentMode::Markdown    ? QStringLiteral("Markdown")
-      : docType == DocumentMode::PlainText ? QStringLiteral("PlainText")
-                                           : QStringLiteral("HTML");
+  const DocumentStructure rebuilt = buildStructure(
+      docType, currentText, m_markdownParser, m_markdownTree, previousText);
 
-  qDebug() << "[STRUCTURE] Rebuilding"
-           << "file:" << path << "mode:" << modeName
-           << "revision:" << currentRevision << "length:" << text.size();
-
-  switch (docType) {
-  case DocumentMode::Markdown: {
-    qDebug() << "[STRUCTURE] Parser:"
-             << "MarkdownStructureParser";
-
-    MarkdownStructureParser parser;
-
-    m_structure = parser.parse(text, m_markdownParser, m_markdownTree,
-                               m_structure.text());
-
-    qDebug() << "[STRUCTURE] Markdown root children:"
-             << m_structure.root().children.size();
-
-    qDebug().noquote() << "[STRUCTURE] Markdown index:\n"
-                       << (m_structure.indexForModel().isEmpty()
-                               ? QStringLiteral("<empty>")
-                               : m_structure.indexForModel());
-
-    break;
-  }
-
-  case DocumentMode::PlainText: {
-    qDebug() << "[STRUCTURE] Parser:"
-             << "PlainTextStructureParser";
-
-    PlainTextStructureParser parser;
-
-    m_structure = parser.parse(text);
-
-    break;
-  }
-
-  case DocumentMode::Html: {
-    qDebug() << "[STRUCTURE] Parser:"
-             << "PlainTextStructureParser"
-             << "(HTML fallback)";
-
-    PlainTextStructureParser parser;
-
-    m_structure = parser.parse(text);
-
-    break;
-  }
-  }
-
-  qDebug() << "[STRUCTURE] Result:"
-           << "root id:" << m_structure.root().id
-           << "root type:" << m_structure.root().type
-           << "children:" << m_structure.root().children.size();
-
+  m_structure = rebuilt;
   m_structureRevision = currentRevision;
-
-  qDebug() << "[STRUCTURE] Complete"
-           << "revision:" << m_structureRevision;
 }

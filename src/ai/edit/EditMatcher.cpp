@@ -2,17 +2,20 @@
 
 #include <edlib.h>
 
-#include <QByteArray>
 #include <QSet>
 
 namespace {
 
-QVector<EditMatch> deduplicateCandidates(const QVector<EditMatch> &input) {
+constexpr double MaxEditDistanceFraction = 0.20;
+constexpr int MaxFuzzyCandidates = 16;
+
+QVector<EditMatch> deduplicateCandidates(const QVector<EditMatch> &candidates) {
   QVector<EditMatch> result;
+  result.reserve(candidates.size());
 
   QSet<QString> seen;
 
-  for (const EditMatch &candidate : input) {
+  for (const EditMatch &candidate : candidates) {
     const QString key =
         QStringLiteral("%1:%2").arg(candidate.start).arg(candidate.end);
 
@@ -21,59 +24,75 @@ QVector<EditMatch> deduplicateCandidates(const QVector<EditMatch> &input) {
     }
 
     seen.insert(key);
-
     result.append(candidate);
   }
 
   return result;
 }
 
+bool isValidScope(const DocumentNode *scope, const QString &documentText) {
+  if (!scope || !scope->isValid()) {
+    return false;
+  }
+
+  return scope->start >= 0 && scope->end >= scope->start &&
+         scope->end <= documentText.size();
+}
+
+bool hasUsableResult(const EdlibAlignResult &result) {
+  return result.status == EDLIB_STATUS_OK && result.editDistance >= 0 &&
+         result.numLocations > 0 && result.startLocations != nullptr &&
+         result.endLocations != nullptr;
+}
+
+bool isAsciiSafe(const QString &text) {
+  for (const QChar character : text) {
+    if (character.unicode() > 127) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 } // namespace
 
 EditMatcher::Result EditMatcher::find(const TextDocument &document,
                                       const EditCommand &command) const {
-  Result result;
-
-  /*
-   * This matcher is resolving the structural command.
-   * newString is not available yet during the command phase.
-   */
   if (!command.isCommandValid()) {
-    return result;
+    return {};
   }
 
   document.rebuildStructure();
 
   const DocumentStructure &structure = document.structure();
 
-  const DocumentNode *scope = structure.find(command.scopeId);
-
-  if (!scope || !scope->isValid()) {
-    return result;
-  }
-
   const QString documentText = document.toPlainText();
 
-  if (scope->start < 0 || scope->end > static_cast<int>(documentText.size()) ||
-      scope->end <= scope->start) {
-    return result;
+  const DocumentNode *scope = structure.find(command.scopeId);
+
+  if (!isValidScope(scope, documentText)) {
+    return {};
+  }
+
+  if (scope->start == scope->end ||
+      command.operation == EditCommand::Operation::Insert ||
+      command.findString.isEmpty()) {
+    return {};
   }
 
   const QString scopeText =
       documentText.mid(scope->start, scope->end - scope->start);
 
   if (scopeText.isEmpty()) {
-    return result;
+    return {};
   }
 
-  if (command.operation == EditCommand::Operation::Insert) {
-    return result;
-  }
+  const Result exactResult =
+      findExact(scopeText, command.findString, scope->start);
 
-  result = findExact(scopeText, command.findString, scope->start);
-
-  if (!result.isEmpty()) {
-    return result;
+  if (!exactResult.candidates.isEmpty()) {
+    return exactResult;
   }
 
   return findFuzzy(scopeText, command.findString, scope->start);
@@ -84,26 +103,23 @@ EditMatcher::Result EditMatcher::findExact(const QString &text,
                                            int offset) const {
   Result result;
 
-  if (needle.isEmpty()) {
+  if (text.isEmpty() || needle.isEmpty()) {
     return result;
   }
 
-  int position = 0;
+  int position = text.indexOf(needle);
 
-  while ((position = text.indexOf(needle, position)) >= 0) {
+  while (position >= 0) {
     EditMatch match;
 
     match.start = offset + position;
-
     match.end = match.start + needle.size();
-
     match.editDistance = 0;
-
     match.matchedText = needle;
 
-    result.candidates.append(std::move(match));
+    result.candidates.append(match);
 
-    position += needle.size();
+    position = text.indexOf(needle, position + needle.size());
   }
 
   return result;
@@ -113,14 +129,10 @@ EditMatcher::Result EditMatcher::findFuzzy(const QString &text,
                                            const QString &needle,
                                            int offset) const {
   Result result;
-
   result.fuzzy = true;
 
-  if (text.isEmpty() || needle.isEmpty()) {
-    return result;
-  }
-
-  if (!isAsciiSafe(text) || !isAsciiSafe(needle)) {
+  if (text.isEmpty() || needle.isEmpty() || !isAsciiSafe(text) ||
+      !isAsciiSafe(needle)) {
     return {};
   }
 
@@ -128,34 +140,29 @@ EditMatcher::Result EditMatcher::findFuzzy(const QString &text,
 
   const QByteArray needleBytes = needle.toLatin1();
 
-  constexpr double kMaxEditDistanceFraction = 0.20;
-
   const int maxEditDistance =
-      qMax(1, static_cast<int>(needle.size() * kMaxEditDistanceFraction));
+      qMax(1, static_cast<int>(needle.size() * MaxEditDistanceFraction));
 
   const EdlibAlignConfig config = edlibNewAlignConfig(
       maxEditDistance, EDLIB_MODE_HW, EDLIB_TASK_LOC, nullptr, 0);
 
-  const EdlibAlignResult edlibResult =
+  const EdlibAlignResult alignment =
       edlibAlign(needleBytes.constData(), needleBytes.size(),
                  textBytes.constData(), textBytes.size(), config);
 
-  if (edlibResult.status != EDLIB_STATUS_OK || edlibResult.editDistance < 0 ||
-      edlibResult.numLocations <= 0 || edlibResult.startLocations == nullptr ||
-      edlibResult.endLocations == nullptr) {
-    edlibFreeAlignResult(edlibResult);
-
+  if (!hasUsableResult(alignment)) {
+    edlibFreeAlignResult(alignment);
     return {};
   }
 
-  const int locationCount = qMin(edlibResult.numLocations, 16);
+  const int locationCount = qMin(alignment.numLocations, MaxFuzzyCandidates);
 
   result.candidates.reserve(locationCount);
 
-  for (int i = 0; i < locationCount; ++i) {
-    const int localStart = edlibResult.startLocations[i];
+  for (int index = 0; index < locationCount; ++index) {
+    const int localStart = alignment.startLocations[index];
 
-    const int localEnd = edlibResult.endLocations[i] + 1;
+    const int localEnd = alignment.endLocations[index] + 1;
 
     if (localStart < 0 || localEnd <= localStart || localEnd > text.size()) {
       continue;
@@ -164,29 +171,17 @@ EditMatcher::Result EditMatcher::findFuzzy(const QString &text,
     EditMatch match;
 
     match.start = offset + localStart;
-
     match.end = offset + localEnd;
-
-    match.editDistance = edlibResult.editDistance;
+    match.editDistance = alignment.editDistance;
 
     match.matchedText = text.mid(localStart, localEnd - localStart);
 
-    result.candidates.append(std::move(match));
+    result.candidates.append(match);
   }
 
-  edlibFreeAlignResult(edlibResult);
+  edlibFreeAlignResult(alignment);
 
   result.candidates = deduplicateCandidates(result.candidates);
 
   return result;
-}
-
-bool EditMatcher::isAsciiSafe(const QString &text) {
-  for (const QChar &character : text) {
-    if (character.unicode() > 127) {
-      return false;
-    }
-  }
-
-  return true;
 }

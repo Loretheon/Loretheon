@@ -1,6 +1,5 @@
 #include "TextEdit.h"
-#include <QMouseEvent>
-#include <QToolTip>
+
 #include "../../include/text/Toolbar.h"
 #include "DocumentMode.h"
 #include "HTMLFormatDelegate.h"
@@ -9,34 +8,62 @@
 #include <QCheckBox>
 #include <QFile>
 #include <QFileInfo>
-#include <QFont>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QMouseEvent>
+#include <QPlainTextEdit>
 #include <QPushButton>
 #include <QResizeEvent>
 #include <QScrollArea>
 #include <QSettings>
 #include <QTextCharFormat>
 #include <QTextCursor>
+#include <QTextStream>
+#include <QToolTip>
 #include <QVBoxLayout>
-#include <QWidget>
+
+#include <algorithm>
 
 namespace {
 
-constexpr auto kLastOpenedFileKey = "document/lastOpenedFile";
+constexpr auto LastOpenedFileKey = "document/lastOpenedFile";
+constexpr auto AutoAcceptEditsKey = "editing/autoAcceptEdits";
 
-constexpr auto kAutoAcceptEditsKey = "editing/autoAcceptEdits";
+constexpr int ReviewBarHorizontalMargin = 8;
+constexpr int ReviewBarVerticalMargin = 6;
+constexpr int ReviewRowSpacing = 6;
+constexpr int ReviewBarMaxHeightDivisor = 3;
+
+QString documentModeSuffix(const QString &suffix) {
+  const QString normalized = suffix.toLower();
+
+  if (normalized == QStringLiteral("md") ||
+      normalized == QStringLiteral("markdown") ||
+      normalized == QStringLiteral("mdown") ||
+      normalized == QStringLiteral("mkd")) {
+    return QStringLiteral("markdown");
+  }
+
+  if (normalized == QStringLiteral("html") ||
+      normalized == QStringLiteral("htm") ||
+      normalized == QStringLiteral("xhtml")) {
+    return QStringLiteral("html");
+  }
+
+  return {};
+}
 
 } // namespace
 
 TextEdit::TextEdit(QWidget *parent) : QPlainTextEdit(parent) {
   QSettings settings;
+
   setMouseTracking(true);
-  m_autoAcceptEdits = settings.value(kAutoAcceptEditsKey, false).toBool();
+
+  m_autoAcceptEdits = settings.value(AutoAcceptEditsKey, false).toBool();
 
   setupToolbar();
   setupReviewBar();
-
   setDocumentMode(DocumentMode::Markdown);
 
   connect(this, &QPlainTextEdit::cursorPositionChanged, this,
@@ -46,10 +73,12 @@ TextEdit::TextEdit(QWidget *parent) : QPlainTextEdit(parent) {
 }
 
 const PendingEdit *TextEdit::pendingEditAtPosition(int position) const {
-  for (const PendingEdit &edit : m_pendingEdits) {
-    if (edit.match.isValid() &&
-        position >= edit.match.start &&
-        position <= edit.match.end) {
+  for (const PendingEdit &edit : std::as_const(m_pendingEdits)) {
+    if (!edit.match.isValid()) {
+      continue;
+    }
+
+    if (position >= edit.match.start && position <= edit.match.end) {
       return &edit;
     }
   }
@@ -58,18 +87,15 @@ const PendingEdit *TextEdit::pendingEditAtPosition(int position) const {
 }
 
 QString TextEdit::pendingEditPreview(const PendingEdit &edit) const {
-  QString before = edit.match.matchedText;
-
   switch (edit.command.operation) {
   case EditCommand::Operation::Insert:
-    return before + "\n\n" + edit.generatedText;
+    return edit.match.matchedText + QStringLiteral("\n\n") + edit.generatedText;
 
   case EditCommand::Operation::Replace:
     return edit.generatedText;
 
   case EditCommand::Operation::Delete:
-    return QString();
-
+    return {};
   }
 
   return {};
@@ -78,10 +104,14 @@ QString TextEdit::pendingEditPreview(const PendingEdit &edit) const {
 void TextEdit::mouseMoveEvent(QMouseEvent *event) {
   QPlainTextEdit::mouseMoveEvent(event);
 
-  QTextCursor cursor = cursorForPosition(event->pos());
+  if (!event) {
+    QToolTip::hideText();
+    return;
+  }
 
-  const PendingEdit *edit =
-      pendingEditAtPosition(cursor.position());
+  const QTextCursor cursor = cursorForPosition(event->position().toPoint());
+
+  const PendingEdit *edit = pendingEditAtPosition(cursor.position());
 
   if (!edit) {
     QToolTip::hideText();
@@ -90,12 +120,12 @@ void TextEdit::mouseMoveEvent(QMouseEvent *event) {
 
   const QString preview = pendingEditPreview(*edit);
 
-  if (!preview.isEmpty()) {
-    QToolTip::showText(
-        event->globalPosition().toPoint(),
-        preview,
-        this);
+  if (preview.isEmpty()) {
+    QToolTip::hideText();
+    return;
   }
+
+  QToolTip::showText(event->globalPosition().toPoint(), preview, this);
 }
 
 void TextEdit::setupToolbar() {
@@ -121,33 +151,45 @@ void TextEdit::setupReviewBar() {
   m_reviewSummary->setTextInteractionFlags(Qt::NoTextInteraction);
 
   m_acceptAllButton = new QPushButton(tr("Accept All"), m_reviewBar);
+
   m_rejectAllButton = new QPushButton(tr("Reject All"), m_reviewBar);
+
   m_autoAcceptCheckBox = new QCheckBox(tr("Auto-accept"), m_reviewBar);
+
   m_autoAcceptCheckBox->setChecked(m_autoAcceptEdits);
 
   m_reviewScrollArea = new QScrollArea(m_reviewBar);
+
   m_reviewScrollArea->setWidgetResizable(true);
   m_reviewScrollArea->setFrameShape(QFrame::NoFrame);
 
   m_reviewContent = new QWidget;
+
   m_reviewLayout = new QVBoxLayout(m_reviewContent);
+
   m_reviewLayout->setContentsMargins(0, 0, 0, 0);
   m_reviewLayout->setSpacing(4);
 
   m_reviewScrollArea->setWidget(m_reviewContent);
 
-  auto *buttonLayout = new QHBoxLayout;
-  buttonLayout->setContentsMargins(0, 0, 0, 0);
-  buttonLayout->addWidget(m_reviewSummary);
-  buttonLayout->addStretch();
-  buttonLayout->addWidget(m_acceptAllButton);
-  buttonLayout->addWidget(m_rejectAllButton);
-  buttonLayout->addWidget(m_autoAcceptCheckBox);
+  auto *controls = new QHBoxLayout;
+
+  controls->setContentsMargins(0, 0, 0, 0);
+
+  controls->addWidget(m_reviewSummary);
+  controls->addStretch();
+  controls->addWidget(m_acceptAllButton);
+  controls->addWidget(m_rejectAllButton);
+  controls->addWidget(m_autoAcceptCheckBox);
 
   auto *layout = new QVBoxLayout(m_reviewBar);
-  layout->setContentsMargins(8, 6, 8, 6);
-  layout->setSpacing(6);
-  layout->addLayout(buttonLayout);
+
+  layout->setContentsMargins(ReviewBarHorizontalMargin, ReviewBarVerticalMargin,
+                             ReviewBarHorizontalMargin,
+                             ReviewBarVerticalMargin);
+
+  layout->setSpacing(ReviewRowSpacing);
+  layout->addLayout(controls);
   layout->addWidget(m_reviewScrollArea);
 
   connect(m_acceptAllButton, &QPushButton::clicked, this,
@@ -179,7 +221,7 @@ void TextEdit::setDocumentMode(DocumentMode mode) {
     break;
 
   case DocumentMode::PlainText:
-    m_delegate = nullptr;
+    m_delegate.reset();
     break;
   }
 
@@ -193,33 +235,30 @@ bool TextEdit::openFile(const QString &filePath) {
     return false;
   }
 
-  QTextStream in(&file);
+  QTextStream stream(&file);
+  stream.setEncoding(QStringConverter::Utf8);
 
-  setPlainText(in.readAll());
+  const QString text = stream.readAll();
 
-  file.close();
+  if (stream.status() != QTextStream::Ok) {
+    return false;
+  }
 
-  QFileInfo info(filePath);
+  setPlainText(text);
 
-  const QString suffix = info.suffix().toLower();
+  const QString mode = documentModeSuffix(QFileInfo(filePath).suffix());
 
-  if (suffix == "md" || suffix == "markdown" || suffix == "mdown" ||
-      suffix == "mkd") {
-
+  if (mode == QStringLiteral("markdown")) {
     setDocumentMode(DocumentMode::Markdown);
-
-  } else if (suffix == "html" || suffix == "htm" || suffix == "xhtml") {
-
+  } else if (mode == QStringLiteral("html")) {
     setDocumentMode(DocumentMode::Html);
-
   } else {
-
     setDocumentMode(DocumentMode::PlainText);
   }
 
   QSettings settings;
 
-  settings.setValue(kLastOpenedFileKey, QFileInfo(filePath).absoluteFilePath());
+  settings.setValue(LastOpenedFileKey, QFileInfo(filePath).absoluteFilePath());
 
   clearPendingEdits();
 
@@ -228,8 +267,7 @@ bool TextEdit::openFile(const QString &filePath) {
 
 QString TextEdit::lastOpenedFile() {
   QSettings settings;
-
-  return settings.value(kLastOpenedFileKey).toString();
+  return settings.value(LastOpenedFileKey).toString();
 }
 
 void TextEdit::setAutoAcceptEdits(bool enabled) {
@@ -240,11 +278,9 @@ void TextEdit::setAutoAcceptEdits(bool enabled) {
   m_autoAcceptEdits = enabled;
 
   QSettings settings;
-
-  settings.setValue(kAutoAcceptEditsKey, enabled);
+  settings.setValue(AutoAcceptEditsKey, enabled);
 
   emit autoAcceptChanged(enabled);
-
   updateReviewBar();
 }
 
@@ -252,6 +288,10 @@ void TextEdit::setPendingEditAccepted(int editId, bool accepted) {
   auto it = m_pendingEdits.find(editId);
 
   if (it == m_pendingEdits.end()) {
+    return;
+  }
+
+  if (it->accepted == accepted) {
     return;
   }
 
@@ -305,13 +345,7 @@ void TextEdit::rebuildReviewRows() {
     return;
   }
 
-  while (m_reviewLayout->count() > 0) {
-    QLayoutItem *item = m_reviewLayout->takeAt(0);
-
-    if (!item) {
-      continue;
-    }
-
+  while (QLayoutItem *item = m_reviewLayout->takeAt(0)) {
     if (QWidget *widget = item->widget()) {
       widget->deleteLater();
     }
@@ -324,8 +358,7 @@ void TextEdit::rebuildReviewRows() {
   std::sort(ids.begin(), ids.end());
 
   for (const int id : ids) {
-    const PendingEdit edit = m_pendingEdits.value(id);
-    m_reviewLayout->addWidget(createReviewRow(edit));
+    m_reviewLayout->addWidget(createReviewRow(m_pendingEdits.value(id)));
   }
 }
 
@@ -340,45 +373,46 @@ QWidget *TextEdit::createReviewRow(const PendingEdit &edit) {
   auto *preview = new QLabel(row);
   preview->setWordWrap(true);
 
-  if (edit.command.operation == EditCommand::Operation::Delete) {
+  switch (edit.command.operation) {
+  case EditCommand::Operation::Delete:
     preview->setText(edit.command.findString.isEmpty()
                          ? tr("Delete content")
                          : edit.command.findString);
-  } else if (!edit.generatedText.isEmpty()) {
-    preview->setText(edit.generatedText);
-  } else {
-    preview->setText(tr("Generating…"));
+    break;
+
+  case EditCommand::Operation::Insert:
+  case EditCommand::Operation::Replace:
+    preview->setText(edit.generatedText.isEmpty() ? tr("Generating…")
+                                                  : edit.generatedText);
+    break;
   }
 
   auto *acceptButton = new QPushButton(tr("Accept"), row);
+
   auto *rejectButton = new QPushButton(tr("Reject"), row);
 
-  connect(
-      acceptButton, &QPushButton::clicked, this,
-      [this, editId = edit.id]() { emit acceptPendingEditRequested(editId); });
+  connect(acceptButton, &QPushButton::clicked, this, [this, editId = edit.id] {
+    emit acceptPendingEditRequested(editId);
+  });
 
-  connect(
-      rejectButton, &QPushButton::clicked, this,
-      [this, editId = edit.id]() { emit rejectPendingEditRequested(editId); });
+  connect(rejectButton, &QPushButton::clicked, this, [this, editId = edit.id] {
+    emit rejectPendingEditRequested(editId);
+  });
+
+  acceptButton->setEnabled(!edit.accepted);
+  rejectButton->setEnabled(edit.accepted);
 
   auto *textLayout = new QVBoxLayout;
+
   textLayout->setContentsMargins(0, 0, 0, 0);
   textLayout->addWidget(title);
   textLayout->addWidget(preview);
 
   auto *layout = new QHBoxLayout(row);
+
   layout->setContentsMargins(6, 5, 6, 5);
-  layout->setSpacing(6);
+  layout->setSpacing(ReviewRowSpacing);
   layout->addLayout(textLayout, 1);
-
-  if (edit.accepted) {
-    acceptButton->setEnabled(false);
-    rejectButton->setEnabled(true);
-  } else {
-    acceptButton->setEnabled(true);
-    rejectButton->setEnabled(false);
-  }
-
   layout->addWidget(acceptButton);
   layout->addWidget(rejectButton);
 
@@ -388,7 +422,6 @@ QWidget *TextEdit::createReviewRow(const PendingEdit &edit) {
 void TextEdit::setReviewRowStyle(QWidget *row, const PendingEdit &edit) {
   Q_UNUSED(row);
   Q_UNUSED(edit);
-  // Custom styling removed to allow native widget drawing
 }
 
 void TextEdit::updateReviewBar() {
@@ -399,24 +432,17 @@ void TextEdit::updateReviewBar() {
   if (m_pendingEdits.isEmpty()) {
     m_reviewBar->hide();
 
-    const QList<QAbstractTextDocumentLayout::PaintContext> unused;
-    Q_UNUSED(unused);
-
-    // Trigger resize to restore margins
     QResizeEvent event(size(), size());
+
     resizeEvent(&event);
     return;
   }
 
   rebuildReviewRows();
 
-  int acceptedCount = 0;
-
-  for (const PendingEdit &edit : std::as_const(m_pendingEdits)) {
-    if (edit.accepted) {
-      ++acceptedCount;
-    }
-  }
+  const int acceptedCount =
+      std::count_if(m_pendingEdits.cbegin(), m_pendingEdits.cend(),
+                    [](const PendingEdit &edit) { return edit.accepted; });
 
   m_reviewSummary->setText(tr("%1 edits pending · %2 selected")
                                .arg(m_pendingEdits.size())
@@ -426,55 +452,67 @@ void TextEdit::updateReviewBar() {
 
   m_reviewBar->show();
 
-  // Trigger geometry/margin recalculation on visible bar
   QResizeEvent event(size(), size());
+
   resizeEvent(&event);
 }
 
 void TextEdit::updatePendingHighlight() {
   QList<QTextEdit::ExtraSelection> selections;
+  const int documentLength = document()->characterCount();
 
   for (const PendingEdit &edit : std::as_const(m_pendingEdits)) {
-    const int start =
-        qBound(0, edit.match.start, document()->characterCount());
-
-    QTextCursor cursor(document());
-    cursor.setPosition(start);
-
     QTextCharFormat format;
 
-    if (edit.accepted) {
-      format.setBackground(QColor(100, 200, 120, 55));
-    } else {
-      format.setBackground(QColor(210, 100, 100, 45));
-    }
+    format.setBackground(edit.accepted ? QColor(100, 200, 120, 55)
+                                       : QColor(210, 100, 100, 45));
+
+    const int start = qBound(0, edit.match.start, documentLength);
 
     if (edit.command.operation == EditCommand::Operation::Insert) {
-      // Highlight the insertion line without selecting any existing text.
-      format.setProperty(QTextFormat::FullWidthSelection, true);
-
       QTextEdit::ExtraSelection selection;
-      selection.cursor = cursor;
+
+      if (edit.match.hasHighlightRange()) {
+        const int highlightStart =
+            qBound(0, edit.match.highlightStart, documentLength);
+
+        const int highlightEnd =
+            qBound(highlightStart, edit.match.highlightEnd, documentLength);
+
+        QTextCursor cursor(document());
+        cursor.setPosition(highlightStart);
+
+        cursor.setPosition(highlightEnd, QTextCursor::KeepAnchor);
+
+        selection.cursor = cursor;
+      } else {
+        QTextCursor cursor(document());
+        cursor.setPosition(start);
+
+        format.setProperty(QTextFormat::FullWidthSelection, true);
+
+        selection.cursor = cursor;
+      }
+
       selection.format = format;
-
       selections.append(selection);
-
       continue;
     }
 
     const int length = edit.command.findString.length();
 
-    if (length <= 0) {
+    if (length <= 0 || start >= documentLength) {
       continue;
     }
 
-    const int available = document()->characterCount() - start;
+    QTextCursor cursor(document());
 
-    cursor.movePosition(QTextCursor::Right,
-                        QTextCursor::KeepAnchor,
-                        qMin(length, available));
+    cursor.setPosition(start);
+    cursor.movePosition(QTextCursor::Right, QTextCursor::KeepAnchor,
+                        qMin(length, documentLength - start));
 
     QTextEdit::ExtraSelection selection;
+
     selection.cursor = cursor;
     selection.format = format;
 
@@ -504,443 +542,442 @@ QString TextEdit::pendingEditStatus(const PendingEdit &edit) const {
 }
 
 void TextEdit::toggleBold() {
-  if (m_delegate) {
-    QTextCursor c = textCursor();
-
-    m_delegate->toggleBold(c);
-
-    setTextCursor(c);
+  if (!m_delegate) {
+    return;
   }
+
+  QTextCursor cursor = textCursor();
+  m_delegate->toggleBold(cursor);
+  setTextCursor(cursor);
 }
 
 void TextEdit::toggleItalic() {
-  if (m_delegate) {
-    QTextCursor c = textCursor();
-
-    m_delegate->toggleItalic(c);
-
-    setTextCursor(c);
+  if (!m_delegate) {
+    return;
   }
+
+  QTextCursor cursor = textCursor();
+  m_delegate->toggleItalic(cursor);
+  setTextCursor(cursor);
 }
 
 void TextEdit::toggleStrikethrough() {
-  if (m_delegate) {
-    QTextCursor c = textCursor();
-
-    m_delegate->toggleStrikethrough(c);
-
-    setTextCursor(c);
+  if (!m_delegate) {
+    return;
   }
+
+  QTextCursor cursor = textCursor();
+  m_delegate->toggleStrikethrough(cursor);
+  setTextCursor(cursor);
 }
 
 void TextEdit::toggleCodeSpan() {
-  if (m_delegate) {
-    QTextCursor c = textCursor();
-
-    m_delegate->toggleCodeSpan(c);
-
-    setTextCursor(c);
+  if (!m_delegate) {
+    return;
   }
+
+  QTextCursor cursor = textCursor();
+  m_delegate->toggleCodeSpan(cursor);
+  setTextCursor(cursor);
 }
 
 void TextEdit::toggleHighlight() {
-  if (m_delegate) {
-    QTextCursor c = textCursor();
-
-    m_delegate->toggleHighlight(c);
-
-    setTextCursor(c);
+  if (!m_delegate) {
+    return;
   }
+
+  QTextCursor cursor = textCursor();
+  m_delegate->toggleHighlight(cursor);
+  setTextCursor(cursor);
 }
 
 void TextEdit::insertLink() {
-  if (m_delegate) {
-    QTextCursor c = textCursor();
-
-    m_delegate->insertLink(c);
-
-    setTextCursor(c);
+  if (!m_delegate) {
+    return;
   }
+
+  QTextCursor cursor = textCursor();
+  m_delegate->insertLink(cursor);
+  setTextCursor(cursor);
 }
 
 void TextEdit::insertWikiLink() {
-  if (m_delegate) {
-    QTextCursor c = textCursor();
-
-    m_delegate->insertWikiLink(c);
-
-    setTextCursor(c);
+  if (!m_delegate) {
+    return;
   }
+
+  QTextCursor cursor = textCursor();
+  m_delegate->insertWikiLink(cursor);
+  setTextCursor(cursor);
 }
 
 void TextEdit::insertAutolink() {
-  if (m_delegate) {
-    QTextCursor c = textCursor();
-
-    m_delegate->insertAutolink(c);
-
-    setTextCursor(c);
+  if (!m_delegate) {
+    return;
   }
+
+  QTextCursor cursor = textCursor();
+  m_delegate->insertAutolink(cursor);
+  setTextCursor(cursor);
 }
 
 void TextEdit::insertImage() {
-  if (m_delegate) {
-    QTextCursor c = textCursor();
-
-    m_delegate->insertImage(c);
-
-    setTextCursor(c);
+  if (!m_delegate) {
+    return;
   }
+
+  QTextCursor cursor = textCursor();
+  m_delegate->insertImage(cursor);
+  setTextCursor(cursor);
 }
 
 void TextEdit::insertMedia() {
-  if (m_delegate) {
-    QTextCursor c = textCursor();
-
-    m_delegate->insertMedia(c);
-
-    setTextCursor(c);
+  if (!m_delegate) {
+    return;
   }
+
+  QTextCursor cursor = textCursor();
+  m_delegate->insertMedia(cursor);
+  setTextCursor(cursor);
 }
 
 void TextEdit::setHeadingLevel(int level) {
-  if (m_delegate) {
-    QTextCursor c = textCursor();
-
-    m_delegate->setHeadingLevel(c, level);
-
-    setTextCursor(c);
+  if (!m_delegate) {
+    return;
   }
+
+  QTextCursor cursor = textCursor();
+  m_delegate->setHeadingLevel(cursor, level);
+  setTextCursor(cursor);
 }
 
 void TextEdit::toggleBlockQuote() {
-  if (m_delegate) {
-    QTextCursor c = textCursor();
-
-    m_delegate->toggleBlockQuote(c);
-
-    setTextCursor(c);
+  if (!m_delegate) {
+    return;
   }
+
+  QTextCursor cursor = textCursor();
+  m_delegate->toggleBlockQuote(cursor);
+  setTextCursor(cursor);
 }
 
 void TextEdit::insertCallout(const QString &type) {
-  if (m_delegate) {
-    QTextCursor c = textCursor();
-
-    m_delegate->insertCallout(c, type);
-
-    setTextCursor(c);
+  if (!m_delegate) {
+    return;
   }
+
+  QTextCursor cursor = textCursor();
+  m_delegate->insertCallout(cursor, type);
+  setTextCursor(cursor);
 }
 
 void TextEdit::toggleBulletList() {
-  if (m_delegate) {
-    QTextCursor c = textCursor();
-
-    m_delegate->toggleBulletList(c);
-
-    setTextCursor(c);
+  if (!m_delegate) {
+    return;
   }
+
+  QTextCursor cursor = textCursor();
+  m_delegate->toggleBulletList(cursor);
+  setTextCursor(cursor);
 }
 
 void TextEdit::toggleOrderedList() {
-  if (m_delegate) {
-    QTextCursor c = textCursor();
-
-    m_delegate->toggleOrderedList(c);
-
-    setTextCursor(c);
+  if (!m_delegate) {
+    return;
   }
+
+  QTextCursor cursor = textCursor();
+  m_delegate->toggleOrderedList(cursor);
+  setTextCursor(cursor);
 }
 
 void TextEdit::toggleTaskItem() {
-  if (m_delegate) {
-    QTextCursor c = textCursor();
-
-    m_delegate->toggleTaskItem(c);
-
-    setTextCursor(c);
+  if (!m_delegate) {
+    return;
   }
+
+  QTextCursor cursor = textCursor();
+  m_delegate->toggleTaskItem(cursor);
+  setTextCursor(cursor);
 }
 
 void TextEdit::insertDefinitionList() {
-  if (m_delegate) {
-    QTextCursor c = textCursor();
-
-    m_delegate->insertDefinitionList(c);
-
-    setTextCursor(c);
+  if (!m_delegate) {
+    return;
   }
+
+  QTextCursor cursor = textCursor();
+  m_delegate->insertDefinitionList(cursor);
+  setTextCursor(cursor);
 }
 
 void TextEdit::toggleCodeBlock() {
-  if (m_delegate) {
-    QTextCursor c = textCursor();
-
-    m_delegate->toggleCodeBlock(c);
-
-    setTextCursor(c);
+  if (!m_delegate) {
+    return;
   }
+
+  QTextCursor cursor = textCursor();
+  m_delegate->toggleCodeBlock(cursor);
+  setTextCursor(cursor);
 }
 
 void TextEdit::insertDiagramBlock(const QString &engine) {
-  if (m_delegate) {
-    QTextCursor c = textCursor();
-
-    m_delegate->insertDiagramBlock(c, engine);
-
-    setTextCursor(c);
+  if (!m_delegate) {
+    return;
   }
+
+  QTextCursor cursor = textCursor();
+  m_delegate->insertDiagramBlock(cursor, engine);
+  setTextCursor(cursor);
 }
 
 void TextEdit::toggleMathBlock() {
-  if (m_delegate) {
-    QTextCursor c = textCursor();
-
-    m_delegate->toggleMathBlock(c);
-
-    setTextCursor(c);
+  if (!m_delegate) {
+    return;
   }
+
+  QTextCursor cursor = textCursor();
+  m_delegate->toggleMathBlock(cursor);
+  setTextCursor(cursor);
 }
 
 void TextEdit::insertCollapsibleBlock() {
-  if (m_delegate) {
-    QTextCursor c = textCursor();
-
-    m_delegate->insertCollapsibleBlock(c);
-
-    setTextCursor(c);
+  if (!m_delegate) {
+    return;
   }
+
+  QTextCursor cursor = textCursor();
+  m_delegate->insertCollapsibleBlock(cursor);
+  setTextCursor(cursor);
 }
 
 void TextEdit::insertRawHtml() {
-  if (m_delegate) {
-    QTextCursor c = textCursor();
-
-    m_delegate->insertRawHtml(c);
-
-    setTextCursor(c);
+  if (!m_delegate) {
+    return;
   }
+
+  QTextCursor cursor = textCursor();
+  m_delegate->insertRawHtml(cursor);
+  setTextCursor(cursor);
 }
 
 void TextEdit::insertHorizontalRule() {
-  if (m_delegate) {
-    QTextCursor c = textCursor();
-
-    m_delegate->insertHorizontalRule(c);
-
-    setTextCursor(c);
+  if (!m_delegate) {
+    return;
   }
+
+  QTextCursor cursor = textCursor();
+  m_delegate->insertHorizontalRule(cursor);
+  setTextCursor(cursor);
 }
 
 void TextEdit::insertHardLineBreak() {
-  if (m_delegate) {
-    QTextCursor c = textCursor();
-
-    m_delegate->insertHardLineBreak(c);
-
-    setTextCursor(c);
+  if (!m_delegate) {
+    return;
   }
+
+  QTextCursor cursor = textCursor();
+  m_delegate->insertHardLineBreak(cursor);
+  setTextCursor(cursor);
 }
 
 void TextEdit::increaseIndent() {
-  if (m_delegate) {
-    QTextCursor c = textCursor();
-
-    m_delegate->increaseIndent(c);
-
-    setTextCursor(c);
+  if (!m_delegate) {
+    return;
   }
+
+  QTextCursor cursor = textCursor();
+  m_delegate->increaseIndent(cursor);
+  setTextCursor(cursor);
 }
 
 void TextEdit::decreaseIndent() {
-  if (m_delegate) {
-    QTextCursor c = textCursor();
-
-    m_delegate->decreaseIndent(c);
-
-    setTextCursor(c);
+  if (!m_delegate) {
+    return;
   }
+
+  QTextCursor cursor = textCursor();
+  m_delegate->decreaseIndent(cursor);
+  setTextCursor(cursor);
 }
 
 void TextEdit::insertTable() {
-  if (m_delegate) {
-    QTextCursor c = textCursor();
-
-    m_delegate->insertTable(c);
-
-    setTextCursor(c);
+  if (!m_delegate) {
+    return;
   }
+
+  QTextCursor cursor = textCursor();
+  m_delegate->insertTable(cursor);
+  setTextCursor(cursor);
 }
 
 void TextEdit::deleteTable() {
-  if (m_delegate) {
-    QTextCursor c = textCursor();
-
-    m_delegate->deleteTable(c);
-
-    setTextCursor(c);
+  if (!m_delegate) {
+    return;
   }
+
+  QTextCursor cursor = textCursor();
+  m_delegate->deleteTable(cursor);
+  setTextCursor(cursor);
 }
 
 void TextEdit::addTableRow() {
-  if (m_delegate) {
-    QTextCursor c = textCursor();
-
-    m_delegate->addTableRow(c);
-
-    setTextCursor(c);
+  if (!m_delegate) {
+    return;
   }
+
+  QTextCursor cursor = textCursor();
+  m_delegate->addTableRow(cursor);
+  setTextCursor(cursor);
 }
 
 void TextEdit::removeTableRow() {
-  if (m_delegate) {
-    QTextCursor c = textCursor();
-
-    m_delegate->removeTableRow(c);
-
-    setTextCursor(c);
+  if (!m_delegate) {
+    return;
   }
+
+  QTextCursor cursor = textCursor();
+  m_delegate->removeTableRow(cursor);
+  setTextCursor(cursor);
 }
 
 void TextEdit::addTableColumn() {
-  if (m_delegate) {
-    QTextCursor c = textCursor();
-
-    m_delegate->addTableColumn(c);
-
-    setTextCursor(c);
+  if (!m_delegate) {
+    return;
   }
+
+  QTextCursor cursor = textCursor();
+  m_delegate->addTableColumn(cursor);
+  setTextCursor(cursor);
 }
 
 void TextEdit::removeTableColumn() {
-  if (m_delegate) {
-    QTextCursor c = textCursor();
-
-    m_delegate->removeTableColumn(c);
-
-    setTextCursor(c);
+  if (!m_delegate) {
+    return;
   }
+
+  QTextCursor cursor = textCursor();
+  m_delegate->removeTableColumn(cursor);
+  setTextCursor(cursor);
 }
 
 void TextEdit::alignTableColumnLeft() {
-  if (m_delegate) {
-    QTextCursor c = textCursor();
-
-    m_delegate->alignTableColumnLeft(c);
-
-    setTextCursor(c);
+  if (!m_delegate) {
+    return;
   }
+
+  QTextCursor cursor = textCursor();
+  m_delegate->alignTableColumnLeft(cursor);
+  setTextCursor(cursor);
 }
 
 void TextEdit::alignTableColumnCenter() {
-  if (m_delegate) {
-    QTextCursor c = textCursor();
-
-    m_delegate->alignTableColumnCenter(c);
-
-    setTextCursor(c);
+  if (!m_delegate) {
+    return;
   }
+
+  QTextCursor cursor = textCursor();
+  m_delegate->alignTableColumnCenter(cursor);
+  setTextCursor(cursor);
 }
 
 void TextEdit::alignTableColumnRight() {
-  if (m_delegate) {
-    QTextCursor c = textCursor();
-
-    m_delegate->alignTableColumnRight(c);
-
-    setTextCursor(c);
+  if (!m_delegate) {
+    return;
   }
+
+  QTextCursor cursor = textCursor();
+  m_delegate->alignTableColumnRight(cursor);
+  setTextCursor(cursor);
 }
 
 void TextEdit::insertFootnote() {
-  if (m_delegate) {
-    QTextCursor c = textCursor();
-
-    m_delegate->insertFootnote(c);
-
-    setTextCursor(c);
+  if (!m_delegate) {
+    return;
   }
+
+  QTextCursor cursor = textCursor();
+  m_delegate->insertFootnote(cursor);
+  setTextCursor(cursor);
 }
 
 void TextEdit::insertTag() {
-  if (m_delegate) {
-    QTextCursor c = textCursor();
-
-    m_delegate->insertTag(c);
-
-    setTextCursor(c);
+  if (!m_delegate) {
+    return;
   }
+
+  QTextCursor cursor = textCursor();
+  m_delegate->insertTag(cursor);
+  setTextCursor(cursor);
 }
 
 void TextEdit::insertTableOfContents() {
-  if (m_delegate) {
-    QTextCursor c = textCursor();
-
-    m_delegate->insertTableOfContents(c);
-
-    setTextCursor(c);
+  if (!m_delegate) {
+    return;
   }
+
+  QTextCursor cursor = textCursor();
+  m_delegate->insertTableOfContents(cursor);
+  setTextCursor(cursor);
 }
 
 void TextEdit::toggleFrontmatter() {
-  if (m_delegate) {
-    QTextCursor c = textCursor();
-
-    m_delegate->toggleFrontmatter(c);
-
-    setTextCursor(c);
+  if (!m_delegate) {
+    return;
   }
+
+  QTextCursor cursor = textCursor();
+  m_delegate->toggleFrontmatter(cursor);
+  setTextCursor(cursor);
 }
 
 void TextEdit::toggleSourceMode() {
   m_sourceMode = !m_sourceMode;
-
   emit formatChanged();
 }
 
 bool TextEdit::isBold() const {
-  return m_delegate ? m_delegate->isBold(textCursor()) : false;
+  return m_delegate && m_delegate->isBold(textCursor());
 }
 
 bool TextEdit::isItalic() const {
-  return m_delegate ? m_delegate->isItalic(textCursor()) : false;
+  return m_delegate && m_delegate->isItalic(textCursor());
 }
 
 bool TextEdit::isStrikethrough() const {
-  return m_delegate ? m_delegate->isStrikethrough(textCursor()) : false;
+  return m_delegate && m_delegate->isStrikethrough(textCursor());
 }
 
 bool TextEdit::isCodeSpan() const {
-  return m_delegate ? m_delegate->isCodeSpan(textCursor()) : false;
+  return m_delegate && m_delegate->isCodeSpan(textCursor());
 }
 
 bool TextEdit::isHighlight() const {
-  return m_delegate ? m_delegate->isHighlight(textCursor()) : false;
+  return m_delegate && m_delegate->isHighlight(textCursor());
 }
 
 bool TextEdit::isBlockQuote() const {
-  return m_delegate ? m_delegate->isBlockQuote(textCursor()) : false;
+  return m_delegate && m_delegate->isBlockQuote(textCursor());
 }
 
 bool TextEdit::isBulletList() const {
-  return m_delegate ? m_delegate->isBulletList(textCursor()) : false;
+  return m_delegate && m_delegate->isBulletList(textCursor());
 }
 
 bool TextEdit::isOrderedList() const {
-  return m_delegate ? m_delegate->isOrderedList(textCursor()) : false;
+  return m_delegate && m_delegate->isOrderedList(textCursor());
 }
 
 bool TextEdit::isTaskList() const {
-  return m_delegate ? m_delegate->isTaskList(textCursor()) : false;
+  return m_delegate && m_delegate->isTaskList(textCursor());
 }
 
 bool TextEdit::isCodeBlock() const {
-  return m_delegate ? m_delegate->isCodeBlock(textCursor()) : false;
+  return m_delegate && m_delegate->isCodeBlock(textCursor());
 }
 
 bool TextEdit::isMathBlock() const {
-  return m_delegate ? m_delegate->isMathBlock(textCursor()) : false;
+  return m_delegate && m_delegate->isMathBlock(textCursor());
 }
 
 int TextEdit::currentHeadingLevel() const {
@@ -948,23 +985,23 @@ int TextEdit::currentHeadingLevel() const {
 }
 
 bool TextEdit::isInsideTable() const {
-  return m_delegate ? m_delegate->isInsideTable(textCursor()) : false;
+  return m_delegate && m_delegate->isInsideTable(textCursor());
 }
 
 void TextEdit::resizeEvent(QResizeEvent *event) {
   QPlainTextEdit::resizeEvent(event);
 
-  if (!m_reviewBar || !m_toolbar) {
+  if (!m_toolbar || !m_reviewBar) {
     return;
   }
 
   const int toolbarHeight = m_toolbar->sizeHint().height();
 
   int reviewHeight = 0;
+
   if (m_reviewBar->isVisible()) {
-    reviewHeight = m_reviewBar->sizeHint().height();
-    // Cap height at 1/3rd of the viewport if long content is scrollable
-    reviewHeight = qMin(reviewHeight, height() / 3);
+    reviewHeight = qMin(m_reviewBar->sizeHint().height(),
+                        height() / ReviewBarMaxHeightDivisor);
   }
 
   setViewportMargins(0, toolbarHeight, 0, reviewHeight);

@@ -4,15 +4,20 @@
 
 #include <QEvent>
 #include <QMouseEvent>
+#include <QPalette>
 #include <QTextCursor>
 #include <QTextEdit>
 
 EditCandidateView::EditCandidateView(TextEdit *editor, QObject *parent)
-    : QObject(parent), m_editor(editor) {
+    : QObject(parent), m_editor(nullptr) {
   setEditor(editor);
 }
 
 void EditCandidateView::setEditor(TextEdit *editor) {
+  if (m_editor == editor) {
+    return;
+  }
+
   if (m_editor) {
     m_editor->viewport()->removeEventFilter(this);
   }
@@ -29,37 +34,33 @@ void EditCandidateView::setEditor(TextEdit *editor) {
 void EditCandidateView::showCandidates(const QVector<EditMatch> &candidates) {
   clear();
 
-  if (!m_editor) {
+  if (!m_editor || candidates.isEmpty()) {
     return;
   }
 
   m_candidates = candidates;
 
   QList<QTextEdit::ExtraSelection> selections;
+  selections.reserve(m_candidates.size());
 
-  for (const EditMatch &match : m_candidates) {
-    if (!match.isValid()) {
+  const QPalette &palette = m_editor->palette();
+  const QBrush highlight = palette.brush(QPalette::Active, QPalette::Highlight);
+  const QBrush highlightedText =
+      palette.brush(QPalette::Active, QPalette::HighlightedText);
+
+  for (const EditMatch &candidate : m_candidates) {
+    if (!candidate.isValid()) {
       continue;
     }
 
-    QTextEdit::ExtraSelection selection;
-
     QTextCursor cursor(m_editor->document());
+    cursor.setPosition(candidate.start);
+    cursor.setPosition(candidate.end, QTextCursor::KeepAnchor);
 
-    cursor.setPosition(match.start);
-    cursor.setPosition(match.end, QTextCursor::KeepAnchor);
-
+    QTextEdit::ExtraSelection selection;
     selection.cursor = cursor;
-
-    /*
-     * Use Qt's normal selection palette rather than introducing a
-     * custom application colour scheme.
-     */
-    selection.format.setBackground(
-        m_editor->palette().brush(QPalette::Active, QPalette::Highlight));
-
-    selection.format.setForeground(
-        m_editor->palette().brush(QPalette::Active, QPalette::HighlightedText));
+    selection.format.setBackground(highlight);
+    selection.format.setForeground(highlightedText);
 
     selections.append(selection);
   }
@@ -76,22 +77,28 @@ void EditCandidateView::clear() {
 }
 
 bool EditCandidateView::eventFilter(QObject *watched, QEvent *event) {
-  if (watched != (m_editor ? m_editor->viewport() : nullptr)) {
+  if (!m_editor || watched != m_editor->viewport()) {
     return QObject::eventFilter(watched, event);
   }
 
-  if (event->type() == QEvent::MouseButtonPress) {
-    auto *mouseEvent = static_cast<QMouseEvent *>(event);
-
-    const int index = candidateAtPosition(mouseEvent->position().toPoint());
-
-    if (index >= 0) {
-      emit candidateSelected(index);
-      return true;
-    }
+  if (event->type() != QEvent::MouseButtonPress) {
+    return QObject::eventFilter(watched, event);
   }
 
-  return QObject::eventFilter(watched, event);
+  const auto *mouseEvent = static_cast<QMouseEvent *>(event);
+
+  if (!mouseEvent) {
+    return QObject::eventFilter(watched, event);
+  }
+
+  const int index = candidateAtPosition(mouseEvent->position().toPoint());
+
+  if (index < 0) {
+    return QObject::eventFilter(watched, event);
+  }
+
+  emit candidateSelected(index);
+  return true;
 }
 
 int EditCandidateView::candidateAtPosition(const QPoint &position) const {
@@ -99,16 +106,20 @@ int EditCandidateView::candidateAtPosition(const QPoint &position) const {
     return -1;
   }
 
-  QTextCursor cursor = m_editor->cursorForPosition(position);
+  const QTextCursor cursor = m_editor->cursorForPosition(position);
 
-  const int positionInDocument = cursor.position();
+  const int documentPosition = cursor.position();
 
-  for (int i = 0; i < m_candidates.size(); ++i) {
-    const EditMatch &candidate = m_candidates[i];
+  for (int index = 0; index < m_candidates.size(); ++index) {
+    const EditMatch &candidate = m_candidates.at(index);
 
-    if (positionInDocument >= candidate.start &&
-        positionInDocument < candidate.end) {
-      return i;
+    if (!candidate.isValid()) {
+      continue;
+    }
+
+    if (documentPosition >= candidate.start &&
+        documentPosition < candidate.end) {
+      return index;
     }
   }
 

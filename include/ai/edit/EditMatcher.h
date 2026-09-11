@@ -1,9 +1,12 @@
+// EditMatcher.h
 #pragma once
 
 #include "EditCommand.h"
 #include "EditMatch.h"
 
 #include "../../text/model/TextDocument.h"
+
+#include <edlib.h>
 
 #include <QVector>
 
@@ -24,6 +27,4 @@ private:
 
   Result findFuzzy(const QString &text, const QString &needle,
                    int offset) const;
-
-  static bool isAsciiSafe(const QString &text);
 };

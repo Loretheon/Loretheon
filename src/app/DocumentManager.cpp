@@ -2,12 +2,82 @@
 
 #include "Settings.h"
 
-#include <QDebug>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QSaveFile>
 #include <QTextStream>
+
+namespace {
+
+constexpr QLatin1StringView MarkdownExtension("md");
+constexpr QLatin1StringView TextExtension("txt");
+constexpr QLatin1StringView UntitledBaseName("Untitled");
+
+QString normalizedExtension(const QString &extension) {
+  return extension.trimmed().toLower();
+}
+
+QString documentTypeName(DocumentMode type) {
+  return type == DocumentMode::Markdown ? QStringLiteral("Markdown")
+                                        : QStringLiteral("PlainText");
+}
+
+bool writeTextFile(const QString &path, const QString &text) {
+  QSaveFile file(path);
+
+  if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+    qWarning() << "[DOCUMENT] Failed to open for writing:" << path
+               << "Error:" << file.errorString();
+    return false;
+  }
+
+  QTextStream stream(&file);
+  stream.setEncoding(QStringConverter::Utf8);
+  stream << text;
+  stream.flush();
+
+  if (stream.status() != QTextStream::Ok) {
+    qWarning() << "[DOCUMENT] Failed while writing:" << path
+               << "Error:" << file.errorString();
+
+    file.cancelWriting();
+    return false;
+  }
+
+  if (!file.commit()) {
+    qWarning() << "[DOCUMENT] Failed to commit:" << path
+               << "Error:" << file.errorString();
+    return false;
+  }
+
+  return true;
+}
+
+bool readTextFile(const QString &path, QString &text) {
+  QFile file(path);
+
+  if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+    qWarning() << "[DOCUMENT] Failed to open:" << path
+               << "Error:" << file.errorString();
+    return false;
+  }
+
+  QTextStream stream(&file);
+  stream.setEncoding(QStringConverter::Utf8);
+
+  text = stream.readAll();
+
+  if (stream.status() != QTextStream::Ok) {
+    qWarning() << "[DOCUMENT] Failed while reading:" << path
+               << "Error:" << file.errorString();
+    return false;
+  }
+
+  return true;
+}
+
+} // namespace
 
 DocumentManager::DocumentManager(QObject *parent)
     : QObject(parent), current(nullptr) {}
@@ -15,48 +85,38 @@ DocumentManager::DocumentManager(QObject *parent)
 TextDocument *DocumentManager::currentDocument() const { return current; }
 
 DocumentMode DocumentManager::typeForExtension(const QString &extension) {
-  if (extension.compare("md", Qt::CaseInsensitive) == 0)
-    return DocumentMode::Markdown;
-
-  return DocumentMode::PlainText;
+  return normalizedExtension(extension) == MarkdownExtension
+             ? DocumentMode::Markdown
+             : DocumentMode::PlainText;
 }
 
 QString DocumentManager::uniqueDefaultPath(const QString &baseName,
                                            const QString &extension) const {
   const QDir root(Settings::getRootDirectory());
+  const QString normalized = normalizedExtension(extension);
 
-  QString candidate = root.filePath(baseName + "." + extension);
+  QString path =
+      root.filePath(QStringLiteral("%1.%2").arg(baseName, normalized));
 
-  int suffix = 2;
-
-  while (QFile::exists(candidate)) {
-    candidate = root.filePath(
-        QString("%1 %2.%3").arg(baseName).arg(suffix).arg(extension));
-    ++suffix;
+  for (int suffix = 2; QFile::exists(path); ++suffix) {
+    path = root.filePath(
+        QStringLiteral("%1 %2.%3").arg(baseName).arg(suffix).arg(normalized));
   }
 
-  return candidate;
+  return path;
 }
 
 void DocumentManager::createDocument(DocumentMode type,
                                      const QString &extension) {
-  const QString path = uniqueDefaultPath("Untitled", extension);
+  const QString path =
+      uniqueDefaultPath(QString::fromLatin1(UntitledBaseName), extension);
 
-  QSaveFile file(path);
-
-  if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-    qWarning() << "[NEW] Failed to create:" << path
-               << "Error:" << file.errorString();
-    return;
-  }
-
-  if (!file.commit()) {
-    qWarning() << "[NEW] Commit failed:" << path
-               << "Error:" << file.errorString();
+  if (!writeTextFile(path, {})) {
     return;
   }
 
   auto *document = new TextDocument(this);
+
   document->setType(type);
   document->setFilePath(path);
   document->setModified(false);
@@ -69,121 +129,73 @@ void DocumentManager::createDocument(DocumentMode type,
 }
 
 void DocumentManager::newTextFile() {
-  createDocument(DocumentMode::PlainText, "txt");
+  createDocument(DocumentMode::PlainText, QString::fromLatin1(TextExtension));
 }
 
 void DocumentManager::newMarkdownFile() {
-  createDocument(DocumentMode::Markdown, "md");
+  createDocument(DocumentMode::Markdown,
+                 QString::fromLatin1(MarkdownExtension));
 }
 
 bool DocumentManager::openFile(const QString &path) {
-  QFile file(path);
+  QString text;
 
-  if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
-    qWarning() << "[OPEN] Failed to open:" << path << file.errorString();
+  if (!readTextFile(path, text)) {
     return false;
   }
-
-  QTextStream stream(&file);
-  stream.setEncoding(QStringConverter::Utf8);
-
-  const QString text = stream.readAll();
-
-  if (stream.status() != QTextStream::Ok) {
-    qWarning() << "[OPEN] Failed while reading:" << path;
-    return false;
-  }
-
-  qDebug() << "[OPEN] raw text length:" << text.length()
-           << "content:" << text.left(200);
-
-  const DocumentMode type = typeForExtension(QFileInfo(path).suffix());
 
   auto *document = new TextDocument(this);
-  document->setPlainText(text);
 
-  document->setType(type);
+  document->setPlainText(text);
+  document->setType(typeForExtension(QFileInfo(path).suffix()));
   document->setFilePath(path);
   document->setModified(false);
 
   documents.append(document);
-
   current = document;
 
   emit documentChanged(current);
   return true;
 }
+
 bool DocumentManager::save() {
   if (!current) {
-    qWarning() << "[SAVE] No current document";
+    qWarning() << "[DOCUMENT] No current document to save.";
     return false;
   }
 
   const QString path = current->filePath();
 
   if (path.isEmpty()) {
-    qWarning() << "[SAVE] Document has no path; cannot save";
+    qWarning() << "[DOCUMENT] Current document has no file path.";
     return false;
   }
 
-  qDebug() << "[SAVE] Path:" << path;
-
-  QSaveFile file(path);
-
-  if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-    qWarning() << "[SAVE] Failed to open:" << path
-               << "Error:" << file.errorString();
-    return false;
-  }
-
-  QTextStream stream(&file);
-  stream.setEncoding(QStringConverter::Utf8);
-
-  stream << current->toPlainText();
-  stream.flush();
-
-  if (stream.status() != QTextStream::Ok) {
-    qWarning() << "[SAVE] Failed while writing:" << path
-               << "Error:" << file.errorString();
-
-    file.cancelWriting();
-    return false;
-  }
-
-  if (!file.commit()) {
-    qWarning() << "[SAVE] Commit failed:" << path
-               << "Error:" << file.errorString();
+  if (!writeTextFile(path, current->toPlainText())) {
     return false;
   }
 
   current->setModified(false);
-
-  qDebug() << "[SAVE] Saved successfully:" << path;
-
   return true;
 }
 
 bool DocumentManager::renameFile(const QString &oldPath,
                                  const QString &newPath) {
-  qDebug() << "[RENAME] Updating open document path:" << oldPath << "->"
-           << newPath;
-
-  if (oldPath == newPath)
+  if (oldPath == newPath) {
     return true;
+  }
 
   for (TextDocument *document : std::as_const(documents)) {
-    if (document->filePath() != oldPath)
+    if (document->filePath() != oldPath) {
       continue;
+    }
 
     document->setFilePath(newPath);
     document->setType(typeForExtension(QFileInfo(newPath).suffix()));
 
-    qDebug() << "[RENAME] Document path updated:" << newPath;
-
-    // The document object is still the same, so there is
-    // no need to open the file again.
-    if (document == current)
+    if (document == current) {
       emit documentChanged(current);
+    }
 
     break;
   }
@@ -193,16 +205,17 @@ bool DocumentManager::renameFile(const QString &oldPath,
 }
 
 void DocumentManager::closeCurrent() {
-  if (!current)
+  if (!current) {
     return;
+  }
 
-  TextDocument *toClose = current;
+  TextDocument *document = current;
 
-  documents.removeOne(toClose);
+  documents.removeOne(document);
 
   current = documents.isEmpty() ? nullptr : documents.last();
 
-  delete toClose;
+  delete document;
 
   emit documentChanged(current);
 }

@@ -22,6 +22,8 @@ public slots:
 
 private slots:
   void syncPreview();
+  void disconnectActiveDocument();
+  void clearPreview();
 
 private:
   TextBrowser *textBrowser = nullptr;

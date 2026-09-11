@@ -4,193 +4,201 @@
 
 #include <QInputDialog>
 #include <QMenu>
+#include <QSignalBlocker>
+
+namespace {
+
+struct ActionBinding {
+  QAction *action;
+  void (TextEdit::*handler)();
+};
+
+constexpr const char *Icons = "icons";
+
+} // namespace
 
 Toolbar::Toolbar(QWidget *parent) : QToolBar(parent) {
-  // Show icons only; action text is still used for tooltips/accessibility.
   setToolButtonStyle(Qt::ToolButtonIconOnly);
   setIconSize(QSize(20, 20));
 
-  // -------------------------------------------------------------------------
   // Text formatting
-  // -------------------------------------------------------------------------
-
-  m_boldAction = addAction(QIcon::fromTheme("format-text-bold"), "Bold");
+  m_boldAction = addAction(QIcon::fromTheme(QStringLiteral("format-text-bold")),
+                           tr("Bold"));
   m_boldAction->setCheckable(true);
 
-  m_italicAction = addAction(QIcon::fromTheme("format-text-italic"), "Italic");
+  m_italicAction = addAction(
+      QIcon::fromTheme(QStringLiteral("format-text-italic")), tr("Italic"));
   m_italicAction->setCheckable(true);
 
   m_strikethroughAction =
-      addAction(QIcon::fromTheme("format-text-strikethrough"), "Strikethrough");
+      addAction(QIcon::fromTheme(QStringLiteral("format-text-strikethrough")),
+                tr("Strikethrough"));
   m_strikethroughAction->setCheckable(true);
 
-  m_codeSpanAction =
-      addAction(QIcon::fromTheme("format-text-code"), "Inline Code");
+  m_codeSpanAction = addAction(
+      QIcon::fromTheme(QStringLiteral("format-text-code")), tr("Inline Code"));
   m_codeSpanAction->setCheckable(true);
 
-  m_highlightAction =
-      addAction(QIcon::fromTheme("format-highlight"), "Highlight");
+  m_highlightAction = addAction(
+      QIcon::fromTheme(QStringLiteral("format-highlight")), tr("Highlight"));
   m_highlightAction->setCheckable(true);
 
   addSeparator();
 
-  // -------------------------------------------------------------------------
-  // Links and media
-  // -------------------------------------------------------------------------
+  // Links & media
+  m_linkAction = addAction(QIcon::fromTheme(QStringLiteral("insert-link")),
+                           tr("Insert Link"));
 
-  m_linkAction = addAction(QIcon::fromTheme("insert-link"), "Insert Link");
+  m_wikiLinkAction = addAction(QIcon::fromTheme(QStringLiteral("insert-link")),
+                               tr("Internal Link"));
 
-  m_wikiLinkAction =
-      addAction(QIcon::fromTheme("insert-link"), "Internal Link");
+  m_autolinkAction =
+      addAction(QIcon::fromTheme(QStringLiteral("link")), tr("Autolink"));
 
-  m_autolinkAction = addAction(QIcon::fromTheme("link"), "Autolink");
+  m_imageAction = addAction(QIcon::fromTheme(QStringLiteral("insert-image")),
+                            tr("Insert Image"));
 
-  m_imageAction = addAction(QIcon::fromTheme("insert-image"), "Insert Image");
-
-  m_mediaAction =
-      addAction(QIcon::fromTheme("video-x-generic"), "Insert Media");
+  m_mediaAction = addAction(QIcon::fromTheme(QStringLiteral("video-x-generic")),
+                            tr("Insert Media"));
 
   addSeparator();
 
-  // -------------------------------------------------------------------------
   // Paragraph / heading
-  // -------------------------------------------------------------------------
-
   m_headingCombo = new QComboBox(this);
-  m_headingCombo->addItem("Paragraph", 0);
-  m_headingCombo->addItem("Heading 1", 1);
-  m_headingCombo->addItem("Heading 2", 2);
-  m_headingCombo->addItem("Heading 3", 3);
-  m_headingCombo->addItem("Heading 4", 4);
-  m_headingCombo->addItem("Heading 5", 5);
-  m_headingCombo->addItem("Heading 6", 6);
-  m_headingCombo->setToolTip("Paragraph / Heading");
+
+  m_headingCombo->addItem(tr("Paragraph"), 0);
+
+  for (int level = 1; level <= 6; ++level) {
+    m_headingCombo->addItem(tr("Heading %1").arg(level), level);
+  }
+
+  m_headingCombo->setToolTip(tr("Paragraph / Heading"));
 
   addWidget(m_headingCombo);
 
-  m_blockquoteAction = addAction(QIcon::fromTheme("format-quote"), "Quote");
+  m_blockquoteAction =
+      addAction(QIcon::fromTheme(QStringLiteral("format-quote")), tr("Quote"));
   m_blockquoteAction->setCheckable(true);
 
-  m_calloutAction =
-      addAction(QIcon::fromTheme("dialog-information"), "Callout");
+  m_calloutAction = addAction(
+      QIcon::fromTheme(QStringLiteral("dialog-information")), tr("Callout"));
 
   addSeparator();
 
-  // -------------------------------------------------------------------------
   // Lists
-  // -------------------------------------------------------------------------
-
   m_bulletListAction =
-      addAction(QIcon::fromTheme("format-list-unordered"), "Bullet List");
+      addAction(QIcon::fromTheme(QStringLiteral("format-list-unordered")),
+                tr("Bullet List"));
   m_bulletListAction->setCheckable(true);
 
   m_orderedListAction =
-      addAction(QIcon::fromTheme("format-list-ordered"), "Numbered List");
+      addAction(QIcon::fromTheme(QStringLiteral("format-list-ordered")),
+                tr("Numbered List"));
   m_orderedListAction->setCheckable(true);
 
-  m_taskListAction = addAction(QIcon::fromTheme("checkbox"), "Task List");
+  m_taskListAction =
+      addAction(QIcon::fromTheme(QStringLiteral("checkbox")), tr("Task List"));
   m_taskListAction->setCheckable(true);
 
   m_definitionListAction =
-      addAction(QIcon::fromTheme("format-list-unordered"), "Definition List");
+      addAction(QIcon::fromTheme(QStringLiteral("format-list-unordered")),
+                tr("Definition List"));
 
   addSeparator();
 
-  // -------------------------------------------------------------------------
   // Blocks
-  // -------------------------------------------------------------------------
-
-  m_codeBlockAction =
-      addAction(QIcon::fromTheme("text-x-generic"), "Code Block");
+  m_codeBlockAction = addAction(
+      QIcon::fromTheme(QStringLiteral("text-x-generic")), tr("Code Block"));
   m_codeBlockAction->setCheckable(true);
 
-  m_diagramBlockAction = addAction(QIcon::fromTheme("view-refresh"), "Diagram");
+  m_diagramBlockAction = addAction(
+      QIcon::fromTheme(QStringLiteral("view-refresh")), tr("Diagram"));
 
   m_mathBlockAction =
-      addAction(QIcon::fromTheme("accessories-calculator"), "Math Block");
+      addAction(QIcon::fromTheme(QStringLiteral("accessories-calculator")),
+                tr("Math Block"));
   m_mathBlockAction->setCheckable(true);
 
   m_detailsAction =
-      addAction(QIcon::fromTheme("view-list-details"), "Collapsible Block");
+      addAction(QIcon::fromTheme(QStringLiteral("view-list-details")),
+                tr("Collapsible Block"));
 
-  m_rawHtmlAction = addAction(QIcon::fromTheme("text-html"), "HTML Block");
+  m_rawHtmlAction = addAction(QIcon::fromTheme(QStringLiteral("text-html")),
+                              tr("HTML Block"));
 
   m_hrAction =
-      addAction(QIcon::fromTheme("format-justify-fill"), "Horizontal Rule");
+      addAction(QIcon::fromTheme(QStringLiteral("format-justify-fill")),
+                tr("Horizontal Rule"));
 
-  m_hardBreakAction = addAction(QIcon::fromTheme("go-next"), "Hard Break");
+  m_hardBreakAction =
+      addAction(QIcon::fromTheme(QStringLiteral("go-next")), tr("Hard Break"));
 
   addSeparator();
 
-  // -------------------------------------------------------------------------
   // Indentation
-  // -------------------------------------------------------------------------
+  m_decreaseIndentAction = addAction(
+      QIcon::fromTheme(QStringLiteral("format-indent-less")), tr("Outdent"));
 
-  m_decreaseIndentAction =
-      addAction(QIcon::fromTheme("format-indent-less"), "Outdent");
-
-  m_increaseIndentAction =
-      addAction(QIcon::fromTheme("format-indent-more"), "Indent");
+  m_increaseIndentAction = addAction(
+      QIcon::fromTheme(QStringLiteral("format-indent-more")), tr("Indent"));
 
   addSeparator();
 
-  // -------------------------------------------------------------------------
   // Tables
-  // -------------------------------------------------------------------------
+  m_insertTableAction = addAction(
+      QIcon::fromTheme(QStringLiteral("insert-table")), tr("Insert Table"));
 
-  m_insertTableAction =
-      addAction(QIcon::fromTheme("insert-table"), "Insert Table");
+  m_deleteTableAction = addAction(
+      QIcon::fromTheme(QStringLiteral("edit-delete")), tr("Delete Table"));
 
-  m_deleteTableAction =
-      addAction(QIcon::fromTheme("edit-delete"), "Delete Table");
+  m_addRowAction =
+      addAction(QIcon::fromTheme(QStringLiteral("list-add")), tr("Add Row"));
 
-  m_addRowAction = addAction(QIcon::fromTheme("list-add"), "Add Row");
+  m_removeRowAction = addAction(QIcon::fromTheme(QStringLiteral("list-remove")),
+                                tr("Remove Row"));
 
-  m_removeRowAction = addAction(QIcon::fromTheme("list-remove"), "Remove Row");
+  m_addColumnAction =
+      addAction(QIcon::fromTheme(QStringLiteral("list-add")), tr("Add Column"));
 
-  m_addColumnAction = addAction(QIcon::fromTheme("list-add"), "Add Column");
-
-  m_removeColumnAction =
-      addAction(QIcon::fromTheme("list-remove"), "Remove Column");
+  m_removeColumnAction = addAction(
+      QIcon::fromTheme(QStringLiteral("list-remove")), tr("Remove Column"));
 
   m_alignTableLeftAction =
-      addAction(QIcon::fromTheme("format-justify-left"), "Align Left");
+      addAction(QIcon::fromTheme(QStringLiteral("format-justify-left")),
+                tr("Align Left"));
 
   m_alignTableCenterAction =
-      addAction(QIcon::fromTheme("format-justify-center"), "Align Center");
+      addAction(QIcon::fromTheme(QStringLiteral("format-justify-center")),
+                tr("Align Center"));
 
   m_alignTableRightAction =
-      addAction(QIcon::fromTheme("format-justify-right"), "Align Right");
+      addAction(QIcon::fromTheme(QStringLiteral("format-justify-right")),
+                tr("Align Right"));
 
   addSeparator();
 
-  // -------------------------------------------------------------------------
   // Document
-  // -------------------------------------------------------------------------
+  m_footnoteAction =
+      addAction(QIcon::fromTheme(QStringLiteral("footnote")), tr("Footnote"));
 
-  m_footnoteAction = addAction(QIcon::fromTheme("footnote"), "Footnote");
+  m_tagAction =
+      addAction(QIcon::fromTheme(QStringLiteral("tag")), tr("Insert Tag"));
 
-  m_tagAction = addAction(QIcon::fromTheme("tag"), "Insert Tag");
-
-  m_tocAction =
-      addAction(QIcon::fromTheme("view-list-tree"), "Table of Contents");
+  m_tocAction = addAction(QIcon::fromTheme(QStringLiteral("view-list-tree")),
+                          tr("Table of Contents"));
 
   m_frontmatterAction =
-      addAction(QIcon::fromTheme("document-properties"), "Front Matter");
+      addAction(QIcon::fromTheme(QStringLiteral("document-properties")),
+                tr("Front Matter"));
 
   addSeparator();
 
-  // -------------------------------------------------------------------------
   // View
-  // -------------------------------------------------------------------------
-
   m_toggleSourceViewAction =
-      addAction(QIcon::fromTheme("text-x-generic"), "Toggle Source / Preview");
-  m_toggleSourceViewAction->setCheckable(true);
+      addAction(QIcon::fromTheme(QStringLiteral("text-x-generic")),
+                tr("Toggle Source / Preview"));
 
-  // -------------------------------------------------------------------------
-  // Signals
-  // -------------------------------------------------------------------------
+  m_toggleSourceViewAction->setCheckable(true);
 
   connect(m_headingCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
           this, &Toolbar::onHeadingLevelChanged);
@@ -203,98 +211,113 @@ Toolbar::Toolbar(QWidget *parent) : QToolBar(parent) {
 }
 
 void Toolbar::setTextEdit(TextEdit *editor) {
+  if (m_editor == editor) {
+    updateActionsState();
+    return;
+  }
+
   if (m_editor) {
     disconnect(m_editor, nullptr, this, nullptr);
   }
 
   m_editor = editor;
-  if (!m_editor)
+
+  if (!m_editor) {
+    updateActionsState();
     return;
+  }
 
-  connect(m_boldAction, &QAction::triggered, m_editor, &TextEdit::toggleBold);
-  connect(m_italicAction, &QAction::triggered, m_editor,
-          &TextEdit::toggleItalic);
-  connect(m_strikethroughAction, &QAction::triggered, m_editor,
-          &TextEdit::toggleStrikethrough);
-  connect(m_codeSpanAction, &QAction::triggered, m_editor,
-          &TextEdit::toggleCodeSpan);
-  connect(m_highlightAction, &QAction::triggered, m_editor,
-          &TextEdit::toggleHighlight);
+  const ActionBinding bindings[] = {
+      {m_boldAction, &TextEdit::toggleBold},
+      {m_italicAction, &TextEdit::toggleItalic},
+      {m_strikethroughAction, &TextEdit::toggleStrikethrough},
+      {m_codeSpanAction, &TextEdit::toggleCodeSpan},
+      {m_highlightAction, &TextEdit::toggleHighlight},
 
-  connect(m_linkAction, &QAction::triggered, m_editor, &TextEdit::insertLink);
-  connect(m_wikiLinkAction, &QAction::triggered, m_editor,
-          &TextEdit::insertWikiLink);
-  connect(m_autolinkAction, &QAction::triggered, m_editor,
-          &TextEdit::insertAutolink);
-  connect(m_imageAction, &QAction::triggered, m_editor, &TextEdit::insertImage);
-  connect(m_mediaAction, &QAction::triggered, m_editor, &TextEdit::insertMedia);
+      {m_linkAction, &TextEdit::insertLink},
+      {m_wikiLinkAction, &TextEdit::insertWikiLink},
+      {m_autolinkAction, &TextEdit::insertAutolink},
+      {m_imageAction, &TextEdit::insertImage},
+      {m_mediaAction, &TextEdit::insertMedia},
 
-  connect(m_blockquoteAction, &QAction::triggered, m_editor,
-          &TextEdit::toggleBlockQuote);
-  connect(m_bulletListAction, &QAction::triggered, m_editor,
-          &TextEdit::toggleBulletList);
-  connect(m_orderedListAction, &QAction::triggered, m_editor,
-          &TextEdit::toggleOrderedList);
-  connect(m_taskListAction, &QAction::triggered, m_editor,
-          &TextEdit::toggleTaskItem);
-  connect(m_definitionListAction, &QAction::triggered, m_editor,
-          &TextEdit::insertDefinitionList);
-  connect(m_codeBlockAction, &QAction::triggered, m_editor,
-          &TextEdit::toggleCodeBlock);
-  connect(m_mathBlockAction, &QAction::triggered, m_editor,
-          &TextEdit::toggleMathBlock);
-  connect(m_detailsAction, &QAction::triggered, m_editor,
-          &TextEdit::insertCollapsibleBlock);
-  connect(m_rawHtmlAction, &QAction::triggered, m_editor,
-          &TextEdit::insertRawHtml);
-  connect(m_hrAction, &QAction::triggered, m_editor,
-          &TextEdit::insertHorizontalRule);
-  connect(m_hardBreakAction, &QAction::triggered, m_editor,
-          &TextEdit::insertHardLineBreak);
+      {m_blockquoteAction, &TextEdit::toggleBlockQuote},
+      {m_bulletListAction, &TextEdit::toggleBulletList},
+      {m_orderedListAction, &TextEdit::toggleOrderedList},
+      {m_taskListAction, &TextEdit::toggleTaskItem},
+      {m_definitionListAction, &TextEdit::insertDefinitionList},
 
-  connect(m_increaseIndentAction, &QAction::triggered, m_editor,
-          &TextEdit::increaseIndent);
-  connect(m_decreaseIndentAction, &QAction::triggered, m_editor,
-          &TextEdit::decreaseIndent);
+      {m_codeBlockAction, &TextEdit::toggleCodeBlock},
+      {m_mathBlockAction, &TextEdit::toggleMathBlock},
+      {m_detailsAction, &TextEdit::insertCollapsibleBlock},
+      {m_rawHtmlAction, &TextEdit::insertRawHtml},
+      {m_hrAction, &TextEdit::insertHorizontalRule},
+      {m_hardBreakAction, &TextEdit::insertHardLineBreak},
 
-  connect(m_insertTableAction, &QAction::triggered, m_editor,
-          &TextEdit::insertTable);
-  connect(m_deleteTableAction, &QAction::triggered, m_editor,
-          &TextEdit::deleteTable);
-  connect(m_addRowAction, &QAction::triggered, m_editor,
-          &TextEdit::addTableRow);
-  connect(m_removeRowAction, &QAction::triggered, m_editor,
-          &TextEdit::removeTableRow);
-  connect(m_addColumnAction, &QAction::triggered, m_editor,
-          &TextEdit::addTableColumn);
-  connect(m_removeColumnAction, &QAction::triggered, m_editor,
-          &TextEdit::removeTableColumn);
-  connect(m_alignTableLeftAction, &QAction::triggered, m_editor,
-          &TextEdit::alignTableColumnLeft);
-  connect(m_alignTableCenterAction, &QAction::triggered, m_editor,
-          &TextEdit::alignTableColumnCenter);
-  connect(m_alignTableRightAction, &QAction::triggered, m_editor,
-          &TextEdit::alignTableColumnRight);
+      {m_increaseIndentAction, &TextEdit::increaseIndent},
+      {m_decreaseIndentAction, &TextEdit::decreaseIndent},
 
-  connect(m_footnoteAction, &QAction::triggered, m_editor,
-          &TextEdit::insertFootnote);
-  connect(m_tagAction, &QAction::triggered, m_editor, &TextEdit::insertTag);
-  connect(m_tocAction, &QAction::triggered, m_editor,
-          &TextEdit::insertTableOfContents);
-  connect(m_frontmatterAction, &QAction::triggered, m_editor,
-          &TextEdit::toggleFrontmatter);
+      {m_insertTableAction, &TextEdit::insertTable},
+      {m_deleteTableAction, &TextEdit::deleteTable},
+      {m_addRowAction, &TextEdit::addTableRow},
+      {m_removeRowAction, &TextEdit::removeTableRow},
+      {m_addColumnAction, &TextEdit::addTableColumn},
+      {m_removeColumnAction, &TextEdit::removeTableColumn},
+      {m_alignTableLeftAction, &TextEdit::alignTableColumnLeft},
+      {m_alignTableCenterAction, &TextEdit::alignTableColumnCenter},
+      {m_alignTableRightAction, &TextEdit::alignTableColumnRight},
 
-  connect(m_toggleSourceViewAction, &QAction::triggered, m_editor,
-          &TextEdit::toggleSourceMode);
+      {m_footnoteAction, &TextEdit::insertFootnote},
+      {m_tagAction, &TextEdit::insertTag},
+      {m_tocAction, &TextEdit::insertTableOfContents},
+      {m_frontmatterAction, &TextEdit::toggleFrontmatter},
+
+      {m_toggleSourceViewAction, &TextEdit::toggleSourceMode},
+  };
+
+  for (const ActionBinding &binding : bindings) {
+    connect(binding.action, &QAction::triggered, m_editor, binding.handler);
+  }
 
   connect(m_editor, &TextEdit::formatChanged, this,
           &Toolbar::updateActionsState);
+
   updateActionsState();
 }
 
 void Toolbar::updateActionsState() {
-  if (!m_editor)
+  if (!m_editor) {
+    QAction *checkableActions[] = {
+        m_boldAction,       m_italicAction,      m_strikethroughAction,
+        m_codeSpanAction,   m_highlightAction,   m_blockquoteAction,
+        m_bulletListAction, m_orderedListAction, m_taskListAction,
+        m_codeBlockAction,  m_mathBlockAction,   m_toggleSourceViewAction};
+
+    for (QAction *action : checkableActions) {
+      action->setChecked(false);
+    }
+
+    {
+      QSignalBlocker blocker(m_headingCombo);
+
+      const int paragraphIndex = m_headingCombo->findData(0);
+
+      if (paragraphIndex >= 0) {
+        m_headingCombo->setCurrentIndex(paragraphIndex);
+      }
+    }
+
+    QAction *tableActions[] = {
+        m_deleteTableAction,      m_addRowAction,
+        m_removeRowAction,        m_addColumnAction,
+        m_removeColumnAction,     m_alignTableLeftAction,
+        m_alignTableCenterAction, m_alignTableRightAction};
+
+    for (QAction *action : tableActions) {
+      action->setEnabled(false);
+    }
+
     return;
+  }
 
   m_boldAction->setChecked(m_editor->isBold());
   m_italicAction->setChecked(m_editor->isItalic());
@@ -309,53 +332,71 @@ void Toolbar::updateActionsState() {
   m_codeBlockAction->setChecked(m_editor->isCodeBlock());
   m_mathBlockAction->setChecked(m_editor->isMathBlock());
 
-  int level = m_editor->currentHeadingLevel();
-  int comboIndex = m_headingCombo->findData(level);
-  if (comboIndex != -1) {
+  {
     QSignalBlocker blocker(m_headingCombo);
-    m_headingCombo->setCurrentIndex(comboIndex);
+
+    const int index = m_headingCombo->findData(m_editor->currentHeadingLevel());
+
+    if (index >= 0) {
+      m_headingCombo->setCurrentIndex(index);
+    }
   }
 
-  bool inTable = m_editor->isInsideTable();
-  m_deleteTableAction->setEnabled(inTable);
-  m_addRowAction->setEnabled(inTable);
-  m_removeRowAction->setEnabled(inTable);
-  m_addColumnAction->setEnabled(inTable);
-  m_removeColumnAction->setEnabled(inTable);
-  m_alignTableLeftAction->setEnabled(inTable);
-  m_alignTableCenterAction->setEnabled(inTable);
-  m_alignTableRightAction->setEnabled(inTable);
+  const bool inTable = m_editor->isInsideTable();
+
+  QAction *tableActions[] = {m_deleteTableAction,      m_addRowAction,
+                             m_removeRowAction,        m_addColumnAction,
+                             m_removeColumnAction,     m_alignTableLeftAction,
+                             m_alignTableCenterAction, m_alignTableRightAction};
+
+  for (QAction *action : tableActions) {
+    action->setEnabled(inTable);
+  }
 
   m_toggleSourceViewAction->setChecked(m_editor->isSourceMode());
 }
-
 void Toolbar::onHeadingLevelChanged(int index) {
-  if (!m_editor)
+  if (!m_editor || index < 0) {
     return;
-  int level = m_headingCombo->itemData(index).toInt();
+  }
+
+  const int level = m_headingCombo->itemData(index).toInt();
+
   m_editor->setHeadingLevel(level);
 }
 
 void Toolbar::onInsertCallout() {
-  if (!m_editor)
+  if (!m_editor) {
     return;
-  QStringList types = {"NOTE", "TIP", "WARNING", "CAUTION", "IMPORTANT"};
-  bool ok;
-  QString type = QInputDialog::getItem(this, "Insert Callout", "Type:", types,
-                                       0, false, &ok);
-  if (ok && !type.isEmpty()) {
+  }
+
+  const QStringList types = {tr("NOTE"), tr("TIP"), tr("WARNING"),
+                             tr("CAUTION"), tr("IMPORTANT")};
+
+  bool accepted = false;
+
+  const QString type = QInputDialog::getItem(
+      this, tr("Insert Callout"), tr("Type:"), types, 0, false, &accepted);
+
+  if (accepted && !type.isEmpty()) {
     m_editor->insertCallout(type);
   }
 }
 
 void Toolbar::onInsertDiagram() {
-  if (!m_editor)
+  if (!m_editor) {
     return;
-  QStringList engineTypes = {"mermaid", "plantuml"};
-  bool ok;
-  QString type = QInputDialog::getItem(this, "Insert Diagram",
-                                       "Engine:", engineTypes, 0, false, &ok);
-  if (ok && !type.isEmpty()) {
-    m_editor->insertDiagramBlock(type);
+  }
+
+  const QStringList engines = {QStringLiteral("mermaid"),
+                               QStringLiteral("plantuml")};
+
+  bool accepted = false;
+
+  const QString engine = QInputDialog::getItem(
+      this, tr("Insert Diagram"), tr("Engine:"), engines, 0, false, &accepted);
+
+  if (accepted && !engine.isEmpty()) {
+    m_editor->insertDiagramBlock(engine);
   }
 }

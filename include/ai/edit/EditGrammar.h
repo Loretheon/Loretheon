@@ -1,6 +1,7 @@
-// EditGrammar.h
 #pragma once
 
+#include <QJsonArray>
+#include <QJsonObject>
 #include <QString>
 #include <QStringList>
 
@@ -22,10 +23,12 @@ inline QString makeAlternatives(const QStringList &values) {
   alternatives.reserve(values.size());
 
   for (const QString &value : values) {
+
     alternatives.append(QStringLiteral("\"%1\"").arg(escapeLiteral(value)));
   }
 
   if (alternatives.isEmpty()) {
+
     return QStringLiteral("\"\"");
   }
 
@@ -35,24 +38,10 @@ inline QString makeAlternatives(const QStringList &values) {
 /*
  * Bounded array of edit commands.
  *
- * GBNF has no native {0,N} repetition syntax, so the
- * "continue or stop" tail is manually unrolled into a
- * finite chain of numbered rules. Each tail rule offers
- * the model a choice between stopping (empty) or emitting
- * one more comma-separated command and advancing to the
- * next tail rule. The final rule in the chain only accepts
- * empty, which forces termination.
+ * This remains the local llama.cpp representation.
  *
- * Without this cap, "" | ws "," ws command commandTail is
- * simultaneously valid at every position after a complete
- * command, so a model that leans toward "continue" under
- * grammar-constrained sampling can generate an unbounded
- * stream of syntactically valid edits with no way to stop.
- * This happened in practice and hung the inference server
- * generating tokens indefinitely.
- *
- * kMaxEditsPerPlan controls the cap. Raise it if legitimate
- * requests need more edits than the cap currently allows.
+ * Remote/OpenAI-compatible providers should use jsonSchema()
+ * instead of this GBNF grammar.
  */
 inline constexpr int kMaxEditsPerPlan = 8;
 
@@ -72,11 +61,6 @@ inline QString makeBoundedTailChain() {
 
     } else {
 
-      /*
-       * Final tail rule in the chain: no further
-       * continuation is offered, so the grammar has
-       * no valid path except closing the array here.
-       */
       rules += QStringLiteral("commandTail%1 ::= \"\"\n").arg(i);
     }
   }
@@ -84,11 +68,16 @@ inline QString makeBoundedTailChain() {
   return rules;
 }
 
+/*
+ * Local llama.cpp grammar.
+ *
+ * This is deliberately retained for local inference.
+ */
 inline QString gbnf(const QStringList &scopeIds) {
-  QString grammar =
-      QStringLiteral("root ::= ws \"[\" ws editList ws \"]\" ws\n"
+  QString grammar = QStringLiteral("root ::= ws \"[\" ws editList ws \"]\" ws\n"
 
-                     "editList ::= \"\" | command commandTail0\n");
+                                   "editList ::= "
+                                   "\"\" | command commandTail0\n");
 
   grammar += makeBoundedTailChain();
 
@@ -159,6 +148,161 @@ inline QString gbnf(const QStringList &scopeIds) {
                  .arg(makeAlternatives(scopeIds));
 
   return grammar;
+}
+
+/*
+ * Canonical edit-plan schema for OpenAI-compatible structured output.
+ *
+ * The root is an object rather than an array because OpenRouter's
+ * structured-output interface is documented around JSON-schema objects.
+ *
+ * Example:
+ *
+ * {
+ *   "edits": [
+ *     {
+ *       "operation": "replace",
+ *       "scope": "paragraph-1",
+ *       "position": "before",
+ *       "find": "old text",
+ *       "all": false,
+ *       "instruction": "Replace this..."
+ *     }
+ *   ]
+ * }
+ *
+ * scope is restricted to the actual scope IDs supplied by the caller.
+ */
+inline QJsonObject jsonSchema(const QStringList &scopeIds) {
+  QJsonObject operation;
+
+  operation.insert(QStringLiteral("type"), QStringLiteral("string"));
+
+  operation.insert(QStringLiteral("enum"),
+                   QJsonArray{QStringLiteral("insert"),
+                              QStringLiteral("replace"),
+                              QStringLiteral("delete")});
+
+  QJsonObject scope;
+
+  scope.insert(QStringLiteral("type"), QStringLiteral("string"));
+
+  QJsonArray scopeEnum;
+
+  for (const QString &scopeId : scopeIds) {
+
+    scopeEnum.append(scopeId);
+  }
+
+  /*
+   * If there are no scopes, an empty enum guarantees that no
+   * edit can be produced. The caller should normally prevent
+   * edit planning when scopeIds is empty.
+   */
+  scope.insert(QStringLiteral("enum"), scopeEnum);
+
+  QJsonObject position;
+
+  position.insert(QStringLiteral("type"), QStringLiteral("string"));
+
+  position.insert(QStringLiteral("enum"), QJsonArray{QStringLiteral("before"),
+                                                     QStringLiteral("after")});
+
+  QJsonObject find;
+
+  find.insert(QStringLiteral("type"), QStringLiteral("string"));
+
+  QJsonObject all;
+
+  all.insert(QStringLiteral("type"), QStringLiteral("boolean"));
+
+  QJsonObject instruction;
+
+  instruction.insert(QStringLiteral("type"), QStringLiteral("string"));
+
+  QJsonObject edit;
+
+  QJsonObject editProperties;
+
+  editProperties.insert(QStringLiteral("operation"), operation);
+
+  editProperties.insert(QStringLiteral("scope"), scope);
+
+  editProperties.insert(QStringLiteral("position"), position);
+
+  editProperties.insert(QStringLiteral("find"), find);
+
+  editProperties.insert(QStringLiteral("all"), all);
+
+  editProperties.insert(QStringLiteral("instruction"), instruction);
+
+  edit.insert(QStringLiteral("type"), QStringLiteral("object"));
+
+  edit.insert(QStringLiteral("properties"), editProperties);
+
+  edit.insert(QStringLiteral("required"),
+              QJsonArray{QStringLiteral("operation"), QStringLiteral("scope"),
+                         QStringLiteral("position"), QStringLiteral("find"),
+                         QStringLiteral("all"), QStringLiteral("instruction")});
+
+  edit.insert(QStringLiteral("additionalProperties"), false);
+
+  QJsonObject edits;
+
+  edits.insert(QStringLiteral("type"), QStringLiteral("array"));
+
+  edits.insert(QStringLiteral("maxItems"), kMaxEditsPerPlan);
+
+  edits.insert(QStringLiteral("items"), edit);
+
+  QJsonObject root;
+
+  QJsonObject rootProperties;
+
+  rootProperties.insert(QStringLiteral("edits"), edits);
+
+  root.insert(QStringLiteral("type"), QStringLiteral("object"));
+
+  root.insert(QStringLiteral("properties"), rootProperties);
+
+  root.insert(QStringLiteral("required"), QJsonArray{QStringLiteral("edits")});
+
+  root.insert(QStringLiteral("additionalProperties"), false);
+
+  return root;
+}
+
+/*
+ * Complete OpenAI/OpenRouter response_format object.
+ *
+ * This can be inserted directly into the chat-completions request:
+ *
+ * "response_format": {
+ *     "type": "json_schema",
+ *     "json_schema": {
+ *         "name": "edit_plan",
+ *         "strict": true,
+ *         "schema": { ... }
+ *     }
+ * }
+ */
+inline QJsonObject jsonResponseFormat(const QStringList &scopeIds) {
+  QJsonObject jsonSchemaDefinition;
+
+  jsonSchemaDefinition.insert(QStringLiteral("name"),
+                              QStringLiteral("edit_plan"));
+
+  jsonSchemaDefinition.insert(QStringLiteral("strict"), true);
+
+  jsonSchemaDefinition.insert(QStringLiteral("schema"), jsonSchema(scopeIds));
+
+  QJsonObject responseFormat;
+
+  responseFormat.insert(QStringLiteral("type"), QStringLiteral("json_schema"));
+
+  responseFormat.insert(QStringLiteral("json_schema"), jsonSchemaDefinition);
+
+  return responseFormat;
 }
 
 } // namespace EditGrammar

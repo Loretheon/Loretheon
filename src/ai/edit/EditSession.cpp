@@ -6,13 +6,24 @@
 #include "../../text/TextEdit.h"
 #include "../../text/model/TextDocument.h"
 
-#include <QDebug>
+#include <algorithm>
+
+namespace {
+
+constexpr int InvalidRevision = -1;
+constexpr int InvalidPendingEditId = 0;
+
+QString noActiveEditorError() { return QStringLiteral("No active editor."); }
+
+QString invalidDocumentError() {
+  return QStringLiteral("Active editor does not use TextDocument.");
+}
+
+} // namespace
 
 EditSession::EditSession(TextEdit *editor, QObject *parent)
-    : QObject(parent), m_editor(editor) {
-  m_applier = new EditApplier(this);
-  m_candidateView = new EditCandidateView();
-
+    : QObject(parent), m_editor(editor), m_applier(new EditApplier(this)),
+      m_candidateView(new EditCandidateView()) {
   connect(m_candidateView, &EditCandidateView::candidateSelected, this,
           &EditSession::onCandidateSelected);
 
@@ -31,31 +42,38 @@ void EditSession::setEditor(TextEdit *editor) {
 }
 
 bool EditSession::hasConflicts() const {
-  for (const PendingEdit &edit : m_pendingEdits) {
-    if (edit.hasConflict) {
-      return true;
-    }
-  }
-  return false;
+  return std::any_of(m_pendingEdits.cbegin(), m_pendingEdits.cend(),
+                     [](const PendingEdit &edit) { return edit.hasConflict; });
 }
 
 void EditSession::detectConflicts() {
-  for (int i = 0; i < m_pendingEdits.size(); ++i) {
-    m_pendingEdits[i].hasConflict = false;
+  for (PendingEdit &edit : m_pendingEdits) {
+    edit.hasConflict = false;
   }
 
-  for (int i = 0; i < m_pendingEdits.size(); ++i) {
-    for (int j = i + 1; j < m_pendingEdits.size(); ++j) {
-      const EditMatch &m1 = m_pendingEdits[i].match;
-      const EditMatch &m2 = m_pendingEdits[j].match;
+  for (int first = 0; first < m_pendingEdits.size(); ++first) {
+    const EditMatch &firstMatch = m_pendingEdits.at(first).match;
 
-      if (m1.isValid() && m2.isValid()) {
-        const bool overlaps = (m1.start < m2.end && m1.end > m2.start);
-        if (overlaps) {
-          m_pendingEdits[i].hasConflict = true;
-          m_pendingEdits[j].hasConflict = true;
-        }
+    if (!firstMatch.isValid()) {
+      continue;
+    }
+
+    for (int second = first + 1; second < m_pendingEdits.size(); ++second) {
+      const EditMatch &secondMatch = m_pendingEdits.at(second).match;
+
+      if (!secondMatch.isValid()) {
+        continue;
       }
+
+      const bool overlaps = firstMatch.start < secondMatch.end &&
+                            firstMatch.end > secondMatch.start;
+
+      if (!overlaps) {
+        continue;
+      }
+
+      m_pendingEdits[first].hasConflict = true;
+      m_pendingEdits[second].hasConflict = true;
     }
   }
 }
@@ -64,13 +82,13 @@ bool EditSession::resolvePlan(const QJsonArray &planArray) {
   abort();
 
   if (!m_editor) {
-    emit failed(QStringLiteral("No active editor."));
+    emit failed(noActiveEditorError());
     return false;
   }
 
-  auto *document = qobject_cast<TextDocument *>(m_editor->document());
+  TextDocument *document = qobject_cast<TextDocument *>(m_editor->document());
   if (!document) {
-    emit failed(QStringLiteral("Active editor does not use TextDocument."));
+    emit failed(invalidDocumentError());
     return false;
   }
 
@@ -78,12 +96,17 @@ bool EditSession::resolvePlan(const QJsonArray &planArray) {
   m_documentRevision = document->revision();
 
   QVector<EditCommand> commands;
-  for (const QJsonValue &val : planArray) {
-    if (val.isObject()) {
-      EditCommand cmd = EditCommand::fromJson(val.toObject());
-      if (cmd.isCommandValid()) {
-        commands.append(cmd);
-      }
+  commands.reserve(planArray.size());
+
+  for (const QJsonValue &value : planArray) {
+    if (!value.isObject()) {
+      continue;
+    }
+
+    const EditCommand command = EditCommand::fromJson(value.toObject());
+
+    if (command.isCommandValid()) {
+      commands.append(command);
     }
   }
 
@@ -92,17 +115,23 @@ bool EditSession::resolvePlan(const QJsonArray &planArray) {
     return false;
   }
 
-  for (int i = 0; i < commands.size(); ++i) {
+  m_pendingEdits.reserve(m_pendingEdits.size() + commands.size());
+
+  for (int index = 0; index < commands.size(); ++index) {
     EditMatch match;
-    if (resolveCommand(commands[i], match)) {
-      PendingEdit pending;
-      pending.id = i + 1;
-      pending.command = commands[i];
-      pending.match = match;
-      pending.accepted = true;
-      pending.completed = false;
-      m_pendingEdits.append(pending);
+
+    if (!resolveCommand(commands.at(index), match)) {
+      continue;
     }
+
+    PendingEdit edit;
+    edit.id = index + 1;
+    edit.command = commands.at(index);
+    edit.match = match;
+    edit.accepted = true;
+    edit.completed = false;
+
+    m_pendingEdits.append(edit);
   }
 
   detectConflicts();
@@ -119,7 +148,7 @@ bool EditSession::propose(const EditCommand &command) {
   abort();
 
   if (!m_editor) {
-    emit failed(QStringLiteral("No active editor."));
+    emit failed(noActiveEditorError());
     return false;
   }
 
@@ -128,13 +157,14 @@ bool EditSession::propose(const EditCommand &command) {
     return false;
   }
 
-  auto *document = qobject_cast<TextDocument *>(m_editor->document());
+  TextDocument *document = qobject_cast<TextDocument *>(m_editor->document());
   if (!document) {
-    emit failed(QStringLiteral("Active editor does not use TextDocument."));
+    emit failed(invalidDocumentError());
     return false;
   }
 
   setState(State::Matching);
+
   document->rebuildStructure();
   m_documentRevision = document->revision();
 
@@ -144,20 +174,24 @@ bool EditSession::propose(const EditCommand &command) {
   EditMatcher::Result result;
 
   if (command.operation == EditCommand::Operation::Insert) {
-    EditMatch insertionMatch;
-    if (!createInsertionMatch(command, insertionMatch)) {
+    EditMatch match;
+
+    if (!createInsertionMatch(command, match)) {
       setState(State::Idle);
       return false;
     }
-    result.candidates.append(insertionMatch);
+
+    result.candidates.append(match);
   } else {
     result = m_matcher.find(*document, command);
   }
 
   if (result.candidates.isEmpty()) {
     setState(State::Idle);
+
     emit failed(QStringLiteral("No matching text found in scope '%1'.")
                     .arg(command.scopeId));
+
     return false;
   }
 
@@ -177,7 +211,7 @@ bool EditSession::proposeMany(const QVector<EditCommand> &commands) {
   abort();
 
   if (!m_editor) {
-    emit failed(QStringLiteral("No active editor."));
+    emit failed(noActiveEditorError());
     return false;
   }
 
@@ -186,31 +220,37 @@ bool EditSession::proposeMany(const QVector<EditCommand> &commands) {
     return false;
   }
 
-  auto *document = qobject_cast<TextDocument *>(m_editor->document());
+  TextDocument *document = qobject_cast<TextDocument *>(m_editor->document());
   if (!document) {
-    emit failed(QStringLiteral("Active editor does not use TextDocument."));
+    emit failed(invalidDocumentError());
     return false;
   }
 
-  for (int i = 0; i < commands.size(); ++i) {
-    if (!commands.at(i).isValid()) {
-      emit failed(QStringLiteral("Edit %1 is invalid.").arg(i + 1));
-      return false;
+  for (int index = 0; index < commands.size(); ++index) {
+    if (commands.at(index).isValid()) {
+      continue;
     }
+
+    emit failed(QStringLiteral("Edit %1 is invalid.").arg(index + 1));
+    return false;
   }
 
   setState(State::Matching);
+
   document->rebuildStructure();
   m_documentRevision = document->revision();
 
   QVector<EditMatch> matches;
+
   if (!resolveBatch(commands, matches)) {
     setState(State::Idle);
     return false;
   }
 
   setState(State::Applying);
+
   const bool applied = m_applier->applyBatch(*document, commands, matches);
+
   m_pendingCandidates.clear();
   setState(State::Idle);
 
@@ -220,7 +260,7 @@ bool EditSession::proposeMany(const QVector<EditCommand> &commands) {
 bool EditSession::prepareStreaming(const EditCommand &command,
                                    int pendingEditId) {
   if (!m_editor) {
-    emit failed(QStringLiteral("No active editor."));
+    emit failed(noActiveEditorError());
     return false;
   }
 
@@ -233,9 +273,9 @@ bool EditSession::prepareStreaming(const EditCommand &command,
     m_applier->cancelStreaming();
   }
 
-  auto *document = qobject_cast<TextDocument *>(m_editor->document());
+  TextDocument *document = qobject_cast<TextDocument *>(m_editor->document());
   if (!document) {
-    emit failed(QStringLiteral("Active editor does not use TextDocument."));
+    emit failed(invalidDocumentError());
     return false;
   }
 
@@ -248,6 +288,7 @@ bool EditSession::prepareStreaming(const EditCommand &command,
   setState(State::Matching);
 
   EditMatch match;
+
   if (!resolveCommand(command, match)) {
     setState(State::Idle);
     return false;
@@ -262,46 +303,47 @@ bool EditSession::prepareStreaming(const EditCommand &command,
   m_pendingMatch = match;
   m_currentPendingEditId = pendingEditId;
 
-  PendingEdit *pending = nullptr;
+  PendingEdit *pendingEdit = nullptr;
 
-  for (PendingEdit &pe : m_pendingEdits) {
-    if (pe.id == pendingEditId) {
-      pending = &pe;
-      break;
+  for (PendingEdit &edit : m_pendingEdits) {
+    if (edit.id != pendingEditId) {
+      continue;
     }
+
+    pendingEdit = &edit;
+    break;
   }
 
-  if (!pending) {
-    PendingEdit newEdit;
-    newEdit.id = pendingEditId;
-    newEdit.command = command;
-    newEdit.match = match;
-    newEdit.generatedText.clear();
-    newEdit.accepted = true;
-    newEdit.completed = false;
+  if (!pendingEdit) {
+    PendingEdit edit;
+    edit.id = pendingEditId;
+    edit.command = command;
+    edit.match = match;
+    edit.generatedText.clear();
+    edit.accepted = true;
+    edit.completed = false;
 
-    m_pendingEdits.append(newEdit);
-
-    pending = &m_pendingEdits.last();
+    m_pendingEdits.append(edit);
+    pendingEdit = &m_pendingEdits.last();
   } else {
-    pending->command = command;
-    pending->match = match;
-    pending->generatedText.clear();
-    pending->accepted = true;
-    pending->completed = false;
-    pending->hasConflict = false;
+    pendingEdit->command = command;
+    pendingEdit->match = match;
+    pendingEdit->generatedText.clear();
+    pendingEdit->accepted = true;
+    pendingEdit->completed = false;
+    pendingEdit->hasConflict = false;
   }
 
-  emit pendingEditStarted(*pending);
+  emit pendingEditStarted(*pendingEdit);
 
   if (command.operation == EditCommand::Operation::Delete) {
-    pending->completed = true;
+    pendingEdit->completed = true;
 
-    emit pendingEditFinished(*pending);
+    emit pendingEditFinished(*pendingEdit);
 
     m_pendingMatch = EditMatch();
     m_pendingCommand = EditCommand();
-    m_currentPendingEditId = 0;
+    m_currentPendingEditId = InvalidPendingEditId;
 
     setState(State::WaitingForReview);
 
@@ -317,17 +359,18 @@ bool EditSession::prepareStreaming(const EditCommand &command,
 
 bool EditSession::appendStreaming(const QString &text) {
   if (m_state != State::Streaming) {
-    emit failed(QStringLiteral("EditSession 1: No streaming edit is active."));
+    emit failed(QStringLiteral("No streaming edit is active."));
     return false;
   }
 
-
   for (PendingEdit &edit : m_pendingEdits) {
-    if (edit.id == m_currentPendingEditId) {
-      edit.generatedText += text;
-      emit pendingEditUpdated(edit);
-      return true;
+    if (edit.id != m_currentPendingEditId) {
+      continue;
     }
+
+    edit.generatedText += text;
+    emit pendingEditUpdated(edit);
+    return true;
   }
 
   emit failed(QStringLiteral("Pending edit was not found."));
@@ -336,31 +379,40 @@ bool EditSession::appendStreaming(const QString &text) {
 
 bool EditSession::finishStreaming() {
   if (m_state != State::Streaming) {
-    emit failed(QStringLiteral("EditSession 2: No streaming edit is active."));
+    emit failed(QStringLiteral("No streaming edit is active."));
     return false;
   }
 
-
+  PendingEdit *pendingEdit = nullptr;
 
   for (PendingEdit &edit : m_pendingEdits) {
-    if (edit.id == m_currentPendingEditId) {
-      if (edit.command.operation != EditCommand::Operation::Delete &&
-          edit.generatedText.isEmpty()) {
-        emit failed(QStringLiteral("Streaming edit produced no content."));
-        return false;
-      }
-
-      edit.command.newString = edit.generatedText;
-      edit.completed = true;
-
-      emit pendingEditFinished(edit);
-      break;
+    if (edit.id != m_currentPendingEditId) {
+      continue;
     }
+
+    pendingEdit = &edit;
+    break;
   }
+
+  if (!pendingEdit) {
+    emit failed(QStringLiteral("Pending edit was not found."));
+    return false;
+  }
+
+  if (pendingEdit->command.operation != EditCommand::Operation::Delete &&
+      pendingEdit->generatedText.isEmpty()) {
+    emit failed(QStringLiteral("Streaming edit produced no content."));
+    return false;
+  }
+
+  pendingEdit->command.newString = pendingEdit->generatedText;
+  pendingEdit->completed = true;
+
+  emit pendingEditFinished(*pendingEdit);
 
   m_pendingMatch = EditMatch();
   m_pendingCommand = EditCommand();
-  m_currentPendingEditId = 0;
+  m_currentPendingEditId = InvalidPendingEditId;
 
   setState(State::WaitingForReview);
   emit reviewReady();
@@ -379,8 +431,8 @@ void EditSession::abort() {
   m_pendingEdits.clear();
   m_pendingMatch = EditMatch();
   m_pendingCommand = EditCommand();
-  m_currentPendingEditId = 0;
-  m_documentRevision = -1;
+  m_currentPendingEditId = InvalidPendingEditId;
+  m_documentRevision = InvalidRevision;
 
   setState(State::Idle);
 
@@ -401,22 +453,24 @@ void EditSession::setState(State state) {
 void EditSession::applyCandidate(const EditMatch &match) {
   if (!m_editor) {
     setState(State::Idle);
-    emit failed(QStringLiteral("No active editor."));
+    emit failed(noActiveEditorError());
     return;
   }
 
-  auto *document = qobject_cast<TextDocument *>(m_editor->document());
+  TextDocument *document = qobject_cast<TextDocument *>(m_editor->document());
   if (!document) {
     setState(State::Idle);
-    emit failed(QStringLiteral("Active editor does not use TextDocument."));
+    emit failed(invalidDocumentError());
     return;
   }
 
   if (document->revision() != m_documentRevision) {
     m_pendingCandidates.clear();
     setState(State::Idle);
+
     emit failed(
         QStringLiteral("Document changed before the edit was applied."));
+
     return;
   }
 
@@ -427,20 +481,22 @@ void EditSession::applyCandidate(const EditMatch &match) {
   }
 
   setState(State::Applying);
+
   m_applier->apply(*document, m_pendingCommand, match);
+
   m_pendingCandidates.clear();
   setState(State::Idle);
 }
 
 bool EditSession::resolveCommand(const EditCommand &command, EditMatch &match) {
   if (!m_editor) {
-    emit failed(QStringLiteral("No active editor."));
+    emit failed(noActiveEditorError());
     return false;
   }
 
-  auto *document = qobject_cast<TextDocument *>(m_editor->document());
+  TextDocument *document = qobject_cast<TextDocument *>(m_editor->document());
   if (!document) {
-    emit failed(QStringLiteral("Active editor does not use TextDocument."));
+    emit failed(invalidDocumentError());
     return false;
   }
 
@@ -449,9 +505,11 @@ bool EditSession::resolveCommand(const EditCommand &command, EditMatch &match) {
   }
 
   const EditMatcher::Result result = m_matcher.find(*document, command);
+
   if (result.candidates.isEmpty()) {
     emit failed(QStringLiteral("No matching text found in scope '%1'.")
                     .arg(command.scopeId));
+
     return false;
   }
 
@@ -459,6 +517,7 @@ bool EditSession::resolveCommand(const EditCommand &command, EditMatch &match) {
     emit failed(QStringLiteral("Edit has %1 possible matches in scope '%2'.")
                     .arg(result.candidates.size())
                     .arg(command.scopeId));
+
     return false;
   }
 
@@ -472,22 +531,32 @@ bool EditSession::resolveSingle(const EditCommand &command, EditMatch &match) {
 
 bool EditSession::resolveBatch(const QVector<EditCommand> &commands,
                                QVector<EditMatch> &matches) {
-  auto *document = qobject_cast<TextDocument *>(m_editor->document());
+  if (!m_editor) {
+    emit failed(noActiveEditorError());
+    return false;
+  }
+
+  TextDocument *document = qobject_cast<TextDocument *>(m_editor->document());
   if (!document) {
-    emit failed(QStringLiteral("Active editor does not use TextDocument."));
+    emit failed(invalidDocumentError());
     return false;
   }
 
   matches.clear();
   matches.reserve(commands.size());
 
-  for (int i = 0; i < commands.size(); ++i) {
+  for (int index = 0; index < commands.size(); ++index) {
     EditMatch match;
-    if (!resolveSingle(commands.at(i), match)) {
-      emit failed(QStringLiteral("Edit %1 could not be resolved.").arg(i + 1));
-      return false;
+
+    if (resolveSingle(commands.at(index), match)) {
+      matches.append(match);
+      continue;
     }
-    matches.append(match);
+
+    emit failed(
+        QStringLiteral("Edit %1 could not be resolved.").arg(index + 1));
+
+    return false;
   }
 
   if (document->revision() != m_documentRevision) {
@@ -500,48 +569,112 @@ bool EditSession::resolveBatch(const QVector<EditCommand> &commands,
 
 bool EditSession::createInsertionMatch(const EditCommand &command,
                                        EditMatch &match) {
-  auto *document = qobject_cast<TextDocument *>(m_editor->document());
-  if (!document) {
-    emit failed(QStringLiteral("Active editor does not use TextDocument."));
+  if (!m_editor) {
+    emit failed(noActiveEditorError());
     return false;
   }
 
-  if (!command.findString.isEmpty()) {
-    emit failed(
-        QStringLiteral("Insert operations must have an empty find string."));
+  TextDocument *document = qobject_cast<TextDocument *>(m_editor->document());
+  if (!document) {
+    emit failed(invalidDocumentError());
     return false;
   }
 
   document->rebuildStructure();
+
+  const QString documentText = document->toPlainText();
+  const int documentLength = documentText.size();
+
+  // An empty scope represents the synthetic document root.
+  if (command.scopeId.isEmpty()) {
+    if (!documentText.isEmpty()) {
+      emit failed(
+          QStringLiteral("Empty insertion scope is only valid for an empty "
+                         "document."));
+
+      return false;
+    }
+
+    if (!command.findString.isEmpty()) {
+      emit failed(
+          QStringLiteral("The empty document root cannot have an insertion "
+                         "anchor."));
+
+      return false;
+    }
+
+    match.start = 0;
+    match.end = 0;
+    match.highlightStart = 0;
+    match.highlightEnd = documentLength;
+    match.editDistance = 0;
+    match.matchedText.clear();
+
+    return true;
+  }
+
   const DocumentStructure &structure = document->structure();
   const DocumentNode *scope = structure.find(command.scopeId);
 
   if (!scope) {
     emit failed(QStringLiteral("Insertion scope '%1' was not found.")
                     .arg(command.scopeId));
+
     return false;
   }
 
   const int scopeStart = scope->start;
   const int scopeEnd = scope->end;
-  const int documentLength = document->toPlainText().size();
 
   const bool validStart = scopeStart >= 0 && scopeStart <= documentLength;
+
   const bool validEnd = scopeEnd >= scopeStart && scopeEnd <= documentLength;
 
   if (!validStart || !validEnd) {
     emit failed(QStringLiteral("Insertion scope '%1' has an invalid range.")
                     .arg(command.scopeId));
+
     return false;
   }
 
-  int position = scopeStart;
-  if (command.position == EditCommand::Position::After) {
-    position = scopeEnd;
+  if (!command.findString.isEmpty()) {
+    const QString scopeText =
+        documentText.mid(scopeStart, scopeEnd - scopeStart);
+
+    const int anchorOffset = scopeText.indexOf(command.findString);
+
+    if (anchorOffset < 0) {
+      emit failed(
+          QStringLiteral("Insertion anchor was not found in scope '%1'.")
+              .arg(command.scopeId));
+
+      return false;
+    }
+
+    const int anchorStart = scopeStart + anchorOffset;
+    const int anchorEnd = anchorStart + command.findString.size();
+
+    const int insertionPosition =
+        command.position == EditCommand::Position::Before ? anchorStart
+                                                          : anchorEnd;
+
+    match.start = insertionPosition;
+    match.end = insertionPosition;
+    match.highlightStart = scopeStart;
+    match.highlightEnd = scopeEnd;
+    match.editDistance = 0;
+    match.matchedText = command.findString;
+
+    return true;
   }
 
-  match.start = position;
-  match.end = position;
+  const int insertionPosition =
+      command.position == EditCommand::Position::After ? scopeEnd : scopeStart;
+
+  match.start = insertionPosition;
+  match.end = insertionPosition;
+  match.highlightStart = scopeStart;
+  match.highlightEnd = scopeEnd;
   match.editDistance = 0;
   match.matchedText.clear();
 
@@ -555,8 +688,10 @@ bool EditSession::setPendingEditAccepted(int id, bool accepted) {
     }
 
     edit.accepted = accepted;
+
     emit pendingEditUpdated(edit);
     emit pendingEditsChanged();
+
     return true;
   }
 
@@ -567,6 +702,7 @@ void EditSession::acceptAllPendingEdits() {
   for (PendingEdit &edit : m_pendingEdits) {
     edit.accepted = true;
   }
+
   emit pendingEditsChanged();
 }
 
@@ -574,24 +710,26 @@ void EditSession::rejectAllPendingEdits() {
   for (PendingEdit &edit : m_pendingEdits) {
     edit.accepted = false;
   }
+
   emit pendingEditsChanged();
 }
 
 bool EditSession::applyPendingEdit(PendingEdit &edit) {
   if (!m_editor) {
-    emit failed(QStringLiteral("No active editor."));
+    emit failed(noActiveEditorError());
     return false;
   }
 
-  auto *document = qobject_cast<TextDocument *>(m_editor->document());
+  TextDocument *document = qobject_cast<TextDocument *>(m_editor->document());
   if (!document) {
-    emit failed(QStringLiteral("Active editor does not use TextDocument."));
+    emit failed(invalidDocumentError());
     return false;
   }
 
   if (!edit.completed) {
     emit failed(
         QStringLiteral("Pending edit %1 is not complete.").arg(edit.id));
+
     return false;
   }
 
@@ -603,6 +741,7 @@ bool EditSession::applyPendingEdit(PendingEdit &edit) {
       edit.command.newString.isEmpty()) {
     emit failed(QStringLiteral("Pending edit %1 has no generated content.")
                     .arg(edit.id));
+
     return false;
   }
 
@@ -611,17 +750,18 @@ bool EditSession::applyPendingEdit(PendingEdit &edit) {
 
 bool EditSession::applyAcceptedPendingEdits() {
   if (!m_editor) {
-    emit failed(QStringLiteral("No active editor."));
+    emit failed(noActiveEditorError());
     return false;
   }
 
-  auto *document = qobject_cast<TextDocument *>(m_editor->document());
+  TextDocument *document = qobject_cast<TextDocument *>(m_editor->document());
   if (!document) {
-    emit failed(QStringLiteral("Active editor does not use TextDocument."));
+    emit failed(invalidDocumentError());
     return false;
   }
 
   QVector<PendingEdit *> selected;
+
   for (PendingEdit &edit : m_pendingEdits) {
     if (edit.completed && edit.accepted) {
       selected.append(&edit);
@@ -629,8 +769,8 @@ bool EditSession::applyAcceptedPendingEdits() {
   }
 
   std::sort(selected.begin(), selected.end(),
-            [](const PendingEdit *a, const PendingEdit *b) {
-              return a->match.start > b->match.start;
+            [](const PendingEdit *left, const PendingEdit *right) {
+              return left->match.start > right->match.start;
             });
 
   for (PendingEdit *edit : selected) {
@@ -640,6 +780,7 @@ bool EditSession::applyAcceptedPendingEdits() {
   }
 
   document->rebuildStructure();
+
   m_pendingEdits.clear();
 
   emit pendingEditsChanged();
@@ -664,21 +805,23 @@ void EditSession::onCandidateSelected(int index) {
 
   if (!m_editor) {
     abort();
-    emit failed(QStringLiteral("No active editor."));
+    emit failed(noActiveEditorError());
     return;
   }
 
-  auto *document = qobject_cast<TextDocument *>(m_editor->document());
+  TextDocument *document = qobject_cast<TextDocument *>(m_editor->document());
   if (!document) {
     abort();
-    emit failed(QStringLiteral("Active editor does not use TextDocument."));
+    emit failed(invalidDocumentError());
     return;
   }
 
   if (document->revision() != m_documentRevision) {
     m_pendingCandidates.clear();
     setState(State::Idle);
+
     emit failed(QStringLiteral("Document changed before candidate selection."));
+
     return;
   }
 
@@ -687,6 +830,5 @@ void EditSession::onCandidateSelected(int index) {
     return;
   }
 
-  const EditMatch match = m_pendingCandidates.at(index);
-  applyCandidate(match);
+  applyCandidate(m_pendingCandidates.at(index));
 }

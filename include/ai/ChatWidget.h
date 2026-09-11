@@ -10,6 +10,7 @@
 #include <QVector>
 #include <QWidget>
 
+class NotificationManager;
 class QCheckBox;
 class QLineEdit;
 class QPushButton;
@@ -96,7 +97,7 @@ private:
   void renderLastAssistantMessage();
 
   void resetEditState();
-
+  NotificationManager *m_notifications = nullptr;
   QString describeCommand(const EditCommand &command) const;
 
   InferenceService *m_inferenceService{nullptr};
