@@ -78,6 +78,16 @@ add_executable(Episteme src/main.cpp
         include/text/structure/DocumentNode.h
         src/text/structure/PlainTextStructureParser.cpp
         include/text/structure/PlainTextStructureParser.h
+        include/ai/EditSessionWidget.cpp
+        include/ai/EditSessionWidget.h
+        include/ai/edit/PendingEdit.cpp
+        include/ai/edit/PendingEdit.h
+        src/app/PayloadLogger.cpp
+        include/app/PayloadLogger.h
+        src/ai/edit/EditConflict.cpp
+        include/ai/edit/EditConflict.h
+        src/ai/edit/EditPlanner.cpp
+        include/ai/edit/EditPlanner.h
 )
 
 target_include_directories(Episteme PUBLIC

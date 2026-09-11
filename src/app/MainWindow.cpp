@@ -3,6 +3,7 @@
 #include "app/QfPaths.h"
 #include "ui/ModelDialog.h"
 
+#include <QAction>
 #include <QApplication>
 #include <QFileDialog>
 #include <QIcon>
@@ -17,18 +18,25 @@
 
 MainWindow::MainWindow() {
   QWidget *widget = new QWidget;
+
   setCentralWidget(widget);
 
   setCorner(Qt::TopLeftCorner, Qt::LeftDockWidgetArea);
+
   setCorner(Qt::BottomLeftCorner, Qt::LeftDockWidgetArea);
+
   setCorner(Qt::TopRightCorner, Qt::RightDockWidgetArea);
+
   setCorner(Qt::BottomRightCorner, Qt::RightDockWidgetArea);
 
   textWidget = new TextWidget(this);
+
   fileWidget = new FileWidget(widget);
+
   documentManager = new DocumentManager(this);
 
   inferenceService = new InferenceService(this);
+
   inferenceService->initialize(LlamaManager::Backend::Vulkan,
                                QFPaths::sttModelsDir());
 
@@ -65,19 +73,46 @@ MainWindow::MainWindow() {
       documentManager, &DocumentManager::documentChanged, this,
       [this](TextDocument *) { editSession->setEditor(textWidget->editor()); });
 
-  QSplitter *splitter = new QSplitter(Qt::Vertical, widget);
+  /*
+   * Left:
+   *     File manager
+   *
+   * Right:
+   *     Text editor
+   *     AI chat
+   */
+  QSplitter *mainSplitter = new QSplitter(Qt::Horizontal, widget);
 
-  splitter->addWidget(textWidget);
-  splitter->addWidget(fileWidget);
-  splitter->addWidget(chatWidget);
+  mainSplitter->addWidget(fileWidget);
 
-  splitter->setSizes({600, 150, 250});
+  /*
+   * The right side gets its own vertical splitter so the editor
+   * and chat remain independently resizable.
+   */
+  QSplitter *rightSplitter = new QSplitter(Qt::Vertical, mainSplitter);
+
+  rightSplitter->addWidget(textWidget);
+
+  rightSplitter->addWidget(chatWidget);
+
+  /*
+   * Give the file manager a useful but relatively narrow width.
+   * The editor gets most of the space.
+   */
+  mainSplitter->setSizes({240, 960});
+
+  /*
+   * Give the editor more vertical space than the chat.
+   */
+  rightSplitter->setSizes({650, 300});
 
   QVBoxLayout *layout = new QVBoxLayout(widget);
 
   layout->setContentsMargins(5, 5, 5, 5);
 
-  layout->addWidget(splitter);
+  layout->addWidget(mainSplitter);
+
+  setLayout(layout);
 
   createActions();
   createMenus();

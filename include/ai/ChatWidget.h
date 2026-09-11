@@ -1,121 +1,151 @@
-#pragma once
+#ifndef CHATWIDGET_H
+#define CHATWIDGET_H
 
-#include "EditMatch.h"
+#include "PayloadLogger.h"
+#include "edit/EditCommand.h"
+#include "edit/EditMatch.h"
 
-#include <QElapsedTimer>
-#include <QVBoxLayout>
+#include <QList>
+#include <QString>
 #include <QVector>
 #include <QWidget>
 
 class QCheckBox;
-class QHBoxLayout;
 class QLineEdit;
 class QPushButton;
 class QTextEdit;
+class QVBoxLayout;
 
-class InferenceService;
+class EditPlanner;
 class EditSession;
+class EditSessionWidget;
+class InferenceService;
 class TextEdit;
 
 class ChatWidget : public QWidget {
-    Q_OBJECT
+  Q_OBJECT
 
 public:
-    explicit ChatWidget(
-        InferenceService *inferenceService,
-        EditSession *editSession,
-        QWidget *parent = nullptr);
+  explicit ChatWidget(InferenceService *inferenceService,
+                      EditSession *editSession, QWidget *parent = nullptr);
 
-    void setActiveEditor(
-        TextEdit *editor);
+  void setActiveEditor(TextEdit *editor);
 
-    void submitTranscribedText(
-        const QString &text);
+  void submitTranscribedText(const QString &text);
 
 private slots:
-    void onSendClicked();
+  void onSendClicked();
 
-    void onLlmDelta(
-        const QString &text);
+  void onLlmDelta(const QString &text);
 
-    void onLlmFinished();
+  void onLlmFinished();
 
-    void onLlmError(
-        const QString &error);
+  void onLlmError(const QString &error);
 
-    void onEditCandidatesReady(
-        const QVector<EditMatch> &candidates);
+  void onPlanFailed(const QString &reason);
 
-    void onEditApplied(
-        bool fuzzy,
-        int editDistance);
+  void onEditCandidatesReady(const QVector<EditMatch> &candidates);
 
-    void onEditFailed(
-        const QString &reason);
+  void onEditApplied(bool fuzzy, int editDistance);
 
-    void onEditAborted();
+  void onEditFailed(const QString &reason);
+
+  void onEditAborted();
+
+  void onConflictsDetected();
+
+  void onPlanReady(const QVector<EditCommand> &plannedCommands);
+
+  void onConflictResolved(int groupId, int keepEditNumber);
+
+  void onConflictGroupDiscarded(int groupId);
+
+  void onConflictBatchAborted();
+
+  void onPendingEditAccepted(int editNumber);
+
+  void onPendingEditRejected(int editNumber);
+
+  void onAcceptAllPendingEdits();
+
+  void onRejectAllPendingEdits();
+
+  void onApplyAcceptedPendingEdits();
+
+  void onReviewReady();
 
 private:
-    void sendPrompt(
-        const QString &prompt);
+  enum class EditPhase { None, Content };
 
-    bool takeNextJsonObject(
-        QString &buffer,
-        QString &objectText);
+  void sendPrompt(const QString &prompt);
 
-    void processEditStream();
+  void requestNextEditCommand();
 
-    void appendUserMessage(
-        const QString &text);
+  void beginStreamingResolvedPlan();
 
-    void appendAssistantChunk(
-        const QString &text);
+  void executeNextPlannedEdit();
 
-    void appendStatusMessage(
-        const QString &text);
+  void requestEditContent();
 
-    void renderLastAssistantMessage();
+  void appendUserMessage(const QString &text);
 
-    InferenceService *m_inferenceService =
-        nullptr;
+  void appendAssistantChunk(const QString &text);
 
-    EditSession *m_editSession =
-        nullptr;
+  void appendStatusMessage(const QString &text);
 
-    TextEdit *m_activeEditor =
-        nullptr;
+  void renderLastAssistantMessage();
 
-    QTextEdit *m_transcript =
-        nullptr;
+  void resetEditState();
 
-    QLineEdit *m_input =
-        nullptr;
+  QString describeCommand(const EditCommand &command) const;
 
-    QPushButton *m_sendButton =
-        nullptr;
+  InferenceService *m_inferenceService{nullptr};
 
-    QCheckBox *m_editModeCheckbox =
-        nullptr;
+  EditSession *m_editSession{nullptr};
 
-    QVBoxLayout *m_layout =
-        nullptr;
+  EditPlanner *m_editPlanner{nullptr};
 
-    QString m_streamingResponse;
+  TextEdit *m_activeEditor{nullptr};
 
-    int m_streamingEditCount =
-        0;
+  PayloadLogger m_payloadLogger;
 
-    bool m_assistantMessageOpen =
-        false;
+  QTextEdit *m_transcript{nullptr};
 
-    bool m_awaitingEdit =
-        false;
+  QLineEdit *m_input{nullptr};
 
-    bool m_editGenerationStopped =
-        false;
+  QPushButton *m_sendButton{nullptr};
 
-    bool m_editAbortRequested =
-        false;
+  QCheckBox *m_editModeCheckbox{nullptr};
 
-    QElapsedTimer m_editTimer;
+  EditSessionWidget *m_editSessionWidget{nullptr};
+
+  QVBoxLayout *m_layout{nullptr};
+
+  QString m_currentEditRequest;
+  QString m_currentCommandJson;
+  QString m_currentCommandDescription;
+  QString m_currentEditInstruction;
+  QString m_currentLlmResponse;
+
+  QList<EditCommand> m_plannedEdits;
+
+  EditPhase m_editPhase{EditPhase::None};
+
+  size_t m_nextPlannedEditIndex{0};
+
+  int m_currentEditNumber{0};
+
+  int m_streamingEditCount{0};
+
+  bool m_assistantMessageOpen{false};
+
+  bool m_awaitingEdit{false};
+
+  bool m_editGenerationStopped{false};
+
+  bool m_editAbortRequested{false};
+
+  bool m_planReadyToStream{false};
 };
+
+#endif // CHATWIDGET_H

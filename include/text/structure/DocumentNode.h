@@ -12,17 +12,13 @@ struct DocumentNode {
 
   QVector<DocumentNode> children;
 
-  bool isRoot() const {
-    return id == QStringLiteral("document");
-  }
+  bool isRoot() const { return id == QStringLiteral("document"); }
 
   bool isValid() const {
     if (isRoot()) {
       return start >= 0 && end >= start;
     }
 
-    return !id.isEmpty() &&
-           start >= 0 &&
-           end > start;
+    return !id.isEmpty() && start >= 0 && end > start;
   }
 };

@@ -9,6 +9,7 @@ namespace {
 
 QVector<EditMatch> deduplicateCandidates(const QVector<EditMatch> &input) {
   QVector<EditMatch> result;
+
   QSet<QString> seen;
 
   for (const EditMatch &candidate : input) {
@@ -20,6 +21,7 @@ QVector<EditMatch> deduplicateCandidates(const QVector<EditMatch> &input) {
     }
 
     seen.insert(key);
+
     result.append(candidate);
   }
 
@@ -32,7 +34,11 @@ EditMatcher::Result EditMatcher::find(const TextDocument &document,
                                       const EditCommand &command) const {
   Result result;
 
-  if (!command.isValid()) {
+  /*
+   * This matcher is resolving the structural command.
+   * newString is not available yet during the command phase.
+   */
+  if (!command.isCommandValid()) {
     return result;
   }
 
@@ -92,6 +98,7 @@ EditMatcher::Result EditMatcher::findExact(const QString &text,
     match.end = match.start + needle.size();
 
     match.editDistance = 0;
+
     match.matchedText = needle;
 
     result.candidates.append(std::move(match));
@@ -106,6 +113,7 @@ EditMatcher::Result EditMatcher::findFuzzy(const QString &text,
                                            const QString &needle,
                                            int offset) const {
   Result result;
+
   result.fuzzy = true;
 
   if (text.isEmpty() || needle.isEmpty()) {
@@ -136,6 +144,7 @@ EditMatcher::Result EditMatcher::findFuzzy(const QString &text,
       edlibResult.numLocations <= 0 || edlibResult.startLocations == nullptr ||
       edlibResult.endLocations == nullptr) {
     edlibFreeAlignResult(edlibResult);
+
     return {};
   }
 

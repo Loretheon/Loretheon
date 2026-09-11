@@ -1,8 +1,8 @@
 #ifndef EPISTEME_TEXTDOCUMENT_H
 #define EPISTEME_TEXTDOCUMENT_H
 
-#include "DocumentMode.h"
 #include "../structure/DocumentStructure.h"
+#include "DocumentMode.h"
 
 #include <QTextDocument>
 
@@ -13,20 +13,17 @@ class TextDocument : public QTextDocument {
   Q_OBJECT
 
 public:
-  explicit TextDocument(
-      QObject *parent = nullptr);
+  explicit TextDocument(QObject *parent = nullptr);
 
   ~TextDocument() override;
 
   QString filePath() const;
 
-  void setFilePath(
-      const QString &path);
+  void setFilePath(const QString &path);
 
   DocumentMode type() const;
 
-  void setType(
-      DocumentMode type);
+  void setType(DocumentMode type);
 
   const DocumentStructure &structure() const;
 
@@ -35,23 +32,19 @@ public:
 private:
   QString path;
 
-  DocumentMode docType =
-      DocumentMode::PlainText;
+  DocumentMode docType = DocumentMode::PlainText;
 
   mutable DocumentStructure m_structure;
 
-  mutable int m_structureRevision =
-      -1;
+  mutable int m_structureRevision = -1;
 
   /*
    * Markdown parser state is kept with the document so
    * Tree-sitter can incrementally reparse after edits.
    */
-  mutable TSParser *m_markdownParser =
-      nullptr;
+  mutable TSParser *m_markdownParser = nullptr;
 
-  mutable TSTree *m_markdownTree =
-      nullptr;
+  mutable TSTree *m_markdownTree = nullptr;
 };
 
 #endif // EPISTEME_TEXTDOCUMENT_H

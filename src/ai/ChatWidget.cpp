@@ -1,970 +1,1524 @@
 #include "ChatWidget.h"
 
 #include "EditGrammar.h"
-#include "edit/EditCommand.h"
+#include "EditSessionWidget.h"
+#include "edit/EditPlanner.h"
 #include "edit/EditSession.h"
-#include "edit/EditMatch.h"
 
 #include "../text/TextEdit.h"
-#include "../text/model/TextDocument.h"
 
 #include "inference/InferenceService.h"
 
 #include <QCheckBox>
-#include <QDebug>
-#include <QElapsedTimer>
+#include <QFont>
 #include <QHBoxLayout>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
-#include <QJsonParseError>
-#include <QJsonValue>
+#include <QLabel>
 #include <QLineEdit>
+#include <QMetaObject>
 #include <QPushButton>
+#include <QSplitter>
 #include <QTextCursor>
 #include <QTextEdit>
 #include <QVBoxLayout>
+
+namespace {
+
+QString editCommandOperationString(
+    const EditCommand &command) {
+  switch (command.operation) {
+  case EditCommand::Operation::Insert:
+    return QStringLiteral("insert");
+
+  case EditCommand::Operation::Replace:
+    return QStringLiteral("replace");
+
+  case EditCommand::Operation::Delete:
+    return QStringLiteral("delete");
+  }
+
+  return {};
+}
+
+QString editCommandPositionString(
+    const EditCommand &command) {
+  switch (command.position) {
+  case EditCommand::Position::Before:
+    return QStringLiteral("before");
+
+  case EditCommand::Position::After:
+    return QStringLiteral("after");
+  }
+
+  return {};
+}
+
+QJsonObject editCommandToJson(
+    const EditCommand &command) {
+  QJsonObject object;
+
+  object.insert(
+      QStringLiteral("operation"),
+      editCommandOperationString(command));
+
+  object.insert(
+      QStringLiteral("scope"),
+      command.scopeId);
+
+  object.insert(
+      QStringLiteral("position"),
+      editCommandPositionString(command));
+
+  object.insert(
+      QStringLiteral("find"),
+      command.findString);
+
+  object.insert(
+      QStringLiteral("all"),
+      command.replaceAll);
+
+  object.insert(
+      QStringLiteral("instruction"),
+      command.instruction);
+
+  return object;
+}
+
+} // namespace
 
 ChatWidget::ChatWidget(
     InferenceService *inferenceService,
     EditSession *editSession,
     QWidget *parent)
-    : QWidget(parent)
-    , m_inferenceService(inferenceService)
-    , m_editSession(editSession) {
-    m_transcript =
-        new QTextEdit(this);
+    : QWidget(parent),
+      m_inferenceService(inferenceService),
+      m_editSession(editSession) {
+  m_transcript = new QTextEdit(this);
 
-    m_transcript->setReadOnly(
-        true);
+  m_transcript->setReadOnly(true);
+  m_transcript->setAcceptRichText(true);
+  m_transcript->setLineWrapMode(
+      QTextEdit::WidgetWidth);
+  m_transcript->setFrameShape(
+      QFrame::NoFrame);
 
-    m_input =
-        new QLineEdit(this);
+  m_transcript->setStyleSheet(
+      QStringLiteral(
+          "QTextEdit {"
+          "    background: palette(base);"
+          "    border: none;"
+          "    padding: 14px;"
+          "}"));
 
-    m_sendButton =
-        new QPushButton(
-            tr("Send"),
+  m_input = new QLineEdit(this);
+
+  m_input->setPlaceholderText(
+      tr("Ask the assistant…"));
+
+  m_input->setClearButtonEnabled(true);
+  m_input->setMinimumHeight(38);
+
+  m_input->setStyleSheet(
+      QStringLiteral(
+          "QLineEdit {"
+          "    border: 1px solid palette(mid);"
+          "    border-radius: 7px;"
+          "    padding: 7px 10px;"
+          "}"
+          "QLineEdit:focus {"
+          "    border: 1px solid #4a90e2;"
+          "}"));
+
+  m_sendButton =
+      new QPushButton(
+          tr("Send"),
+          this);
+
+  m_sendButton->setMinimumHeight(38);
+  m_sendButton->setMinimumWidth(76);
+
+  m_sendButton->setStyleSheet(
+      QStringLiteral(
+          "QPushButton {"
+          "    border: 1px solid #357abd;"
+          "    border-radius: 7px;"
+          "    background: #4285d4;"
+          "    color: white;"
+          "    padding: 0 14px;"
+          "    font-weight: 600;"
+          "}"
+          "QPushButton:hover {"
+          "    background: #357abd;"
+          "}"
+          "QPushButton:pressed {"
+          "    background: #2d6ca2;"
+          "}"
+          "QPushButton:disabled {"
+          "    background: palette(mid);"
+          "    border-color: palette(mid);"
+          "}"));
+
+  m_editModeCheckbox =
+      new QCheckBox(
+          tr("Edit document"),
+          this);
+
+  m_editModeCheckbox->setToolTip(
+      tr("Plan and preview document edits "
+         "before applying them."));
+
+  m_editModeCheckbox->setStyleSheet(
+      QStringLiteral(
+          "QCheckBox {"
+          "    spacing: 6px;"
+          "    padding: 4px;"
+          "}"));
+
+  m_editSessionWidget =
+      new EditSessionWidget(this);
+
+  if (m_inferenceService) {
+    m_editPlanner =
+        new EditPlanner(
+            m_inferenceService,
             this);
 
-    m_editModeCheckbox =
-        new QCheckBox(
-            tr("Edit document"),
-            this);
-
-    auto *controlsLayout =
-        new QHBoxLayout;
-
-    controlsLayout->addWidget(
-        m_input);
-
-    controlsLayout->addWidget(
-        m_editModeCheckbox);
-
-    controlsLayout->addWidget(
-        m_sendButton);
-
-    m_layout =
-        new QVBoxLayout(this);
-
-    m_layout->addWidget(
-        m_transcript);
-
-    m_layout->addLayout(
-        controlsLayout);
-
-    setLayout(
-        m_layout);
+    connect(
+        m_editPlanner,
+        &EditPlanner::planReady,
+        this,
+        &ChatWidget::onPlanReady);
 
     connect(
-        m_sendButton,
-        &QPushButton::clicked,
+        m_editPlanner,
+        &EditPlanner::failed,
         this,
-        &ChatWidget::onSendClicked);
+        &ChatWidget::onPlanFailed);
+  }
+
+  auto *contentSplitter =
+      new QSplitter(
+          Qt::Horizontal,
+          this);
+
+  contentSplitter->setChildrenCollapsible(false);
+  contentSplitter->setHandleWidth(6);
+
+  contentSplitter->addWidget(
+      m_transcript);
+
+  contentSplitter->addWidget(
+      m_editSessionWidget);
+
+  contentSplitter->setSizes({
+      680,
+      420});
+
+  contentSplitter->setStretchFactor(
+      0,
+      1);
+
+  contentSplitter->setStretchFactor(
+      1,
+      0);
+
+  contentSplitter->setStyleSheet(
+      QStringLiteral(
+          "QSplitter::handle {"
+          "    background: palette(midlight);"
+          "}"));
+
+  auto *controlsFrame =
+      new QWidget(this);
+
+  controlsFrame->setObjectName(
+      QStringLiteral(
+          "chatControls"));
+
+  controlsFrame->setStyleSheet(
+      QStringLiteral(
+          "#chatControls {"
+          "    border-top: 1px solid palette(mid);"
+          "    background: palette(window);"
+          "}"));
+
+  auto *controlsLayout =
+      new QHBoxLayout(
+          controlsFrame);
+
+  controlsLayout->setContentsMargins(
+      10,
+      8,
+      10,
+      10);
+
+  controlsLayout->setSpacing(8);
+
+  controlsLayout->addWidget(
+      m_editModeCheckbox);
+
+  controlsLayout->addWidget(
+      m_sendButton);
+
+  controlsLayout->addWidget(
+      m_input,
+      1);
+
+  m_layout =
+      new QVBoxLayout(this);
+
+  m_layout->setContentsMargins(
+      0,
+      0,
+      0,
+      0);
+
+  m_layout->setSpacing(0);
+
+  m_layout->addWidget(
+      contentSplitter,
+      1);
+
+  m_layout->addWidget(
+      controlsFrame);
+
+  setLayout(m_layout);
+
+  connect(
+      m_sendButton,
+      &QPushButton::clicked,
+      this,
+      &ChatWidget::onSendClicked);
+
+  connect(
+      m_input,
+      &QLineEdit::returnPressed,
+      this,
+      &ChatWidget::onSendClicked);
+
+  if (m_inferenceService) {
+    connect(
+        m_inferenceService,
+        &InferenceService::llmDelta,
+        this,
+        &ChatWidget::onLlmDelta);
 
     connect(
-        m_input,
-        &QLineEdit::returnPressed,
+        m_inferenceService,
+        &InferenceService::llmFinished,
         this,
-        &ChatWidget::onSendClicked);
+        &ChatWidget::onLlmFinished);
 
-    if (m_inferenceService) {
-        connect(
-            m_inferenceService,
-            &InferenceService::llmDelta,
-            this,
-            &ChatWidget::onLlmDelta);
+    connect(
+        m_inferenceService,
+        &InferenceService::llmError,
+        this,
+        &ChatWidget::onLlmError);
+  }
 
-        connect(
-            m_inferenceService,
-            &InferenceService::llmFinished,
-            this,
-            &ChatWidget::onLlmFinished);
+  if (m_editSession) {
+    connect(
+        m_editSession,
+        &EditSession::candidatesReady,
+        this,
+        &ChatWidget::onEditCandidatesReady);
 
-        connect(
-            m_inferenceService,
-            &InferenceService::llmError,
-            this,
-            &ChatWidget::onLlmError);
-    }
+    connect(
+        m_editSession,
+        &EditSession::applied,
+        this,
+        &ChatWidget::onEditApplied);
 
-    if (m_editSession) {
-        connect(
-            m_editSession,
-            &EditSession::candidatesReady,
-            this,
-            &ChatWidget::onEditCandidatesReady);
+    connect(
+        m_editSession,
+        &EditSession::failed,
+        this,
+        &ChatWidget::onEditFailed);
 
-        connect(
-            m_editSession,
-            &EditSession::applied,
-            this,
-            &ChatWidget::onEditApplied);
+    connect(
+        m_editSession,
+        &EditSession::aborted,
+        this,
+        &ChatWidget::onEditAborted);
 
-        connect(
-            m_editSession,
-            &EditSession::failed,
-            this,
-            &ChatWidget::onEditFailed);
+    connect(
+        m_editSession,
+        &EditSession::conflictsDetected,
+        this,
+        &ChatWidget::onConflictsDetected);
 
-        connect(
-            m_editSession,
-            &EditSession::aborted,
-            this,
-            &ChatWidget::onEditAborted);
-    }
+    connect(
+        m_editSession,
+        &EditSession::planReady,
+        this,
+        &ChatWidget::onPlanReady);
+
+    connect(
+        m_editSession,
+        &EditSession::reviewReady,
+        this,
+        &ChatWidget::onReviewReady);
+
+    connect(
+        m_editSession,
+        &EditSession::pendingEditStarted,
+        this,
+        [this](const PendingEdit &edit) {
+          if (m_activeEditor) {
+            m_activeEditor->showPendingEdit(
+                edit);
+          }
+        });
+
+    connect(
+        m_editSession,
+        &EditSession::pendingEditUpdated,
+        this,
+        [this](const PendingEdit &edit) {
+          if (m_activeEditor) {
+            m_activeEditor->updatePendingEdit(
+                edit);
+          }
+        });
+
+    connect(
+        m_editSession,
+        &EditSession::pendingEditFinished,
+        this,
+        [this](const PendingEdit &edit) {
+
+          if (edit.id <= 0) {
+            return;
+          }
+
+          m_editSessionWidget
+              ->setPendingEditReady(
+                  edit.id);
+
+          if (m_activeEditor &&
+              m_activeEditor->autoAcceptEdits()) {
+            onPendingEditAccepted(
+                edit.id);
+          }
+
+          if (!m_awaitingEdit ||
+              m_editPhase ==
+                  EditPhase::None) {
+            return;
+          }
+
+          if (edit.id !=
+              m_currentEditNumber) {
+            return;
+          }
+
+          ++m_nextPlannedEditIndex;
+
+          m_currentEditNumber = 0;
+
+          m_currentEditInstruction.clear();
+          m_currentCommandDescription.clear();
+
+          /*
+           * Do not start the next edit from inside
+           * EditSession::finishStreaming().
+           *
+           * finishStreaming() still has bookkeeping to
+           * complete after emitting pendingEditFinished().
+           * Starting the next request synchronously here
+           * re-enters EditSession and can leave its state
+           * belonging to the previous edit.
+           */
+          if (m_nextPlannedEditIndex >=
+              static_cast<size_t>(
+                  m_plannedEdits.size())) {
+
+            m_editPhase =
+                EditPhase::None;
+
+            m_editGenerationStopped =
+                false;
+
+            m_editAbortRequested =
+                false;
+
+            return;
+          }
+
+          m_editGenerationStopped =
+              false;
+
+          m_editAbortRequested =
+              false;
+
+          QMetaObject::invokeMethod(
+              this,
+              [this]() {
+                if (!m_awaitingEdit ||
+                    m_editPhase ==
+                        EditPhase::None) {
+                  return;
+                }
+
+                executeNextPlannedEdit();
+              },
+              Qt::QueuedConnection);
+        });
+
+    connect(
+        m_editSession,
+        &EditSession::pendingEditsChanged,
+        this,
+        [this]() {
+          if (m_activeEditor) {
+            m_activeEditor
+                ->refreshPendingEdits();
+          }
+        });
+  }
+
+  connect(
+      m_editSessionWidget,
+      &EditSessionWidget::pendingEditAccepted,
+      this,
+      &ChatWidget::onPendingEditAccepted);
+
+  connect(
+      m_editSessionWidget,
+      &EditSessionWidget::pendingEditRejected,
+      this,
+      &ChatWidget::onPendingEditRejected);
+
+  connect(
+      m_editSessionWidget,
+      &EditSessionWidget::
+          acceptAllPendingEditsRequested,
+      this,
+      &ChatWidget::
+          onAcceptAllPendingEdits);
+
+  connect(
+      m_editSessionWidget,
+      &EditSessionWidget::
+          rejectAllPendingEditsRequested,
+      this,
+      &ChatWidget::
+          onRejectAllPendingEdits);
+
+  connect(
+      m_editSessionWidget,
+      &EditSessionWidget::
+          applyAcceptedPendingEditsRequested,
+      this,
+      &ChatWidget::
+          onApplyAcceptedPendingEdits);
+
+  connect(
+      m_editSessionWidget,
+      &EditSessionWidget::skipRequested,
+      this,
+      [this]() {
+
+        if (m_editPlanner) {
+          m_editPlanner->abort();
+        }
+
+        if (m_inferenceService) {
+          m_editGenerationStopped =
+              true;
+
+          m_editAbortRequested =
+              true;
+
+          m_inferenceService
+              ->abortChatRequest();
+        }
+
+        if (m_editSession) {
+          m_editSession->abort();
+        }
+
+        resetEditState();
+      });
+
+  connect(
+      m_editSessionWidget,
+      &EditSessionWidget::conflictResolved,
+      this,
+      &ChatWidget::onConflictResolved);
+
+  connect(
+      m_editSessionWidget,
+      &EditSessionWidget::
+          conflictGroupDiscarded,
+      this,
+      &ChatWidget::
+          onConflictGroupDiscarded);
+
+  connect(
+      m_editSessionWidget,
+      &EditSessionWidget::
+          conflictBatchAborted,
+      this,
+      &ChatWidget::
+          onConflictBatchAborted);
 }
 
 void ChatWidget::setActiveEditor(
     TextEdit *editor) {
-    m_activeEditor =
-        editor;
+  m_activeEditor =
+      editor;
 
-    if (m_editSession) {
-        m_editSession->setEditor(
-            editor);
-    }
+  if (m_editSession) {
+    m_editSession->setEditor(
+        editor);
+  }
+
+  if (m_activeEditor &&
+      m_editSession) {
+    m_activeEditor
+        ->refreshPendingEdits();
+  }
 }
 
 void ChatWidget::submitTranscribedText(
     const QString &text) {
-    if (text.trimmed().isEmpty()) {
-        return;
-    }
+  if (text.trimmed().isEmpty()) {
+    return;
+  }
 
-    m_input->setText(
-        text);
+  m_input->setText(text);
 
-    sendPrompt(
-        text);
+  sendPrompt(text);
 }
 
 void ChatWidget::onSendClicked() {
-    const QString prompt =
-        m_input->text().trimmed();
+  const QString prompt =
+      m_input->text().trimmed();
 
-    if (prompt.isEmpty()) {
-        return;
-    }
+  if (prompt.isEmpty()) {
+    return;
+  }
 
-    m_input->clear();
+  m_input->clear();
 
-    sendPrompt(
-        prompt);
+  sendPrompt(prompt);
 }
 
 void ChatWidget::sendPrompt(
     const QString &prompt) {
-    if (!m_inferenceService) {
-        appendStatusMessage(
-            tr(
-                "Inference service is unavailable."));
+  if (!m_inferenceService) {
+    appendStatusMessage(
+        tr("Inference service is unavailable."));
+    return;
+  }
 
-        return;
+  if (m_editPlanner) {
+    m_editPlanner->abort();
+  }
+
+  if (m_editSession) {
+    m_editSession->abort();
+  }
+
+  m_inferenceService
+      ->abortChatRequest();
+
+  resetEditState();
+
+  m_currentLlmResponse.clear();
+
+  m_currentEditRequest =
+      prompt;
+
+  appendUserMessage(prompt);
+
+  m_payloadLogger.log(
+      QStringLiteral("USER_PROMPT"),
+      QStringLiteral(
+          "Prompt: \"%1\"")
+          .arg(prompt));
+
+  const bool editMode =
+      m_editModeCheckbox &&
+      m_editModeCheckbox->isChecked();
+
+  if (editMode) {
+    m_awaitingEdit = true;
+
+    if (!m_activeEditor) {
+      appendStatusMessage(
+          tr("No active document."));
+      resetEditState();
+      return;
     }
 
-    const bool editMode =
-        m_editModeCheckbox &&
-        m_editModeCheckbox->isChecked();
-
-    if (m_editSession) {
-        m_editSession->abort();
+    if (!m_editPlanner) {
+      appendStatusMessage(
+          tr("Edit planner is unavailable."));
+      resetEditState();
+      return;
     }
 
-    m_streamingResponse.clear();
+    m_editSessionWidget
+        ->clearHistory();
 
-    m_streamingEditCount =
-        0;
+    requestNextEditCommand();
 
-    m_assistantMessageOpen =
-        false;
+    return;
+  }
+
+  QJsonArray messages;
+
+  messages.append(
+      QJsonObject{
+          {QStringLiteral("role"),
+           QStringLiteral("user")},
+          {QStringLiteral("content"),
+           prompt}});
+
+  m_payloadLogger.log(
+      QStringLiteral("CHAT_REQUEST"),
+      QStringLiteral(
+          "Prompt: \"%1\"")
+          .arg(prompt));
+
+  m_inferenceService
+      ->sendChatRequest(
+          messages,
+          QString(),
+          0.7,
+          120000);
+}
+
+void ChatWidget::requestNextEditCommand() {
+  if (!m_editPlanner ||
+      !m_activeEditor ||
+      !m_awaitingEdit) {
+    return;
+  }
+
+  appendStatusMessage(
+      tr("Planning edits..."));
+
+  m_editPlanner->start(
+      m_activeEditor,
+      m_currentEditRequest);
+}
+
+void ChatWidget::beginStreamingResolvedPlan() {
+  if (!m_awaitingEdit ||
+      !m_planReadyToStream) {
+    return;
+  }
+
+  executeNextPlannedEdit();
+}
+
+void ChatWidget::executeNextPlannedEdit() {
+  if (!m_awaitingEdit ||
+      !m_planReadyToStream) {
+    return;
+  }
+
+  if (m_nextPlannedEditIndex >=
+      static_cast<size_t>(
+          m_plannedEdits.size())) {
+
+    m_editPhase =
+        EditPhase::None;
 
     m_awaitingEdit =
-        editMode;
-
-    m_editGenerationStopped =
         false;
 
-    m_editAbortRequested =
-        false;
+    appendStatusMessage(
+        tr("All planned edits are ready for review."));
 
-    if (editMode) {
-        m_editTimer.start();
+    return;
+  }
 
-        appendStatusMessage(
-            tr(
-                "Edit: generating changes..."));
-    }
+  m_currentEditNumber =
+      static_cast<int>(
+          m_nextPlannedEditIndex + 1);
 
-    appendUserMessage(
-        prompt);
+  const EditCommand command =
+      m_plannedEdits.at(
+          static_cast<int>(
+              m_nextPlannedEditIndex));
 
-    QJsonArray messages;
+  m_currentEditInstruction =
+      command.instruction;
 
-    if (editMode) {
-        if (!m_activeEditor) {
-            appendStatusMessage(
-                tr(
-                    "No active document."));
+  m_currentCommandDescription =
+      describeCommand(command);
 
-            m_awaitingEdit =
-                false;
+  m_editSessionWidget
+      ->setStatus(
+          m_currentEditNumber,
+          tr("Resolving"));
 
-            return;
-        }
+  appendStatusMessage(
+      tr("Edit %1: resolving target...")
+          .arg(m_currentEditNumber));
 
-        auto *document =
-            qobject_cast<TextDocument *>(
-                m_activeEditor->document());
+  if (!m_editSession->prepareStreaming(
+          command,
+          m_currentEditNumber)) {
 
-        if (!document) {
-            appendStatusMessage(
-                tr(
-                    "Active editor does not use TextDocument."));
+    m_editSessionWidget
+        ->setStatus(
+            m_currentEditNumber,
+            tr("Failed"));
 
-            m_awaitingEdit =
-                false;
+    m_editSessionWidget
+        ->failEdit(
+            m_currentEditNumber,
+            tr("Unable to resolve the requested target."));
 
-            return;
-        }
+    resetEditState();
+    return;
+  }
 
-        document->rebuildStructure();
+  if (command.operation ==
+      EditCommand::Operation::Delete) {
+    return;
+  }
 
-        const QString structure =
-            document->structure().indexForModel();
+  m_editSessionWidget
+      ->setStatus(
+          m_currentEditNumber,
+          tr("Writing"));
 
-        const QString documentText =
-            m_activeEditor->toPlainText();
+  requestEditContent();
+}
 
-        const QString selectedText =
-            m_activeEditor
-                ->textCursor()
-                .selectedText();
+void ChatWidget::requestEditContent() {
+  if (!m_inferenceService ||
+      !m_activeEditor ||
+      !m_awaitingEdit) {
+    return;
+  }
 
-        QString selectionContext;
+  QString cleanInstruction =
+      m_currentEditInstruction.trimmed();
 
-        if (!selectedText.isEmpty()) {
-            selectionContext =
-                QStringLiteral(
-                    "\nCurrent selection:\n%1\n")
-                    .arg(
-                        selectedText);
-        }
+  QString cleanDescription =
+      m_currentCommandDescription.trimmed();
 
-        const QString systemPrompt =
-            QStringLiteral(
-                "You are editing a text document.\n"
-                "\n"
-                "Return edit objects one at a time.\n"
-                "Each edit must be one complete JSON object.\n"
-                "Output one object, then a newline, then the next object.\n"
-                "Do not wrap the objects in a JSON array.\n"
-                "Never return markdown fences.\n"
-                "\n"
-                "Every edit object MUST contain exactly these seven fields:\n"
-                "operation, scope, position, find, new, all.\n"
-                "\n"
-                "Each edit has this form:\n"
-                "{"
-                "\"operation\":\"insert\","
-                "\"scope\":\"document\","
-                "\"position\":\"before\","
-                "\"find\":\"\","
-                "\"new\":\"text\","
-                "\"all\":false"
-                "}\n"
-                "\n"
-                "operation must be exactly one of: insert, replace, delete.\n"
-                "scope must be copied exactly from the document structure.\n"
-                "position must be exactly before or after.\n"
-                "all must always be present and must be true or false.\n"
-                "\n"
-                "For insert:\n"
-                "- find MUST be an empty string.\n"
-                "\n"
-                "For replace:\n"
-                "- find MUST be non-empty.\n"
-                "- find must be a short, distinctive piece of existing text "
-                "inside the selected scope.\n"
-                "\n"
-                "For delete:\n"
-                "- find MUST be non-empty.\n"
-                "- find must be a short, distinctive piece of existing text "
-                "inside the selected scope.\n"
-                "\n"
-                "Choose the smallest structural scope containing the change.\n"
-                "Do not use character offsets.\n"
-                "Do not invent scope IDs.\n"
-                "Do not count paragraphs or headings yourself.\n"
-                "Copy scope IDs exactly as provided.\n"
-                "\n"
-                "Prefer multiple small, precise edits when different parts "
-                "of the document need independent changes.\n"
-                "Do not replace an entire large section when smaller edits "
-                "can accomplish the request safely.\n"
-                "Use the fewest edits necessary.\n"
-                "\n"
-                "The document is Markdown. Write \"new\" text in Markdown.\n"
-                "\n"
-                "Edits are applied as they arrive. The document structure is "
-                "updated after each edit, so unchanged Tree-sitter scopes "
-                "remain usable while changed scopes may receive new IDs.\n"
-                "\n"
-                "Document structure:\n"
-                "%1\n"
-                "\n"
-                "User request:\n"
-                "%2\n"
-                "%3\n"
-                "Document:\n"
-                "%4")
-                .arg(
-                    structure,
-                    prompt,
-                    selectionContext,
-                    documentText);
+  if (cleanDescription.startsWith('[') &&
+      cleanDescription.endsWith(']')) {
+    cleanDescription.remove(0, 1);
+    cleanDescription.chop(1);
+    cleanDescription =
+        cleanDescription.trimmed();
+  }
 
-        messages.append(
-            QJsonObject{
-                {
-                    QStringLiteral("role"),
-                    QStringLiteral("system")
-                },
-                {
-                    QStringLiteral("content"),
-                    systemPrompt
-                }
-            });
+  QJsonArray messages;
 
-        m_inferenceService->sendChatRequest(
-            messages,
-            QString(),
-            0.0,
-            120000,
-            EditGrammar::gbnf());
+  const QString systemPrompt =
+      QStringLiteral(
+          "You are an automated document text generator. "
+          "You output raw Markdown text directly. "
+          "Never output JSON, punctuation wrappers, or closing brackets like ']'. ");
 
-        return;
-    }
+  const QString contentPrompt =
+      QStringLiteral(
+          "TASK: Generate the replacement Markdown content for a single "
+          "document edit.\n\n"
+          "INSTRUCTIONS:\n"
+          "- Output ONLY the final text/paragraph to insert or replace.\n"
+          "- Do not write JSON.\n"
+          "- Do not write explanations.\n"
+          "- Do not output leading closing brackets or syntax symbols.\n\n"
+          "EDIT INSTRUCTION:\n%1\n\n"
+          "TARGET DETAILS:\n%2\n\n"
+          "BEGIN MARKDOWN CONTENT:")
+          .arg(
+              cleanInstruction,
+              cleanDescription);
 
-    messages.append(
-        QJsonObject{
-            {
-                QStringLiteral("role"),
-                QStringLiteral("user")
-            },
-            {
-                QStringLiteral("content"),
-                prompt
-            }
-        });
+  messages.append(
+      QJsonObject{
+          {QStringLiteral("role"),
+           QStringLiteral("system")},
+          {QStringLiteral("content"),
+           systemPrompt}});
 
-    m_inferenceService->sendChatRequest(
-        messages,
-        QString(),
-        0.7,
-        120000);
+  messages.append(
+      QJsonObject{
+          {QStringLiteral("role"),
+           QStringLiteral("user")},
+          {QStringLiteral("content"),
+           contentPrompt}});
+
+  m_editPhase =
+      EditPhase::Content;
+
+  m_currentLlmResponse.clear();
+
+  const QString currentScopeId =
+      (m_currentEditNumber > 0 &&
+       m_currentEditNumber <=
+           m_plannedEdits.size())
+          ? m_plannedEdits
+                .at(
+                    m_currentEditNumber - 1)
+                .scopeId
+          : QStringLiteral("unknown");
+
+  m_payloadLogger.log(
+      QStringLiteral(
+          "MARKDOWN_GEN_REQUEST"),
+      QStringLiteral(
+          "Edit #%1 | Scope: %2 | Instruction: \"%3\"")
+          .arg(
+              QString::number(
+                  m_currentEditNumber),
+              currentScopeId,
+              cleanInstruction));
+
+  m_inferenceService
+      ->sendChatRequest(
+          messages,
+          QString(),
+          0.7,
+          120000);
 }
 
 void ChatWidget::onLlmDelta(
     const QString &text) {
-    if (text.isEmpty()) {
-        return;
-    }
+  if (text.isEmpty()) {
+    return;
+  }
 
-    if (!m_awaitingEdit) {
-        appendAssistantChunk(
-            text);
+  m_currentLlmResponse += text;
 
-        return;
-    }
-
-    if (m_editGenerationStopped) {
-        return;
-    }
-
-    m_streamingResponse +=
-        text;
-
-    processEditStream();
-}
-
-bool ChatWidget::takeNextJsonObject(
-    QString &buffer,
-    QString &objectText) {
-    objectText.clear();
-
-    while (!buffer.isEmpty() &&
-           buffer.at(0).isSpace()) {
-        buffer.remove(
-            0,
-            1);
-    }
-
-    if (buffer.isEmpty()) {
-        return false;
-    }
-
-    if (buffer.at(0) !=
-        QChar('{')) {
-        const int objectStart =
-            buffer.indexOf(
-                QChar('{'));
-
-        if (objectStart < 0) {
-            return false;
-        }
-
-        buffer.remove(
-            0,
-            objectStart);
-    }
-
-    if (buffer.isEmpty() ||
-        buffer.at(0) !=
-            QChar('{')) {
-        return false;
-    }
-
-    int depth = 0;
-
-    bool inString =
-        false;
-
-    bool escaped =
-        false;
-
-    for (int i = 0;
-         i < buffer.size();
-         ++i) {
-        const QChar ch =
-            buffer.at(i);
-
-        if (inString) {
-            if (escaped) {
-                escaped =
-                    false;
-
-                continue;
-            }
-
-            if (ch == QChar('\\')) {
-                escaped =
-                    true;
-
-                continue;
-            }
-
-            if (ch == QChar('"')) {
-                inString =
-                    false;
-            }
-
-            continue;
-        }
-
-        if (ch == QChar('"')) {
-            inString =
-                true;
-
-            continue;
-        }
-
-        if (ch == QChar('{')) {
-            ++depth;
-
-            continue;
-        }
-
-        if (ch == QChar('}')) {
-            --depth;
-
-            if (depth == 0) {
-                objectText =
-                    buffer.left(
-                        i + 1);
-
-                buffer.remove(
-                    0,
-                    i + 1);
-
-                return true;
-            }
-        }
-    }
-
-    return false;
-}
-
-void ChatWidget::processEditStream() {
-    if (!m_editSession ||
+  if (m_awaitingEdit) {
+    if (m_editPhase !=
+            EditPhase::Content ||
         m_editGenerationStopped) {
-        return;
+      return;
     }
 
-    QString objectText;
-
-    while (takeNextJsonObject(
-        m_streamingResponse,
-        objectText)) {
-        QJsonParseError parseError;
-
-        const QJsonDocument document =
-            QJsonDocument::fromJson(
-                objectText.toUtf8(),
-                &parseError);
-
-        if (parseError.error !=
-            QJsonParseError::NoError ||
-            !document.isObject()) {
-            appendStatusMessage(
-                tr(
-                    "Edit: invalid JSON object."));
-
-            m_editGenerationStopped =
-                true;
-
-            m_editAbortRequested =
-                true;
-
-            m_inferenceService
-                ->abortChatRequest();
-
-            return;
-        }
-
-        const QJsonObject object =
-            document.object();
-
-        const QJsonValue operationValue =
-            object.value(
-                QStringLiteral("operation"));
-
-        const QJsonValue scopeValue =
-            object.value(
-                QStringLiteral("scope"));
-
-        const QJsonValue positionValue =
-            object.value(
-                QStringLiteral("position"));
-
-        const QJsonValue findValue =
-            object.value(
-                QStringLiteral("find"));
-
-        const QJsonValue newValue =
-            object.value(
-                QStringLiteral("new"));
-
-        const QJsonValue allValue =
-            object.value(
-                QStringLiteral("all"));
-
-        if (!operationValue.isString() ||
-            !scopeValue.isString() ||
-            !positionValue.isString() ||
-            !findValue.isString() ||
-            !newValue.isString() ||
-            !allValue.isBool()) {
-            appendStatusMessage(
-                tr(
-                    "Edit: missing required field."));
-
-            m_editGenerationStopped =
-                true;
-
-            m_editAbortRequested =
-                true;
-
-            m_inferenceService
-                ->abortChatRequest();
-
-            return;
-        }
-
-        EditCommand command;
-
-        const QString operation =
-            operationValue.toString();
-
-        if (operation ==
-            QStringLiteral("insert")) {
-            command.operation =
-                EditCommand::Operation::Insert;
-        } else if (operation ==
-                   QStringLiteral("replace")) {
-            command.operation =
-                EditCommand::Operation::Replace;
-        } else if (operation ==
-                   QStringLiteral("delete")) {
-            command.operation =
-                EditCommand::Operation::Delete;
-        } else {
-            appendStatusMessage(
-                tr(
-                    "Edit: invalid operation '%1'.")
-                .arg(
-                    operation));
-
-            m_editGenerationStopped =
-                true;
-
-            m_editAbortRequested =
-                true;
-
-            m_inferenceService
-                ->abortChatRequest();
-
-            return;
-        }
-
-        const QString position =
-            positionValue.toString();
-
-        if (position ==
-            QStringLiteral("before")) {
-            command.position =
-                EditCommand::Position::Before;
-        } else if (position ==
-                   QStringLiteral("after")) {
-            command.position =
-                EditCommand::Position::After;
-        } else {
-            appendStatusMessage(
-                tr(
-                    "Edit: invalid position '%1'.")
-                .arg(
-                    position));
-
-            m_editGenerationStopped =
-                true;
-
-            m_editAbortRequested =
-                true;
-
-            m_inferenceService
-                ->abortChatRequest();
-
-            return;
-        }
-
-        command.scopeId =
-            scopeValue.toString();
-
-        command.findString =
-            findValue.toString();
-
-        command.newString =
-            newValue.toString();
-
-        command.replaceAll =
-            allValue.toBool();
-
-        if (!command.isValid()) {
-            appendStatusMessage(
-                tr(
-                    "Edit: operation violates the edit protocol."));
-
-            m_editGenerationStopped =
-                true;
-
-            m_editAbortRequested =
-                true;
-
-            m_inferenceService
-                ->abortChatRequest();
-
-            return;
-        }
-
-        ++m_streamingEditCount;
-
-        QString action;
-
-        switch (command.operation) {
-        case EditCommand::Operation::Insert:
-            action =
-                QStringLiteral(
-                    "inserting");
-            break;
-
-        case EditCommand::Operation::Replace:
-            action =
-                QStringLiteral(
-                    "updating");
-            break;
-
-        case EditCommand::Operation::Delete:
-            action =
-                QStringLiteral(
-                    "deleting");
-            break;
-        }
-
-        appendStatusMessage(
-            tr(
-                "Edit %1: %2 in %3...")
-            .arg(
-                m_streamingEditCount)
-            .arg(
-                action)
-            .arg(
-                command.scopeId));
-
-        if (!m_editSession->propose(
-                command)) {
-            m_editGenerationStopped =
-                true;
-
-            m_editAbortRequested =
-                true;
-
-            m_inferenceService
-                ->abortChatRequest();
-
-            return;
-        }
-
-        appendStatusMessage(
-            tr(
-                "Edit %1 applied in %2 ms.")
-            .arg(
-                m_streamingEditCount)
-            .arg(
-                m_editTimer.elapsed()));
-
-        objectText.clear();
+    if (m_editSession) {
+      m_editSession
+          ->appendStreaming(text);
     }
+
+    return;
+  }
+
+  appendAssistantChunk(text);
 }
 
 void ChatWidget::onLlmFinished() {
-    if (m_awaitingEdit) {
-        if (!m_editGenerationStopped) {
-            if (!m_streamingResponse.trimmed().isEmpty()) {
-                appendStatusMessage(
-                    tr(
-                        "Edit: stream ended with incomplete JSON."));
-            } else if (m_streamingEditCount == 0) {
-                appendStatusMessage(
-                    tr(
-                        "Edit: model did not produce any changes."));
-            } else {
-                appendStatusMessage(
-                    tr(
-                        "Edit: completed in %1 ms.")
-                        .arg(
-                            m_editTimer.elapsed()));
-            }
-        }
+  if (m_awaitingEdit &&
+      m_editPhase ==
+          EditPhase::Content) {
 
-        m_awaitingEdit =
-            false;
-    }
+    m_payloadLogger.log(
+        QStringLiteral(
+            "MARKDOWN_GEN_RESPONSE"),
+        QStringLiteral(
+            "Edit #%1\n%2")
+            .arg(
+                QString::number(
+                    m_currentEditNumber),
+                m_currentLlmResponse));
 
+  } else if (!m_currentLlmResponse.isEmpty()) {
+
+    m_payloadLogger.log(
+        QStringLiteral(
+            "CHAT_RESPONSE"),
+        m_currentLlmResponse);
+  }
+
+  m_currentLlmResponse.clear();
+
+  if (!m_awaitingEdit) {
     if (m_assistantMessageOpen) {
-        renderLastAssistantMessage();
+      renderLastAssistantMessage();
     }
 
     m_assistantMessageOpen =
         false;
 
-    m_streamingResponse.clear();
+    return;
+  }
 
-    m_streamingEditCount =
-        0;
+  if (m_editAbortRequested) {
+    return;
+  }
 
-    m_editGenerationStopped =
-        false;
+  if (m_editPhase ==
+          EditPhase::Content &&
+      m_editSession) {
 
-    m_editAbortRequested =
-        false;
+    m_editSession
+        ->finishStreaming();
+  }
 }
 
 void ChatWidget::onLlmError(
     const QString &error) {
-    if (m_editAbortRequested) {
-        return;
-    }
+  m_payloadLogger.log(
+      QStringLiteral(
+          "MARKDOWN_GEN_ERROR"),
+      QStringLiteral(
+          "Edit #%1 Error: %2")
+          .arg(
+              QString::number(
+                  m_currentEditNumber),
+              error));
 
-    appendStatusMessage(
-        tr(
-            "LLM error: %1")
-            .arg(
-                error));
+  m_currentLlmResponse.clear();
 
-    if (m_editSession) {
-        m_editSession->abort();
-    }
+  if (m_awaitingEdit &&
+      m_editPhase !=
+          EditPhase::Content) {
+    return;
+  }
 
-    m_streamingResponse.clear();
+  if (m_editAbortRequested) {
+    return;
+  }
 
-    m_streamingEditCount =
-        0;
+  appendStatusMessage(
+      tr("LLM error: %1")
+          .arg(error));
 
-    m_assistantMessageOpen =
-        false;
+  if (m_editSession) {
+    m_editSession
+        ->abort();
+  }
 
-    m_awaitingEdit =
-        false;
+  resetEditState();
+}
 
-    m_editGenerationStopped =
-        false;
+void ChatWidget::onPlanFailed(
+    const QString &reason) {
+  if (!m_awaitingEdit) {
+    return;
+  }
 
-    m_editAbortRequested =
-        false;
+  appendStatusMessage(reason);
+
+  if (m_editSession) {
+    m_editSession->abort();
+  }
+
+  resetEditState();
 }
 
 void ChatWidget::onEditCandidatesReady(
     const QVector<EditMatch> &candidates) {
-    appendStatusMessage(
-        tr(
-            "Multiple matches found — choose the intended location (%1 candidates).")
-            .arg(
-                candidates.size()));
+  appendStatusMessage(
+      tr("Multiple matches found (%1 candidates).")
+          .arg(candidates.size()));
+
+  if (m_currentEditNumber > 0 &&
+      m_awaitingEdit) {
+
+    m_editSessionWidget->setStatus(
+        m_currentEditNumber,
+        tr("Ambiguous target"));
+  }
 }
 
 void ChatWidget::onEditApplied(
     bool fuzzy,
     int editDistance) {
-    if (fuzzy) {
-        appendStatusMessage(
-            tr(
-                "Matched using fuzzy matching (distance %1).")
-                .arg(
-                    editDistance));
-    }
+  if (m_currentEditNumber <= 0 ||
+      !m_awaitingEdit) {
+    return;
+  }
+
+  const QString result =
+      fuzzy
+          ? tr("Applied using fuzzy matching "
+               "(edit distance %1).")
+                .arg(editDistance)
+          : tr("Applied.");
+
+  m_editSessionWidget
+      ->finishEdit(
+          m_currentEditNumber,
+          result);
+
+  appendStatusMessage(result);
 }
 
 void ChatWidget::onEditFailed(
     const QString &reason) {
-    appendStatusMessage(
-        tr(
-            "Edit failed: %1")
-            .arg(
-                reason));
+  if (m_currentEditNumber > 0) {
+    m_editSessionWidget
+        ->failEdit(
+            m_currentEditNumber,
+            reason);
+  }
+
+  appendStatusMessage(
+      tr("Edit %1 failed: %2")
+          .arg(m_currentEditNumber)
+          .arg(reason));
+
+  resetEditState();
 }
 
 void ChatWidget::onEditAborted() {
+  if (m_currentEditNumber > 0) {
+    m_editSessionWidget
+        ->abortEdit(
+            m_currentEditNumber,
+            tr("Edit aborted."));
+  }
+
+  appendStatusMessage(
+      tr("Edit aborted."));
+
+  resetEditState();
+}
+
+void ChatWidget::onConflictsDetected() {
+  m_planReadyToStream =
+      false;
+
+  appendStatusMessage(
+      tr("Edit conflicts detected. "
+         "Please resolve conflicts before proceeding."));
+}
+
+void ChatWidget::onPlanReady(
+    const QVector<EditCommand> &plannedCommands) {
+  m_plannedEdits =
+      QList<EditCommand>(
+          plannedCommands.begin(),
+          plannedCommands.end());
+
+  m_editSessionWidget
+      ->clearHistory();
+
+  for (int i = 0;
+       i < m_plannedEdits.size();
+       ++i) {
+
+    const EditCommand &command =
+        m_plannedEdits.at(i);
+
+    m_editSessionWidget
+        ->startEdit(
+            i + 1,
+            command.instruction);
+
+    const QString commandJson =
+        QString::fromUtf8(
+            QJsonDocument(
+                editCommandToJson(command))
+                .toJson(
+                    QJsonDocument::Indented));
+
+    m_editSessionWidget
+        ->setCommand(
+            i + 1,
+            commandJson);
+
+    m_editSessionWidget
+        ->setStatus(
+            i + 1,
+            tr("Queued"));
+  }
+
+  if (m_plannedEdits.isEmpty()) {
     appendStatusMessage(
-        tr(
-            "Edit aborted."));
+        tr("No edits required."));
+
+    resetEditState();
+    return;
+  }
+
+  m_planReadyToStream =
+      true;
+
+  m_nextPlannedEditIndex =
+      0;
+
+  m_currentEditNumber =
+      0;
+
+  appendStatusMessage(
+      tr("Plan clear, starting edits."));
+
+  beginStreamingResolvedPlan();
+}
+
+void ChatWidget::onPendingEditAccepted(
+    int editNumber) {
+  if (!m_editSession) {
+    return;
+  }
+
+  if (!m_editSession
+           ->setPendingEditAccepted(
+               editNumber,
+               true)) {
+    return;
+  }
+
+  m_editSessionWidget
+      ->setPendingEditDecision(
+          editNumber,
+          true);
+}
+
+void ChatWidget::onPendingEditRejected(
+    int editNumber) {
+  if (!m_editSession) {
+    return;
+  }
+
+  if (!m_editSession
+           ->setPendingEditAccepted(
+               editNumber,
+               false)) {
+    return;
+  }
+
+  m_editSessionWidget
+      ->setPendingEditDecision(
+          editNumber,
+          false);
+}
+
+void ChatWidget::onAcceptAllPendingEdits() {
+  if (!m_editSession) {
+    return;
+  }
+
+  m_editSession
+      ->acceptAllPendingEdits();
+
+  for (const PendingEdit &edit :
+       m_editSession
+           ->pendingEdits()) {
+
+    m_editSessionWidget
+        ->setPendingEditDecision(
+            edit.id,
+            true);
+  }
+
+  appendStatusMessage(
+      tr("All edits marked for acceptance."));
+}
+
+void ChatWidget::onRejectAllPendingEdits() {
+  if (!m_editSession) {
+    return;
+  }
+
+  m_editSession
+      ->rejectAllPendingEdits();
+
+  for (const PendingEdit &edit :
+       m_editSession
+           ->pendingEdits()) {
+
+    m_editSessionWidget
+        ->setPendingEditDecision(
+            edit.id,
+            false);
+  }
+
+  appendStatusMessage(
+      tr("All edits marked for rejection."));
+}
+
+void ChatWidget::onApplyAcceptedPendingEdits() {
+  if (!m_editSession) {
+    return;
+  }
+
+  if (!m_editSession
+           ->applyAcceptedPendingEdits()) {
+
+    appendStatusMessage(
+        tr("Unable to apply the selected edits."));
+
+    return;
+  }
+
+  if (m_activeEditor) {
+    m_activeEditor
+        ->clearPendingEdits();
+  }
+
+  m_editSessionWidget
+      ->clearHistory();
+
+  appendStatusMessage(
+      tr("Selected edits applied."));
+
+  resetEditState();
+}
+
+void ChatWidget::onReviewReady() {
+  appendStatusMessage(
+      tr("All planned edits are ready for review."));
+
+  if (!m_activeEditor ||
+      !m_activeEditor->autoAcceptEdits()) {
+    return;
+  }
+
+  m_editSession
+      ->acceptAllPendingEdits();
+
+  for (const PendingEdit &edit :
+       m_editSession
+           ->pendingEdits()) {
+
+    m_editSessionWidget
+        ->setPendingEditDecision(
+            edit.id,
+            true);
+  }
+
+  appendStatusMessage(
+      tr("Auto-accept marked all edits for acceptance. "
+         "Review and apply them when ready."));
+}
+
+void ChatWidget::onConflictResolved(
+    int groupId,
+    int keepEditNumber) {
+  Q_UNUSED(groupId);
+  Q_UNUSED(keepEditNumber);
+
+  appendStatusMessage(
+      tr("Conflict selection received, "
+         "but the current EditSession API does not "
+         "expose a conflict-resolution method."));
+}
+
+void ChatWidget::onConflictGroupDiscarded(
+    int groupId) {
+  Q_UNUSED(groupId);
+
+  appendStatusMessage(
+      tr("Conflict discard received, "
+         "but the current EditSession API does not "
+         "expose a conflict-group discard method."));
+}
+
+void ChatWidget::onConflictBatchAborted() {
+  if (m_editPlanner) {
+    m_editPlanner->abort();
+  }
+
+  if (m_editSession) {
+    m_editSession->abort();
+  }
+
+  m_editSessionWidget
+      ->clearHistory();
+
+  appendStatusMessage(
+      tr("Batch aborted."));
+
+  resetEditState();
 }
 
 void ChatWidget::appendUserMessage(
     const QString &text) {
-    if (!m_transcript) {
-        return;
-    }
+  if (!m_transcript) {
+    return;
+  }
 
-    QTextCursor cursor =
-        m_transcript->textCursor();
+  QTextCursor cursor =
+      m_transcript->textCursor();
 
-    cursor.movePosition(
-        QTextCursor::End);
+  cursor.movePosition(
+      QTextCursor::End);
 
-    QTextCharFormat format;
+  QTextCharFormat format;
 
-    format.setFontWeight(
-        QFont::Bold);
+  format.setFontWeight(
+      QFont::Bold);
 
-    cursor.insertText(
-        QStringLiteral("You:"),
-        format);
+  cursor.insertText(
+      QStringLiteral("You:"),
+      format);
 
-    cursor.insertText(
-        QStringLiteral(" "));
+  cursor.insertText(
+      QStringLiteral(" "));
 
-    cursor.insertText(
-        text);
+  cursor.insertText(text);
 
-    cursor.insertText(
-        QStringLiteral("\n"));
+  cursor.insertText(
+      QStringLiteral("\n\n"));
 
-    m_transcript->setTextCursor(
-        cursor);
+  m_transcript
+      ->setTextCursor(cursor);
 
-    m_transcript->ensureCursorVisible();
+  m_transcript
+      ->ensureCursorVisible();
 }
 
 void ChatWidget::appendAssistantChunk(
     const QString &text) {
-    if (!m_transcript) {
-        return;
-    }
+  if (!m_transcript) {
+    return;
+  }
 
-    if (!m_assistantMessageOpen) {
-        m_transcript->append(
+  if (!m_assistantMessageOpen) {
+    m_transcript
+        ->append(
             QStringLiteral(
                 "<b>Assistant:</b>"));
 
-        m_assistantMessageOpen =
-            true;
-    }
+    m_assistantMessageOpen =
+        true;
+  }
 
-    QTextCursor cursor =
-        m_transcript->textCursor();
+  QTextCursor cursor =
+      m_transcript->textCursor();
 
-    cursor.movePosition(
-        QTextCursor::End);
+  cursor.movePosition(
+      QTextCursor::End);
 
-    cursor.insertText(
-        text);
+  cursor.insertText(text);
 
-    m_transcript->setTextCursor(
-        cursor);
+  m_transcript
+      ->setTextCursor(cursor);
 
-    m_transcript->ensureCursorVisible();
+  m_transcript
+      ->ensureCursorVisible();
 }
 
 void ChatWidget::appendStatusMessage(
     const QString &text) {
-    if (!m_transcript) {
-        return;
-    }
+  if (!m_transcript) {
+    return;
+  }
 
-    QTextCursor cursor =
-        m_transcript->textCursor();
+  QTextCursor cursor =
+      m_transcript->textCursor();
 
-    cursor.movePosition(
-        QTextCursor::End);
+  cursor.movePosition(
+      QTextCursor::End);
 
-    QTextCharFormat format;
+  QTextCharFormat format;
 
-    format.setFontItalic(
-        true);
+  format.setFontItalic(true);
 
-    cursor.insertText(
-        text,
-        format);
+  cursor.insertText(
+      text,
+      format);
 
-    cursor.insertText(
-        QStringLiteral("\n"));
+  cursor.insertText(
+      QStringLiteral("\n\n"));
 
-    m_transcript->setTextCursor(
-        cursor);
+  m_transcript
+      ->setTextCursor(cursor);
 
-    m_transcript->ensureCursorVisible();
+  m_transcript
+      ->ensureCursorVisible();
 }
 
 void ChatWidget::renderLastAssistantMessage() {
-    if (!m_transcript) {
-        return;
-    }
+  if (!m_transcript) {
+    return;
+  }
+}
+
+void ChatWidget::resetEditState() {
+  m_plannedEdits.clear();
+
+  m_nextPlannedEditIndex =
+      0;
+
+  m_currentEditNumber =
+      0;
+
+  m_currentCommandJson.clear();
+  m_currentCommandDescription.clear();
+  m_currentEditInstruction.clear();
+
+  m_planReadyToStream =
+      false;
+
+  m_editPhase =
+      EditPhase::None;
+
+  m_awaitingEdit =
+      false;
+
+  m_editGenerationStopped =
+      false;
+
+  m_editAbortRequested =
+      false;
+}
+
+QString ChatWidget::describeCommand(
+    const EditCommand &command) const {
+  QString operation;
+
+  switch (command.operation) {
+  case EditCommand::Operation::Insert:
+    operation =
+        QStringLiteral("Insert");
+    break;
+
+  case EditCommand::Operation::Replace:
+    operation =
+        QStringLiteral("Replace");
+    break;
+
+  case EditCommand::Operation::Delete:
+    operation =
+        QStringLiteral("Delete");
+    break;
+  }
+
+  QString position;
+
+  switch (command.position) {
+  case EditCommand::Position::Before:
+    position =
+        QStringLiteral("before");
+    break;
+
+  case EditCommand::Position::After:
+    position =
+        QStringLiteral("after");
+    break;
+  }
+
+  QString description =
+      QStringLiteral(
+          "%1 %2 scope %3")
+          .arg(
+              operation,
+              position,
+              command.scopeId);
+
+  if (!command.findString.isEmpty()) {
+    description +=
+        QStringLiteral(
+            " matching \"%1\"")
+            .arg(
+                command.findString);
+  }
+
+  if (command.replaceAll) {
+    description +=
+        QStringLiteral(
+            " (all matches)");
+  }
+
+  return description;
 }

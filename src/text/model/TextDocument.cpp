@@ -6,171 +6,111 @@
 #include <QDebug>
 #include <QPlainTextDocumentLayout>
 
-TextDocument::TextDocument(
-    QObject *parent)
-    : QTextDocument(parent) {
-    setDocumentLayout(
-        new QPlainTextDocumentLayout(this));
+TextDocument::TextDocument(QObject *parent) : QTextDocument(parent) {
+  setDocumentLayout(new QPlainTextDocumentLayout(this));
 }
 
 TextDocument::~TextDocument() {
-    MarkdownStructureParser::
-        destroyParser(
-            m_markdownParser);
+  MarkdownStructureParser::destroyParser(m_markdownParser);
 
-    MarkdownStructureParser::
-        destroyTree(
-            m_markdownTree);
+  MarkdownStructureParser::destroyTree(m_markdownTree);
 }
 
-QString TextDocument::filePath() const {
-    return path;
+QString TextDocument::filePath() const { return path; }
+
+void TextDocument::setFilePath(const QString &newPath) { path = newPath; }
+
+DocumentMode TextDocument::type() const { return docType; }
+
+void TextDocument::setType(DocumentMode newType) {
+  if (docType == newType) {
+    return;
+  }
+
+  qDebug() << "TextDocument::setType:" << static_cast<int>(newType)
+           << "file:" << path;
+
+  docType = newType;
+
+  m_structureRevision = -1;
+
+  MarkdownStructureParser::destroyParser(m_markdownParser);
+
+  MarkdownStructureParser::destroyTree(m_markdownTree);
 }
 
-void TextDocument::setFilePath(
-    const QString &newPath) {
-    path =
-        newPath;
-}
-
-DocumentMode TextDocument::type() const {
-    return docType;
-}
-
-void TextDocument::setType(
-    DocumentMode newType) {
-    if (docType == newType) {
-        return;
-    }
-
-    qDebug()
-        << "TextDocument::setType:"
-        << static_cast<int>(newType)
-        << "file:"
-        << path;
-
-    docType =
-        newType;
-
-    m_structureRevision =
-        -1;
-
-    MarkdownStructureParser::
-        destroyParser(
-            m_markdownParser);
-
-    MarkdownStructureParser::
-        destroyTree(
-            m_markdownTree);
-}
-
-const DocumentStructure &
-TextDocument::structure() const {
-    return m_structure;
-}
+const DocumentStructure &TextDocument::structure() const { return m_structure; }
 
 void TextDocument::rebuildStructure() const {
-    const int currentRevision =
-        revision();
+  const int currentRevision = revision();
 
-    if (m_structureRevision ==
-        currentRevision) {
-        return;
-    }
+  if (m_structureRevision == currentRevision) {
+    return;
+  }
 
-    const QString text =
-        toPlainText();
+  const QString text = toPlainText();
 
-    const QString modeName =
-        docType == DocumentMode::Markdown
-            ? QStringLiteral("Markdown")
-            : docType == DocumentMode::PlainText
-                  ? QStringLiteral("PlainText")
-                  : QStringLiteral("HTML");
+  const QString modeName =
+      docType == DocumentMode::Markdown    ? QStringLiteral("Markdown")
+      : docType == DocumentMode::PlainText ? QStringLiteral("PlainText")
+                                           : QStringLiteral("HTML");
 
-    qDebug()
-        << "[STRUCTURE] Rebuilding"
-        << "file:"
-        << path
-        << "mode:"
-        << modeName
-        << "revision:"
-        << currentRevision
-        << "length:"
-        << text.size();
+  qDebug() << "[STRUCTURE] Rebuilding"
+           << "file:" << path << "mode:" << modeName
+           << "revision:" << currentRevision << "length:" << text.size();
 
-    switch (docType) {
-    case DocumentMode::Markdown: {
-        qDebug()
-            << "[STRUCTURE] Parser:"
-            << "MarkdownStructureParser";
+  switch (docType) {
+  case DocumentMode::Markdown: {
+    qDebug() << "[STRUCTURE] Parser:"
+             << "MarkdownStructureParser";
 
-        MarkdownStructureParser parser;
+    MarkdownStructureParser parser;
 
-        m_structure =
-            parser.parse(
-                text,
-                m_markdownParser,
-                m_markdownTree,
-                m_structure.text());
+    m_structure = parser.parse(text, m_markdownParser, m_markdownTree,
+                               m_structure.text());
 
-        qDebug()
-            << "[STRUCTURE] Markdown root children:"
-            << m_structure.root().children.size();
+    qDebug() << "[STRUCTURE] Markdown root children:"
+             << m_structure.root().children.size();
 
-        qDebug().noquote()
-            << "[STRUCTURE] Markdown index:\n"
-            << (m_structure.indexForModel().isEmpty()
-                    ? QStringLiteral("<empty>")
-                    : m_structure.indexForModel());
+    qDebug().noquote() << "[STRUCTURE] Markdown index:\n"
+                       << (m_structure.indexForModel().isEmpty()
+                               ? QStringLiteral("<empty>")
+                               : m_structure.indexForModel());
 
-        break;
-    }
+    break;
+  }
 
-    case DocumentMode::PlainText: {
-        qDebug()
-            << "[STRUCTURE] Parser:"
-            << "PlainTextStructureParser";
+  case DocumentMode::PlainText: {
+    qDebug() << "[STRUCTURE] Parser:"
+             << "PlainTextStructureParser";
 
-        PlainTextStructureParser parser;
+    PlainTextStructureParser parser;
 
-        m_structure =
-            parser.parse(
-                text);
+    m_structure = parser.parse(text);
 
-        break;
-    }
+    break;
+  }
 
-    case DocumentMode::Html: {
-        qDebug()
-            << "[STRUCTURE] Parser:"
-            << "PlainTextStructureParser"
-            << "(HTML fallback)";
+  case DocumentMode::Html: {
+    qDebug() << "[STRUCTURE] Parser:"
+             << "PlainTextStructureParser"
+             << "(HTML fallback)";
 
-        PlainTextStructureParser parser;
+    PlainTextStructureParser parser;
 
-        m_structure =
-            parser.parse(
-                text);
+    m_structure = parser.parse(text);
 
-        break;
-    }
-    }
+    break;
+  }
+  }
 
-    qDebug()
-        << "[STRUCTURE] Result:"
-        << "root id:"
-        << m_structure.root().id
-        << "root type:"
-        << m_structure.root().type
-        << "children:"
-        << m_structure.root().children.size();
+  qDebug() << "[STRUCTURE] Result:"
+           << "root id:" << m_structure.root().id
+           << "root type:" << m_structure.root().type
+           << "children:" << m_structure.root().children.size();
 
-    m_structureRevision =
-        currentRevision;
+  m_structureRevision = currentRevision;
 
-    qDebug()
-        << "[STRUCTURE] Complete"
-        << "revision:"
-        << m_structureRevision;
+  qDebug() << "[STRUCTURE] Complete"
+           << "revision:" << m_structureRevision;
 }
