@@ -15,6 +15,8 @@
 #include <QStatusBar>
 #include <QVBoxLayout>
 #include <QWidget>
+#include <QSettings>
+#include <QActionGroup>
 
 static InferenceService::LlmConfig configuredLlm() {
   InferenceService::LlmConfig config;
@@ -152,6 +154,11 @@ MainWindow::MainWindow() {
   createActions();
   createMenus();
 
+  // Load saved theme or default to mocha
+  QSettings settings;
+  currentTheme = settings.value("theme", "mocha").toString();
+  loadTheme(currentTheme);
+
   setWindowTitle(tr("Episteme"));
 
   setMinimumSize(800, 800);
@@ -180,122 +187,126 @@ void MainWindow::manageModels() {
   modelDialog->activateWindow();
 }
 
+void MainWindow::loadTheme(const QString &themeName) {
+  QString resourcePath = QString(":/catppuccin-%1/stylesheet.qss").arg(themeName);
+
+  QFile file(resourcePath);
+
+  if (!file.open(QFile::ReadOnly | QFile::Text)) {
+    qDebug() << "Failed to load theme:" << themeName << "-" << file.errorString();
+    return;
+  }
+
+  const QString stylesheet = QString::fromUtf8(file.readAll());
+  file.close();
+
+  qDebug() << "Loaded theme:" << themeName << ", stylesheet size:" << stylesheet.size();
+  qApp->setStyleSheet(stylesheet);
+
+  currentTheme = themeName;
+
+  // Save theme preference
+  QSettings settings;
+  settings.setValue("theme", themeName);
+}
+
+void MainWindow::onThemeSelected(const QString &theme) {
+  loadTheme(theme);
+
+}
+
 void MainWindow::createActions() {
-    // Helper function for safe icon loading
-    auto getSafeIcon = [](const QString& themeIcon,
-                          const QString& fallbackPath = "") -> QIcon {
-        QIcon icon = QIcon::fromTheme(themeIcon);
+  // Helper function for safe icon loading
+  auto getSafeIcon = [](const QString &themeIcon,
+                        const QString &fallbackPath = "") -> QIcon {
+    QIcon icon = QIcon::fromTheme(themeIcon);
 
-        if (icon.isNull() && !fallbackPath.isEmpty()) {
-            icon = QIcon(fallbackPath);
-        }
+    if (icon.isNull() && !fallbackPath.isEmpty()) {
+      icon = QIcon(fallbackPath);
+    }
 
-        return icon;
-    };
+    return icon;
+  };
 
-    // Do NOT force an icon theme.
-    // Qt will use the user's desktop theme (Adwaita, Breeze, etc.).
+  // Do NOT force an icon theme.
+  // Qt will use the user's desktop theme (Adwaita, Breeze, etc.).
 
-    // New Text File Action
-    newTextAct = new QAction(getSafeIcon("document-new",
-                                         ":/icons/document-new.png"),
-                             tr("&Text File"), this);
-    newTextAct->setShortcuts(QKeySequence::New);
-    newTextAct->setStatusTip(tr("Create a new plain text file"));
+  // New Text File Action
+  newTextAct =
+      new QAction(getSafeIcon("document-new", ":/icons/document-new.png"),
+                  tr("&Text File"), this);
+  newTextAct->setShortcuts(QKeySequence::New);
+  newTextAct->setStatusTip(tr("Create a new plain text file"));
 
-    connect(newTextAct, &QAction::triggered,
-            documentManager,
-            &DocumentManager::newTextFile);
+  connect(newTextAct, &QAction::triggered, documentManager,
+          &DocumentManager::newTextFile);
 
+  // New Markdown File Action
+  newMarkdownAct =
+      new QAction(getSafeIcon("document-new", ":/icons/document-new.png"),
+                  tr("&Markdown File"), this);
+  newMarkdownAct->setStatusTip(tr("Create a new markdown file"));
 
-    // New Markdown File Action
-    newMarkdownAct = new QAction(getSafeIcon("document-new",
-                                             ":/icons/document-new.png"),
-                                 tr("&Markdown File"), this);
-    newMarkdownAct->setStatusTip(tr("Create a new markdown file"));
+  connect(newMarkdownAct, &QAction::triggered, documentManager,
+          &DocumentManager::newMarkdownFile);
 
-    connect(newMarkdownAct, &QAction::triggered,
-            documentManager,
-            &DocumentManager::newMarkdownFile);
+  // Open Action
+  openAct =
+      new QAction(getSafeIcon("document-open", ":/icons/document-open.png"),
+                  tr("&Open..."), this);
+  openAct->setShortcuts(QKeySequence::Open);
+  openAct->setStatusTip(tr("Open an existing file"));
 
+  connect(openAct, &QAction::triggered, this, [this]() {
+    const QString path =
+        QFileDialog::getOpenFileName(this, tr("Open File"), QString(),
+                                     tr("Text Files (*.txt);;"
+                                        "Markdown Files (*.md);;"
+                                        "All Files (*)"));
 
-    // Open Action
-    openAct = new QAction(getSafeIcon("document-open",
-                                      ":/icons/document-open.png"),
-                          tr("&Open..."), this);
-    openAct->setShortcuts(QKeySequence::Open);
-    openAct->setStatusTip(tr("Open an existing file"));
+    if (!path.isEmpty()) {
+      documentManager->openFile(path);
+    }
+  });
 
-    connect(openAct, &QAction::triggered, this, [this]() {
-        const QString path =
-            QFileDialog::getOpenFileName(
-                this,
-                tr("Open File"),
-                QString(),
-                tr("Text Files (*.txt);;"
-                   "Markdown Files (*.md);;"
-                   "All Files (*)"));
+  // Save Action
+  saveAct =
+      new QAction(getSafeIcon("document-save", ":/icons/document-save.png"),
+                  tr("&Save"), this);
+  saveAct->setShortcuts(QKeySequence::Save);
+  saveAct->setStatusTip(tr("Save the document to disk"));
 
-        if (!path.isEmpty()) {
-            documentManager->openFile(path);
-        }
-    });
+  connect(saveAct, &QAction::triggered, documentManager,
+          &DocumentManager::save);
 
+  // Exit Action
+  exitAct = new QAction(
+      getSafeIcon("application-exit", ":/icons/application-exit.png"),
+      tr("E&xit"), this);
+  exitAct->setShortcuts(QKeySequence::Quit);
+  exitAct->setStatusTip(tr("Exit the application"));
 
-    // Save Action
-    saveAct = new QAction(getSafeIcon("document-save",
-                                      ":/icons/document-save.png"),
-                          tr("&Save"), this);
-    saveAct->setShortcuts(QKeySequence::Save);
-    saveAct->setStatusTip(tr("Save the document to disk"));
+  connect(exitAct, &QAction::triggered, this, &QWidget::close);
 
-    connect(saveAct, &QAction::triggered,
-            documentManager,
-            &DocumentManager::save);
+  // Manage Models Action
+  manageModelsAct = new QAction(tr("&Manage Models..."), this);
+  manageModelsAct->setStatusTip(tr("Download or select LLM and speech models"));
 
+  connect(manageModelsAct, &QAction::triggered, this,
+          &MainWindow::manageModels);
 
-    // Exit Action
-    exitAct = new QAction(getSafeIcon("application-exit",
-                                      ":/icons/application-exit.png"),
-                          tr("E&xit"), this);
-    exitAct->setShortcuts(QKeySequence::Quit);
-    exitAct->setStatusTip(tr("Exit the application"));
+  // About Action
+  aboutAct = new QAction(getSafeIcon("help-about", ":/icons/help-about.png"),
+                         tr("&About"), this);
+  aboutAct->setStatusTip(tr("Show the application's About box"));
 
-    connect(exitAct, &QAction::triggered,
-            this,
-            &QWidget::close);
+  connect(aboutAct, &QAction::triggered, this, &MainWindow::about);
 
+  // About Qt Action
+  aboutQtAct = new QAction(tr("About &Qt"), this);
+  aboutQtAct->setStatusTip(tr("Show the Qt library's About box"));
 
-    // Manage Models Action
-    manageModelsAct = new QAction(tr("&Manage Models..."), this);
-    manageModelsAct->setStatusTip(
-        tr("Download or select LLM and speech models"));
-
-    connect(manageModelsAct, &QAction::triggered,
-            this,
-            &MainWindow::manageModels);
-
-
-    // About Action
-    aboutAct = new QAction(getSafeIcon("help-about",
-                                       ":/icons/help-about.png"),
-                           tr("&About"), this);
-    aboutAct->setStatusTip(
-        tr("Show the application's About box"));
-
-    connect(aboutAct, &QAction::triggered,
-            this,
-            &MainWindow::about);
-
-
-    // About Qt Action
-    aboutQtAct = new QAction(tr("About &Qt"), this);
-    aboutQtAct->setStatusTip(
-        tr("Show the Qt library's About box"));
-
-    connect(aboutQtAct, &QAction::triggered,
-            this,
-            &MainWindow::aboutQt);
+  connect(aboutQtAct, &QAction::triggered, this, &MainWindow::aboutQt);
 }
 
 void MainWindow::createMenus() {
@@ -318,6 +329,28 @@ void MainWindow::createMenus() {
   toolsMenu = menuBar()->addMenu(tr("&Tools"));
 
   toolsMenu->addAction(manageModelsAct);
+
+  // Theme menu
+  themeMenu = menuBar()->addMenu(tr("&Theme"));
+
+  QActionGroup *themeGroup = new QActionGroup(this);
+  themeGroup->setExclusive(true);
+
+  const QStringList themes = {"frappe", "latte", "macchiato", "mocha"};
+
+  for (const QString &theme : themes) {
+    QAction *themeAction = themeMenu->addAction(theme);
+    themeAction->setCheckable(true);
+    themeGroup->addAction(themeAction);
+
+    if (theme == currentTheme) {
+      themeAction->setChecked(true);
+    }
+
+    connect(themeAction, &QAction::triggered, this, [this, theme]() {
+      onThemeSelected(theme);
+    });
+  }
 
   helpMenu = menuBar()->addMenu(tr("&Help"));
 

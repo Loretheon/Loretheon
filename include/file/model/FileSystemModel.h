@@ -28,14 +28,17 @@ public:
   QVariant headerData(int section, Qt::Orientation orientation,
                       int role = Qt::DisplayRole) const override;
 
-signals:
-  void fileRenamed(const QString &path, const QString &oldName,
-                   const QString &newName);
+  signals:
+    void fileRenamed(const QString &path, const QString &oldName,
+                     const QString &newName);
 
 private:
-  QFileSystemModel *fsModel;
+  static int sourceColumnFor(int proxyColumn);
 
   QModelIndex mapToSourceColumn(const QModelIndex &proxyIndex) const;
+  QModelIndex nameIndex(const QModelIndex &proxyIndex) const;
+
+  QFileSystemModel *fsModel = nullptr;
 };
 
 #endif // EPISTEME_FILESYSTEMMODEL_H

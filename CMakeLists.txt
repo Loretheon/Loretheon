@@ -1,33 +1,66 @@
 cmake_minimum_required(VERSION 4.3)
-project(Episteme)
+project(Episteme VERSION 0.1.0 LANGUAGES C CXX)
 
-set(CMAKE_CXX_STANDARD 26)
-set(CMAKE_AUTOMOC ON)
+set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-find_package(Qt6 6 REQUIRED COMPONENTS Core Gui Widgets
-        OPTIONAL_COMPONENTS PrintSupport Pdf PdfWidgets)
-
-# Make both Node.js and the tree-sitter CLI available to CMake
-# when using an NVM-managed Node installation.
-set(ENV{PATH}
-        "/home/sujan/.nvm/versions/node/v22.21.0/bin:$ENV{PATH}"
-)
-
-find_program(TREE_SITTER_CLI
-        NAMES tree-sitter
-        REQUIRED
-)
-
-message(STATUS "TREE_SITTER_CLI=${TREE_SITTER_CLI}")
-
-add_subdirectory(external/QF-ML)
-add_subdirectory(external/edlib EXCLUDE_FROM_ALL)
-add_subdirectory(external/tree-sitter)
-add_subdirectory(external/tree-sitter-markdown)
-
+find_package(Qt6 6.4 REQUIRED COMPONENTS
+        Core Gui Widgets PrintSupport Pdf PdfWidgets Network Multimedia)
+set(CMAKE_AUTORCC ON)
 qt_standard_project_setup()
 
-add_executable(Episteme src/main.cpp
+set(EPISTEME_NODE_BIN "/home/sujan/.nvm/versions/node/v22.21.0/bin")
+set(ENV{PATH} "${EPISTEME_NODE_BIN}:$ENV{PATH}")
+find_program(TREE_SITTER_CLI NAMES tree-sitter REQUIRED)
+message(STATUS "TREE_SITTER_CLI=${TREE_SITTER_CLI}")
+
+set(EPISTEME_EXTERNAL_BUILD_DIR "${CMAKE_CURRENT_SOURCE_DIR}/cmake-build-libs"
+        CACHE PATH "Directory where external libraries are built")
+set(EPISTEME_EXTERNAL_PREFIX "${EPISTEME_EXTERNAL_BUILD_DIR}/install")
+
+include(ExternalProject)
+
+set(EPISTEME_EXT_CMAKE_ARGS
+        -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
+        -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}
+        -DCMAKE_BUILD_TYPE=$<IF:$<CONFIG:>,Release,$<CONFIG>>
+        -DCMAKE_INSTALL_PREFIX=${EPISTEME_EXTERNAL_PREFIX}
+        -DCMAKE_INSTALL_LIBDIR=lib
+        -DCMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}
+        -DCMAKE_PROGRAM_PATH=${EPISTEME_NODE_BIN}
+        -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+        -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+)
+
+function(episteme_external name dir)
+    ExternalProject_Add(ext_${name}
+            SOURCE_DIR  "${CMAKE_CURRENT_SOURCE_DIR}/external/${dir}"
+            BINARY_DIR  "${EPISTEME_EXTERNAL_BUILD_DIR}/${name}"
+            STAMP_DIR   "${EPISTEME_EXTERNAL_BUILD_DIR}/stamps/${name}"
+            TMP_DIR     "${EPISTEME_EXTERNAL_BUILD_DIR}/tmp/${name}"
+            LOG_DIR     "${EPISTEME_EXTERNAL_BUILD_DIR}/logs/${name}"
+            INSTALL_DIR "${EPISTEME_EXTERNAL_PREFIX}"
+            CMAKE_ARGS  ${EPISTEME_EXT_CMAKE_ARGS} ${ARGN}
+            UPDATE_DISCONNECTED ON
+            BUILD_ALWAYS OFF
+    )
+endfunction()
+
+episteme_external(edlib edlib
+        -DEDLIB_BUILD_EXAMPLES=OFF
+        -DEDLIB_BUILD_UTILITIES=OFF
+        -DEDLIB_ENABLE_INSTALL=ON)
+episteme_external(tree-sitter tree-sitter
+        -DBUILD_SHARED_LIBS=OFF)
+episteme_external(tree-sitter-markdown tree-sitter-markdown
+        -DBUILD_SHARED_LIBS=OFF
+        -DTREE_SITTER_CLI=${TREE_SITTER_CLI})
+
+# QF-ML: real target, but build output kept in cmake-build-libs/QF-ML
+add_subdirectory(external/QF-ML ${EPISTEME_EXTERNAL_BUILD_DIR}/QF-ML)
+
+add_executable(Episteme
+        src/main.cpp
         src/app/MainWindow.cpp
         include/app/MainWindow.h
         src/text/model/TextDocument.cpp
@@ -50,14 +83,13 @@ add_executable(Episteme src/main.cpp
         include/app/DocumentManager.h
         src/text/Toolbar.cpp
         include/text/Toolbar.h
-        include/text/Toolbar.h
         include/text/TextFormatDelegate.h
         src/text/MarkdownFormatDelegate.cpp
         include/text/MarkdownFormatDelegate.h
         src/text/HTMLFormatDelegate.cpp
         include/text/HTMLFormatDelegate.h
-        src/ai/ChatWidget.cpp
-        include/ai/ChatWidget.h
+        src/ai/chat/ChatWidget.cpp
+        include/ai/chat/ChatWidget.h
         src/ai/edit/EditApplier.cpp
         include/ai/edit/EditApplier.h
         include/ai/edit/EditGrammar.h
@@ -78,8 +110,8 @@ add_executable(Episteme src/main.cpp
         include/text/structure/DocumentNode.h
         src/text/structure/PlainTextStructureParser.cpp
         include/text/structure/PlainTextStructureParser.h
-        include/ai/EditSessionWidget.cpp
-        include/ai/EditSessionWidget.h
+        src/ai/edit/EditSessionWidget.cpp
+        include/ai/edit/EditSessionWidget.h
         include/ai/edit/PendingEdit.cpp
         include/ai/edit/PendingEdit.h
         src/app/PayloadLogger.cpp
@@ -90,20 +122,49 @@ add_executable(Episteme src/main.cpp
         include/ai/edit/EditPlanner.h
         src/app/NotificationManager.cpp
         include/app/NotificationManager.h
+        src/ai/chat/ChatWidgetLayout.cpp
+        include/ai/chat/ChatWidgetLayout.h
+        src/ai/chat/ChatWidgetSerialization.cpp
+        include/ai/chat/ChatWidgetSerialization.h
+        src/ai/chat/ChatWidgetTranscript.cpp
+        include/ai/chat/ChatWidgetTranscript.h
+        src/ai/chat/ChatWidgetEditFlow.cpp
+        include/ai/chat/ChatWidgetEditFlow.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/styles/catppuccin-latte/resources.qrc
+        ${CMAKE_CURRENT_SOURCE_DIR}/styles/catppuccin-frappe/resources.qrc
+        ${CMAKE_CURRENT_SOURCE_DIR}/styles/catppuccin-macchiato/resources.qrc
+        ${CMAKE_CURRENT_SOURCE_DIR}/styles/catppuccin-mocha/resources.qrc
 )
 
-target_include_directories(Episteme PUBLIC
-        ${CMAKE_CURRENT_SOURCE_DIR}/include/app/
-        ${CMAKE_CURRENT_SOURCE_DIR}/include/text/
+add_dependencies(Episteme ext_edlib ext_tree-sitter ext_tree-sitter-markdown)
+
+target_include_directories(Episteme PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include/app
+        ${CMAKE_CURRENT_SOURCE_DIR}/include/text
         ${CMAKE_CURRENT_SOURCE_DIR}/include/text/model
         ${CMAKE_CURRENT_SOURCE_DIR}/include/text/structure
-        ${CMAKE_CURRENT_SOURCE_DIR}/include/file/
+        ${CMAKE_CURRENT_SOURCE_DIR}/include/file
         ${CMAKE_CURRENT_SOURCE_DIR}/include/file/model
         ${CMAKE_CURRENT_SOURCE_DIR}/include/ai
+        ${CMAKE_CURRENT_SOURCE_DIR}/include/ai/chat
         ${CMAKE_CURRENT_SOURCE_DIR}/include/ai/edit
         ${CMAKE_CURRENT_SOURCE_DIR}/external/QF-ML/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/external/edlib/edlib/include
         ${CMAKE_CURRENT_SOURCE_DIR}/external/tree-sitter/lib/include
         ${CMAKE_CURRENT_SOURCE_DIR}/external/tree-sitter-markdown/tree-sitter-markdown/bindings/c
+        ${EPISTEME_EXTERNAL_PREFIX}/include
+)
+
+target_link_directories(Episteme PRIVATE
+        ${EPISTEME_EXTERNAL_PREFIX}/lib
+        ${EPISTEME_EXTERNAL_BUILD_DIR}/edlib
+        ${EPISTEME_EXTERNAL_BUILD_DIR}/tree-sitter
+        ${EPISTEME_EXTERNAL_BUILD_DIR}/tree-sitter-markdown
+)
+
+set_target_properties(Episteme PROPERTIES
+        BUILD_RPATH   "${EPISTEME_EXTERNAL_PREFIX}/lib"
+        INSTALL_RPATH "${EPISTEME_EXTERNAL_PREFIX}/lib"
 )
 
 target_link_libraries(Episteme PRIVATE
@@ -113,6 +174,8 @@ target_link_libraries(Episteme PRIVATE
         Qt6::PrintSupport
         Qt6::Pdf
         Qt6::PdfWidgets
+        Qt6::Network
+        Qt6::Multimedia
         qf-inference
         edlib
         tree-sitter

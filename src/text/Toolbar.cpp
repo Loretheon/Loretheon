@@ -2,9 +2,13 @@
 
 #include "TextEdit.h"
 
+#include <QApplication>
+#include <QGuiApplication>
 #include <QInputDialog>
 #include <QMenu>
+#include <QPalette>
 #include <QSignalBlocker>
+#include <qlayout.h>
 
 namespace {
 
@@ -13,192 +17,224 @@ struct ActionBinding {
   void (TextEdit::*handler)();
 };
 
-constexpr const char *Icons = "icons";
-
 } // namespace
 
+static QWidget * createSpacer(QWidget *parent) {
+  auto *spacer = new QWidget(parent);
+  spacer->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Preferred);
+  spacer->setMinimumWidth(5);
+  return spacer;
+}
+
+// Add an action to the toolbar and let its button grow horizontally so the
+// toolbar fills the available width instead of bunching all buttons at the
+// left edge.
+static QAction * addExpandingAction(QToolBar *toolbar, const QIcon &icon,
+                                    const QString &text = QString()) {
+  QAction *action = toolbar->addAction(icon, text);
+
+  if (QWidget *button = toolbar->widgetForAction(action)) {
+    QSizePolicy policy = button->sizePolicy();
+    policy.setHorizontalPolicy(QSizePolicy::Expanding);
+    policy.setHorizontalStretch(1);
+    button->setSizePolicy(policy);
+  }
+
+  return action;
+}
+
+QIcon Toolbar::createThemedIcon(const QString &symbolName) {
+  // Try system theme first
+  QIcon icon = QIcon::fromTheme(symbolName);
+  if (!icon.isNull()) {
+    return icon;
+  }
+
+  // Fallback: create a simple colored square based on the symbol name
+  // In production, you'd use proper SVG icons here
+  return QIcon::fromTheme("document-properties");
+}
+
 Toolbar::Toolbar(QWidget *parent) : QToolBar(parent) {
+  setMovable(false);
+  setIconSize(QSize(18, 18));
   setToolButtonStyle(Qt::ToolButtonIconOnly);
-  setIconSize(QSize(20, 20));
+  layout()->setSpacing(6);
+  setupToolbarStyle();
 
   // Text formatting
-  m_boldAction = addAction(QIcon::fromTheme(QStringLiteral("format-text-bold")),
-                           tr("Bold"));
+  m_boldAction = addExpandingAction(this, createThemedIcon("format-text-bold"));
   m_boldAction->setCheckable(true);
+  m_boldAction->setShortcut(Qt::CTRL | Qt::Key_B);
+  m_boldAction->setToolTip(tr("Bold (Ctrl+B)"));
 
-  m_italicAction = addAction(
-      QIcon::fromTheme(QStringLiteral("format-text-italic")), tr("Italic"));
+  m_italicAction = addExpandingAction(this, createThemedIcon("format-text-italic"));
   m_italicAction->setCheckable(true);
+  m_italicAction->setShortcut(Qt::CTRL | Qt::Key_I);
+  m_italicAction->setToolTip(tr("Italic (Ctrl+I)"));
 
-  m_strikethroughAction =
-      addAction(QIcon::fromTheme(QStringLiteral("format-text-strikethrough")),
-                tr("Strikethrough"));
+  m_strikethroughAction = addExpandingAction(this, createThemedIcon("format-text-strikethrough"));
   m_strikethroughAction->setCheckable(true);
+  m_strikethroughAction->setToolTip(tr("Strikethrough"));
 
-  m_codeSpanAction = addAction(
-      QIcon::fromTheme(QStringLiteral("format-text-code")), tr("Inline Code"));
+  m_codeSpanAction = addExpandingAction(this, createThemedIcon("format-text-code"));
   m_codeSpanAction->setCheckable(true);
+  m_codeSpanAction->setShortcut(Qt::CTRL | Qt::Key_Agrave);
+  m_codeSpanAction->setToolTip(tr("Inline Code (Ctrl+`)"));
 
-  m_highlightAction = addAction(
-      QIcon::fromTheme(QStringLiteral("format-highlight")), tr("Highlight"));
+  m_highlightAction = addExpandingAction(this, createThemedIcon("format-highlight"));
   m_highlightAction->setCheckable(true);
+  m_highlightAction->setToolTip(tr("Highlight"));
 
-  addSeparator();
+  addWidget(createSpacer(this));
 
   // Links & media
-  m_linkAction = addAction(QIcon::fromTheme(QStringLiteral("insert-link")),
-                           tr("Insert Link"));
+  m_linkAction = addExpandingAction(this, createThemedIcon("insert-link"));
+  m_linkAction->setShortcut(Qt::CTRL | Qt::Key_K);
+  m_linkAction->setToolTip(tr("Link (Ctrl+K)"));
 
-  m_wikiLinkAction = addAction(QIcon::fromTheme(QStringLiteral("insert-link")),
-                               tr("Internal Link"));
+  m_wikiLinkAction = addExpandingAction(this, createThemedIcon("insert-link"));
+  m_wikiLinkAction->setToolTip(tr("Wiki Link"));
 
-  m_autolinkAction =
-      addAction(QIcon::fromTheme(QStringLiteral("link")), tr("Autolink"));
+  m_autolinkAction = addExpandingAction(this, createThemedIcon("link"));
+  m_autolinkAction->setToolTip(tr("Autolink"));
 
-  m_imageAction = addAction(QIcon::fromTheme(QStringLiteral("insert-image")),
-                            tr("Insert Image"));
+  m_imageAction = addExpandingAction(this, createThemedIcon("insert-image"));
+  m_imageAction->setToolTip(tr("Image"));
 
-  m_mediaAction = addAction(QIcon::fromTheme(QStringLiteral("video-x-generic")),
-                            tr("Insert Media"));
+  m_mediaAction = addExpandingAction(this, createThemedIcon("video-x-generic"));
+  m_mediaAction->setToolTip(tr("Media"));
 
-  addSeparator();
+  addWidget(createSpacer(this));
 
   // Paragraph / heading
   m_headingCombo = new QComboBox(this);
-
-  m_headingCombo->addItem(tr("Paragraph"), 0);
+  m_headingCombo->addItem(tr("¶"), 0);
 
   for (int level = 1; level <= 6; ++level) {
-    m_headingCombo->addItem(tr("Heading %1").arg(level), level);
+    m_headingCombo->addItem(QString("H%1").arg(level), level);
   }
 
-  m_headingCombo->setToolTip(tr("Paragraph / Heading"));
+  m_headingCombo->setToolTip(tr("Heading Level"));
+  m_headingCombo->setMaximumWidth(70);
+  m_headingCombo->setMinimumWidth(55);
 
   addWidget(m_headingCombo);
 
-  m_blockquoteAction =
-      addAction(QIcon::fromTheme(QStringLiteral("format-quote")), tr("Quote"));
+  m_blockquoteAction = addExpandingAction(this, createThemedIcon("format-quote"));
   m_blockquoteAction->setCheckable(true);
+  m_blockquoteAction->setToolTip(tr("Quote"));
 
-  m_calloutAction = addAction(
-      QIcon::fromTheme(QStringLiteral("dialog-information")), tr("Callout"));
+  m_calloutAction = addExpandingAction(this, createThemedIcon("dialog-information"));
+  m_calloutAction->setToolTip(tr("Callout"));
 
-  addSeparator();
+  addWidget(createSpacer(this));
 
   // Lists
-  m_bulletListAction =
-      addAction(QIcon::fromTheme(QStringLiteral("format-list-unordered")),
-                tr("Bullet List"));
+  m_bulletListAction = addExpandingAction(this, createThemedIcon("format-list-unordered"));
   m_bulletListAction->setCheckable(true);
+  m_bulletListAction->setToolTip(tr("Bullet List"));
 
-  m_orderedListAction =
-      addAction(QIcon::fromTheme(QStringLiteral("format-list-ordered")),
-                tr("Numbered List"));
+  m_orderedListAction = addExpandingAction(this, createThemedIcon("format-list-ordered"));
   m_orderedListAction->setCheckable(true);
+  m_orderedListAction->setToolTip(tr("Ordered List"));
 
-  m_taskListAction =
-      addAction(QIcon::fromTheme(QStringLiteral("checkbox")), tr("Task List"));
+  m_taskListAction = addExpandingAction(this, createThemedIcon("checkbox"));
   m_taskListAction->setCheckable(true);
+  m_taskListAction->setToolTip(tr("Task List"));
 
-  m_definitionListAction =
-      addAction(QIcon::fromTheme(QStringLiteral("format-list-unordered")),
-                tr("Definition List"));
+  m_definitionListAction = addExpandingAction(this, createThemedIcon("format-list-unordered"));
+  m_definitionListAction->setToolTip(tr("Definition List"));
 
-  addSeparator();
+  addWidget(createSpacer(this));
 
   // Blocks
-  m_codeBlockAction = addAction(
-      QIcon::fromTheme(QStringLiteral("text-x-generic")), tr("Code Block"));
+  m_codeBlockAction = addExpandingAction(this, createThemedIcon("text-x-generic"));
   m_codeBlockAction->setCheckable(true);
+  m_codeBlockAction->setToolTip(tr("Code Block"));
 
-  m_diagramBlockAction = addAction(
-      QIcon::fromTheme(QStringLiteral("view-refresh")), tr("Diagram"));
+  m_diagramBlockAction = addExpandingAction(this, createThemedIcon("view-refresh"));
+  m_diagramBlockAction->setToolTip(tr("Diagram"));
 
-  m_mathBlockAction =
-      addAction(QIcon::fromTheme(QStringLiteral("accessories-calculator")),
-                tr("Math Block"));
+  m_mathBlockAction = addExpandingAction(this, createThemedIcon("accessories-calculator"));
   m_mathBlockAction->setCheckable(true);
+  m_mathBlockAction->setToolTip(tr("Math Block"));
 
-  m_detailsAction =
-      addAction(QIcon::fromTheme(QStringLiteral("view-list-details")),
-                tr("Collapsible Block"));
+  m_detailsAction = addExpandingAction(this, createThemedIcon("view-list-details"));
+  m_detailsAction->setToolTip(tr("Collapsible"));
 
-  m_rawHtmlAction = addAction(QIcon::fromTheme(QStringLiteral("text-html")),
-                              tr("HTML Block"));
+  m_rawHtmlAction = addExpandingAction(this, createThemedIcon("text-html"));
+  m_rawHtmlAction->setToolTip(tr("HTML Block"));
 
-  m_hrAction =
-      addAction(QIcon::fromTheme(QStringLiteral("format-justify-fill")),
-                tr("Horizontal Rule"));
+  m_hrAction = addExpandingAction(this, createThemedIcon("format-justify-fill"));
+  m_hrAction->setToolTip(tr("Divider"));
 
-  m_hardBreakAction =
-      addAction(QIcon::fromTheme(QStringLiteral("go-next")), tr("Hard Break"));
+  m_hardBreakAction = addExpandingAction(this, createThemedIcon("go-next"));
+  m_hardBreakAction->setToolTip(tr("Line Break"));
 
-  addSeparator();
+  addWidget(createSpacer(this));
 
   // Indentation
-  m_decreaseIndentAction = addAction(
-      QIcon::fromTheme(QStringLiteral("format-indent-less")), tr("Outdent"));
+  m_decreaseIndentAction = addExpandingAction(this, createThemedIcon("format-indent-less"));
+  m_decreaseIndentAction->setShortcut(Qt::SHIFT | Qt::Key_Tab);
+  m_decreaseIndentAction->setToolTip(tr("Outdent (Shift+Tab)"));
 
-  m_increaseIndentAction = addAction(
-      QIcon::fromTheme(QStringLiteral("format-indent-more")), tr("Indent"));
+  m_increaseIndentAction = addExpandingAction(this, createThemedIcon("format-indent-more"));
+  m_increaseIndentAction->setShortcut(Qt::Key_Tab);
+  m_increaseIndentAction->setToolTip(tr("Indent (Tab)"));
 
-  addSeparator();
+  addWidget(createSpacer(this));
 
   // Tables
-  m_insertTableAction = addAction(
-      QIcon::fromTheme(QStringLiteral("insert-table")), tr("Insert Table"));
+  m_insertTableAction = addExpandingAction(this, createThemedIcon("insert-table"));
+  m_insertTableAction->setToolTip(tr("Insert Table"));
 
-  m_deleteTableAction = addAction(
-      QIcon::fromTheme(QStringLiteral("edit-delete")), tr("Delete Table"));
+  m_deleteTableAction = addExpandingAction(this, createThemedIcon("edit-delete"));
+  m_deleteTableAction->setToolTip(tr("Delete Table"));
 
-  m_addRowAction =
-      addAction(QIcon::fromTheme(QStringLiteral("list-add")), tr("Add Row"));
+  m_addRowAction = addExpandingAction(this, createThemedIcon("list-add"));
+  m_addRowAction->setToolTip(tr("Add Row"));
 
-  m_removeRowAction = addAction(QIcon::fromTheme(QStringLiteral("list-remove")),
-                                tr("Remove Row"));
+  m_removeRowAction = addExpandingAction(this, createThemedIcon("list-remove"));
+  m_removeRowAction->setToolTip(tr("Remove Row"));
 
-  m_addColumnAction =
-      addAction(QIcon::fromTheme(QStringLiteral("list-add")), tr("Add Column"));
+  m_addColumnAction = addExpandingAction(this, createThemedIcon("list-add"));
+  m_addColumnAction->setToolTip(tr("Add Column"));
 
-  m_removeColumnAction = addAction(
-      QIcon::fromTheme(QStringLiteral("list-remove")), tr("Remove Column"));
+  m_removeColumnAction = addExpandingAction(this, createThemedIcon("list-remove"));
+  m_removeColumnAction->setToolTip(tr("Remove Column"));
 
-  m_alignTableLeftAction =
-      addAction(QIcon::fromTheme(QStringLiteral("format-justify-left")),
-                tr("Align Left"));
+  m_alignTableLeftAction = addExpandingAction(this, createThemedIcon("format-justify-left"));
+  m_alignTableLeftAction->setToolTip(tr("Align Left"));
 
-  m_alignTableCenterAction =
-      addAction(QIcon::fromTheme(QStringLiteral("format-justify-center")),
-                tr("Align Center"));
+  m_alignTableCenterAction = addExpandingAction(this, createThemedIcon("format-justify-center"));
+  m_alignTableCenterAction->setToolTip(tr("Align Center"));
 
-  m_alignTableRightAction =
-      addAction(QIcon::fromTheme(QStringLiteral("format-justify-right")),
-                tr("Align Right"));
+  m_alignTableRightAction = addExpandingAction(this, createThemedIcon("format-justify-right"));
+  m_alignTableRightAction->setToolTip(tr("Align Right"));
 
-  addSeparator();
+  addWidget(createSpacer(this));
 
   // Document
-  m_footnoteAction =
-      addAction(QIcon::fromTheme(QStringLiteral("footnote")), tr("Footnote"));
+  m_footnoteAction = addExpandingAction(this, createThemedIcon("footnote"));
+  m_footnoteAction->setToolTip(tr("Footnote"));
 
-  m_tagAction =
-      addAction(QIcon::fromTheme(QStringLiteral("tag")), tr("Insert Tag"));
+  m_tagAction = addExpandingAction(this, createThemedIcon("tag"));
+  m_tagAction->setToolTip(tr("Tag"));
 
-  m_tocAction = addAction(QIcon::fromTheme(QStringLiteral("view-list-tree")),
-                          tr("Table of Contents"));
+  m_tocAction = addExpandingAction(this, createThemedIcon("view-list-tree"));
+  m_tocAction->setToolTip(tr("Table of Contents"));
 
-  m_frontmatterAction =
-      addAction(QIcon::fromTheme(QStringLiteral("document-properties")),
-                tr("Front Matter"));
+  m_frontmatterAction = addExpandingAction(this, createThemedIcon("document-properties"));
+  m_frontmatterAction->setToolTip(tr("Metadata"));
 
-  addSeparator();
+  addWidget(createSpacer(this));
 
   // View
-  m_toggleSourceViewAction =
-      addAction(QIcon::fromTheme(QStringLiteral("text-x-generic")),
-                tr("Toggle Source / Preview"));
-
+  m_toggleSourceViewAction = addExpandingAction(this, createThemedIcon("text-x-generic"));
   m_toggleSourceViewAction->setCheckable(true);
+  m_toggleSourceViewAction->setShortcut(Qt::CTRL | Qt::SHIFT | Qt::Key_V);
+  m_toggleSourceViewAction->setToolTip(tr("Source/Preview (Ctrl+Shift+V)"));
 
   connect(m_headingCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
           this, &Toolbar::onHeadingLevelChanged);
@@ -208,6 +244,53 @@ Toolbar::Toolbar(QWidget *parent) : QToolBar(parent) {
 
   connect(m_diagramBlockAction, &QAction::triggered, this,
           &Toolbar::onInsertDiagram);
+}
+
+void Toolbar::setupToolbarStyle() {
+  QPalette palette = QApplication::palette();
+  QString textColor = palette.text().color().name();
+  QString bgColor = palette.base().color().name();
+
+  setStyleSheet(
+      "QToolBar {"
+      "  border: none;"
+      "  background-color: "+ bgColor + ";"
+      "  padding: 2px 4px;"
+      "  spacing: 1px;"
+      "}"
+      "QToolButton {"
+      "  border: none;"
+      "  border-radius: 3px;"
+      "  padding: 3px;"
+      "  margin: 0px;"
+      "  background-color: transparent;"
+      "}"
+      "QToolButton:hover {"
+      "  background-color: rgba(128, 128, 128, 0.15);"
+      "}"
+      "QToolButton:pressed,"
+      "QToolButton:checked {"
+      "  background-color: rgba(128, 128, 128, 0.3);"
+      "}"
+      "QComboBox {"
+      "  border: 1px solid rgba(128, 128, 128, 0.3);"
+      "  border-radius: 3px;"
+      "  padding: 2px 4px;"
+      "  background-color: transparent;"
+      "  color: " + textColor + ";"
+      "}"
+      "QComboBox:hover {"
+      "  border: 1px solid rgba(128, 128, 128, 0.5);"
+      "}"
+      "QComboBox::drop-down {"
+      "  border: none;"
+      "  padding-right: 3px;"
+      "}"
+      "QComboBox::down-arrow {"
+      "  width: 12px;"
+      "  height: 8px;"
+      "}"
+  );
 }
 
 void Toolbar::setTextEdit(TextEdit *editor) {
@@ -355,6 +438,7 @@ void Toolbar::updateActionsState() {
 
   m_toggleSourceViewAction->setChecked(m_editor->isSourceMode());
 }
+
 void Toolbar::onHeadingLevelChanged(int index) {
   if (!m_editor || index < 0) {
     return;

@@ -5,8 +5,7 @@
 #include <QFileInfo>
 
 FileSystemModel::FileSystemModel(QObject *parent)
-    : QIdentityProxyModel(parent) {
-  fsModel = new QFileSystemModel(this);
+    : QIdentityProxyModel(parent), fsModel(new QFileSystemModel(this)) {
   fsModel->setReadOnly(false);
 
   setSourceModel(fsModel);
@@ -15,9 +14,30 @@ FileSystemModel::FileSystemModel(QObject *parent)
           &FileSystemModel::fileRenamed);
 }
 
+int FileSystemModel::sourceColumnFor(int proxyColumn) {
+  return proxyColumn >= ExtensionColumn ? proxyColumn - 1 : proxyColumn;
+}
+
+QModelIndex
+FileSystemModel::mapToSourceColumn(const QModelIndex &proxyIndex) const {
+  if (!proxyIndex.isValid())
+    return QModelIndex();
+
+  const QModelIndex sourceParent = mapToSource(proxyIndex.parent());
+  return fsModel->index(proxyIndex.row(), sourceColumnFor(proxyIndex.column()),
+                        sourceParent);
+}
+
+QModelIndex FileSystemModel::nameIndex(const QModelIndex &proxyIndex) const {
+  if (!proxyIndex.isValid())
+    return QModelIndex();
+
+  const QModelIndex sourceParent = mapToSource(proxyIndex.parent());
+  return fsModel->index(proxyIndex.row(), NameColumn, sourceParent);
+}
+
 QModelIndex FileSystemModel::setRootPath(const QString &path) {
-  const QModelIndex sourceRoot = fsModel->setRootPath(path);
-  return mapFromSource(sourceRoot);
+  return mapFromSource(fsModel->setRootPath(path));
 }
 
 QModelIndex FileSystemModel::index(const QString &path) const {
@@ -36,50 +56,33 @@ int FileSystemModel::columnCount(const QModelIndex &parent) const {
   return fsModel->columnCount(mapToSource(parent)) + 1;
 }
 
-QModelIndex
-FileSystemModel::mapToSourceColumn(const QModelIndex &proxyIndex) const {
-  if (!proxyIndex.isValid())
-    return QModelIndex();
-
-  const int column = proxyIndex.column();
-  const int sourceColumn = column >= ExtensionColumn ? column - 1 : column;
-
-  const QModelIndex sourceParent = mapToSource(proxyIndex.parent());
-  return fsModel->index(proxyIndex.row(), sourceColumn, sourceParent);
-}
-
 QVariant FileSystemModel::data(const QModelIndex &index, int role) const {
   if (!index.isValid())
     return QVariant();
 
+  const QModelIndex nameIdx = nameIndex(index);
+  if (!nameIdx.isValid())
+    return QVariant();
+
   if (index.column() == ExtensionColumn) {
-    const QModelIndex nameIndex =
-        fsModel->index(index.row(), 0, mapToSource(index.parent()));
+    if (fsModel->isDir(nameIdx))
+      return role == Qt::DisplayRole ? QVariant(QString()) : QVariant();
 
-    if (fsModel->isDir(nameIndex))
-      return (role == Qt::DisplayRole) ? QVariant(QString()) : QVariant();
-
-    if (role == Qt::DisplayRole) {
-      const QFileInfo info(fsModel->filePath(nameIndex));
-      return info.suffix();
-    }
+    if (role == Qt::DisplayRole)
+      return QFileInfo(fsModel->filePath(nameIdx)).suffix();
 
     return QVariant();
   }
 
   if (index.column() == NameColumn &&
       (role == Qt::DisplayRole || role == Qt::EditRole)) {
-    const QModelIndex nameIndex =
-        fsModel->index(index.row(), 0, mapToSource(index.parent()));
+    if (fsModel->isDir(nameIdx))
+      return fsModel->fileName(nameIdx);
 
-    if (fsModel->isDir(nameIndex))
-      return fsModel->fileName(nameIndex);
-
-    const QFileInfo info(fsModel->filePath(nameIndex));
-    return info.completeBaseName();
+    return QFileInfo(fsModel->filePath(nameIdx)).completeBaseName();
   }
 
-  return QIdentityProxyModel::data(mapToSourceColumn(index), role);
+  return fsModel->data(mapToSourceColumn(index), role);
 }
 
 bool FileSystemModel::setData(const QModelIndex &index, const QVariant &value,
@@ -87,17 +90,17 @@ bool FileSystemModel::setData(const QModelIndex &index, const QVariant &value,
   if (!index.isValid() || index.column() != NameColumn || role != Qt::EditRole)
     return false;
 
-  const QModelIndex nameIndex =
-      fsModel->index(index.row(), 0, mapToSource(index.parent()));
-  const QFileInfo info(fsModel->filePath(nameIndex));
+  const QModelIndex nameIdx = nameIndex(index);
+  if (!nameIdx.isValid())
+    return false;
 
+  const QFileInfo info(fsModel->filePath(nameIdx));
   const QString extension = info.suffix();
   const QString newBaseName = value.toString();
-
   const QString newFileName =
-      extension.isEmpty() ? newBaseName : newBaseName + "." + extension;
+      extension.isEmpty() ? newBaseName : newBaseName + '.' + extension;
 
-  return fsModel->setData(nameIndex, newFileName, Qt::EditRole);
+  return fsModel->setData(nameIdx, newFileName, Qt::EditRole);
 }
 
 Qt::ItemFlags FileSystemModel::flags(const QModelIndex &index) const {
@@ -107,11 +110,10 @@ Qt::ItemFlags FileSystemModel::flags(const QModelIndex &index) const {
   if (index.column() == ExtensionColumn)
     return Qt::ItemIsEnabled | Qt::ItemIsSelectable;
 
+  Qt::ItemFlags result = fsModel->flags(mapToSourceColumn(index));
   if (index.column() == NameColumn)
-    return QIdentityProxyModel::flags(mapToSourceColumn(index)) |
-           Qt::ItemIsEditable;
-
-  return QIdentityProxyModel::flags(mapToSourceColumn(index));
+    result |= Qt::ItemIsEditable;
+  return result;
 }
 
 QVariant FileSystemModel::headerData(int section, Qt::Orientation orientation,
@@ -119,11 +121,9 @@ QVariant FileSystemModel::headerData(int section, Qt::Orientation orientation,
   if (orientation == Qt::Horizontal && role == Qt::DisplayRole) {
     if (section == ExtensionColumn)
       return tr("Extension");
-
     if (section == NameColumn)
       return tr("Name");
   }
 
-  const int sourceSection = section >= ExtensionColumn ? section - 1 : section;
-  return fsModel->headerData(sourceSection, orientation, role);
+  return fsModel->headerData(sourceColumnFor(section), orientation, role);
 }

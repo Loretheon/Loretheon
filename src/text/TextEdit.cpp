@@ -131,6 +131,10 @@ void TextEdit::mouseMoveEvent(QMouseEvent *event) {
 void TextEdit::setupToolbar() {
   m_toolbar = new Toolbar(this);
 
+  // Set initial geometry across the top
+  m_toolbar->setGeometry(0, 0, width(), m_toolbar->sizeHint().height());
+
+  setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
   setViewportMargins(0, m_toolbar->sizeHint().height(), 0, 0);
 
   setupToolbarConnections();
@@ -996,6 +1000,9 @@ void TextEdit::resizeEvent(QResizeEvent *event) {
   }
 
   const int toolbarHeight = m_toolbar->sizeHint().height();
+
+  // Position and resize the toolbar across the top edge
+  m_toolbar->setGeometry(0, 0, width(), toolbarHeight);
 
   int reviewHeight = 0;
 

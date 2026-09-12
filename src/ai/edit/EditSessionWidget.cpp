@@ -1,4 +1,4 @@
-#include "EditSessionWidget.h"
+#include "../../../include/ai/edit/EditSessionWidget.h"
 
 #include <QButtonGroup>
 #include <QFont>

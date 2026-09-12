@@ -22,6 +22,9 @@ private slots:
   void onInsertDiagram();
 
 private:
+  void setupToolbarStyle();
+  QIcon createThemedIcon(const QString &symbolName);
+
   TextEdit *m_editor = nullptr;
 
   // Inline formatting actions

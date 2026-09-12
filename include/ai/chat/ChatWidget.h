@@ -2,8 +2,9 @@
 #define CHATWIDGET_H
 
 #include "PayloadLogger.h"
-#include "edit/EditCommand.h"
-#include "edit/EditMatch.h"
+
+#include "../edit/EditCommand.h"
+#include "../edit/EditMatch.h"
 
 #include <QList>
 #include <QString>
@@ -11,20 +12,27 @@
 #include <QWidget>
 
 class NotificationManager;
+
 class QCheckBox;
 class QLineEdit;
 class QPushButton;
 class QTextEdit;
 class QVBoxLayout;
 
+class ChatWidgetEditFlow;
+
 class EditPlanner;
 class EditSession;
 class EditSessionWidget;
+
 class InferenceService;
+
 class TextEdit;
 
 class ChatWidget : public QWidget {
   Q_OBJECT
+
+  friend class ChatWidgetEditFlow;
 
 public:
   explicit ChatWidget(InferenceService *inferenceService,
@@ -35,6 +43,7 @@ public:
   void submitTranscribedText(const QString &text);
 
 private slots:
+
   void onSendClicked();
 
   void onLlmDelta(const QString &text);
@@ -78,15 +87,11 @@ private slots:
 private:
   enum class EditPhase { None, Content };
 
+  /*
+   * Chat / transcript
+   */
+
   void sendPrompt(const QString &prompt);
-
-  void requestNextEditCommand();
-
-  void beginStreamingResolvedPlan();
-
-  void executeNextPlannedEdit();
-
-  void requestEditContent();
 
   void appendUserMessage(const QString &text);
 
@@ -97,56 +102,71 @@ private:
   void renderLastAssistantMessage();
 
   void resetEditState();
+
+private:
   NotificationManager *m_notifications = nullptr;
-  QString describeCommand(const EditCommand &command) const;
 
-  InferenceService *m_inferenceService{nullptr};
+  ChatWidgetEditFlow *m_editFlow = nullptr;
 
-  EditSession *m_editSession{nullptr};
+  InferenceService *m_inferenceService = nullptr;
 
-  EditPlanner *m_editPlanner{nullptr};
+  EditSession *m_editSession = nullptr;
 
-  TextEdit *m_activeEditor{nullptr};
+  EditPlanner *m_editPlanner = nullptr;
+
+  TextEdit *m_activeEditor = nullptr;
 
   PayloadLogger m_payloadLogger;
 
-  QTextEdit *m_transcript{nullptr};
+  /*
+   * Widgets
+   */
 
-  QLineEdit *m_input{nullptr};
+  QTextEdit *m_transcript = nullptr;
 
-  QPushButton *m_sendButton{nullptr};
+  QLineEdit *m_input = nullptr;
 
-  QCheckBox *m_editModeCheckbox{nullptr};
+  QPushButton *m_sendButton = nullptr;
 
-  EditSessionWidget *m_editSessionWidget{nullptr};
+  QCheckBox *m_editModeCheckbox = nullptr;
 
-  QVBoxLayout *m_layout{nullptr};
+  EditSessionWidget *m_editSessionWidget = nullptr;
+
+  QVBoxLayout *m_layout = nullptr;
+
+  /*
+   * Chat state
+   */
 
   QString m_currentEditRequest;
+
   QString m_currentCommandJson;
+
   QString m_currentCommandDescription;
+
   QString m_currentEditInstruction;
+
   QString m_currentLlmResponse;
 
   QList<EditCommand> m_plannedEdits;
 
-  EditPhase m_editPhase{EditPhase::None};
+  EditPhase m_editPhase = EditPhase::None;
 
-  size_t m_nextPlannedEditIndex{0};
+  size_t m_nextPlannedEditIndex = 0;
 
-  int m_currentEditNumber{0};
+  int m_currentEditNumber = 0;
 
-  int m_streamingEditCount{0};
+  int m_streamingEditCount = 0;
 
-  bool m_assistantMessageOpen{false};
+  bool m_assistantMessageOpen = false;
 
-  bool m_awaitingEdit{false};
+  bool m_awaitingEdit = false;
 
-  bool m_editGenerationStopped{false};
+  bool m_editGenerationStopped = false;
 
-  bool m_editAbortRequested{false};
+  bool m_editAbortRequested = false;
 
-  bool m_planReadyToStream{false};
+  bool m_planReadyToStream = false;
 };
 
 #endif // CHATWIDGET_H

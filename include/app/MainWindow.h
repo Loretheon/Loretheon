@@ -3,7 +3,7 @@
 
 #include <QMainWindow>
 
-#include "../ai/ChatWidget.h"
+#include "../ai/chat/ChatWidget.h"
 #include "../ai/edit/EditSession.h"
 #include "DocumentManager.h"
 #include "FileWidget.h"
@@ -23,10 +23,12 @@ public:
 private:
   void createActions();
   void createMenus();
+  void loadTheme(const QString &themeName);
 
   QMenu *fileMenu = nullptr;
   QMenu *newMenu = nullptr;
   QMenu *toolsMenu = nullptr;
+  QMenu *themeMenu = nullptr;
   QMenu *helpMenu = nullptr;
 
   QAction *newTextAct = nullptr;
@@ -47,10 +49,13 @@ private:
   ChatWidget *chatWidget = nullptr;
   ModelDialog *modelDialog = nullptr;
 
+  QString currentTheme;
+
 private slots:
   void about();
   void aboutQt();
   void manageModels();
+  void onThemeSelected(const QString &theme);
 };
 
 #endif // EPISTEME_MAINWINDOW_H

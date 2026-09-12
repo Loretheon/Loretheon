@@ -11,9 +11,6 @@ int main(int argc, char **argv) {
   QCoreApplication::setApplicationName("Episteme");
   QCoreApplication::setApplicationVersion("0.0");
   const QString root = Settings::getRootDirectory();
-
-  qDebug() << "ROOT:" << root;
-
   MainWindow window;
   window.show();
   return app.exec();
