@@ -1,4 +1,4 @@
-#include "MarkdownFormatDelegate.h"
+#include "../../../include/text/formats/MarkdownFormatDelegate.h"
 #include <QTextBlock>
 
 void MarkdownFormatDelegate::wrapSelection(QTextCursor &cursor,

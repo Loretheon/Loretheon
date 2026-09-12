@@ -1,11 +1,11 @@
-cmake_minimum_required(VERSION 4.3)
+cmake_minimum_required(VERSION 3.23)
 project(Episteme VERSION 0.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(Qt6 6.4 REQUIRED COMPONENTS
-        Core Gui Widgets PrintSupport Pdf PdfWidgets Network Multimedia)
+        Core Gui Widgets PrintSupport Pdf PdfWidgets Network Multimedia Svg SvgWidgets Xml)
 set(CMAKE_AUTORCC ON)
 qt_standard_project_setup()
 
@@ -14,6 +14,7 @@ set(ENV{PATH} "${EPISTEME_NODE_BIN}:$ENV{PATH}")
 find_program(TREE_SITTER_CLI NAMES tree-sitter REQUIRED)
 message(STATUS "TREE_SITTER_CLI=${TREE_SITTER_CLI}")
 
+# Use a fixed external build directory independent of the main build
 set(EPISTEME_EXTERNAL_BUILD_DIR "${CMAKE_CURRENT_SOURCE_DIR}/cmake-build-libs"
         CACHE PATH "Directory where external libraries are built")
 set(EPISTEME_EXTERNAL_PREFIX "${EPISTEME_EXTERNAL_BUILD_DIR}/install")
@@ -23,13 +24,12 @@ include(ExternalProject)
 set(EPISTEME_EXT_CMAKE_ARGS
         -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
         -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}
-        -DCMAKE_BUILD_TYPE=$<IF:$<CONFIG:>,Release,$<CONFIG>>
+        -DCMAKE_BUILD_TYPE=Release
         -DCMAKE_INSTALL_PREFIX=${EPISTEME_EXTERNAL_PREFIX}
         -DCMAKE_INSTALL_LIBDIR=lib
         -DCMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}
         -DCMAKE_PROGRAM_PATH=${EPISTEME_NODE_BIN}
         -DCMAKE_POSITION_INDEPENDENT_CODE=ON
-        -DCMAKE_POLICY_VERSION_MINIMUM=3.5
 )
 
 function(episteme_external name dir)
@@ -43,6 +43,7 @@ function(episteme_external name dir)
             CMAKE_ARGS  ${EPISTEME_EXT_CMAKE_ARGS} ${ARGN}
             UPDATE_DISCONNECTED ON
             BUILD_ALWAYS OFF
+            EXCLUDE_FROM_ALL ON
     )
 endfunction()
 
@@ -56,7 +57,7 @@ episteme_external(tree-sitter-markdown tree-sitter-markdown
         -DBUILD_SHARED_LIBS=OFF
         -DTREE_SITTER_CLI=${TREE_SITTER_CLI})
 
-# QF-ML: real target, but build output kept in cmake-build-libs/QF-ML
+# QF-ML: use fixed output directory
 add_subdirectory(external/QF-ML ${EPISTEME_EXTERNAL_BUILD_DIR}/QF-ML)
 
 add_executable(Episteme
@@ -83,11 +84,11 @@ add_executable(Episteme
         include/app/DocumentManager.h
         src/text/Toolbar.cpp
         include/text/Toolbar.h
-        include/text/TextFormatDelegate.h
-        src/text/MarkdownFormatDelegate.cpp
-        include/text/MarkdownFormatDelegate.h
-        src/text/HTMLFormatDelegate.cpp
-        include/text/HTMLFormatDelegate.h
+        include/text/formats/TextFormatDelegate.h
+        src/text/formats/MarkdownFormatDelegate.cpp
+        include/text/formats/MarkdownFormatDelegate.h
+        src/text/formats/HTMLFormatDelegate.cpp
+        include/text/formats/HTMLFormatDelegate.h
         src/ai/chat/ChatWidget.cpp
         include/ai/chat/ChatWidget.h
         src/ai/edit/EditApplier.cpp
@@ -136,6 +137,18 @@ add_executable(Episteme
         ${CMAKE_CURRENT_SOURCE_DIR}/styles/catppuccin-mocha/resources.qrc
         src/file/DirectoryExplorerSettings.cpp
         include/file/DirectoryExplorerSettings.h
+        src/text/formats/DotSyntaxHighlighter.cpp
+        include/text/formats/DotSyntaxHighlighter.h
+        src/text/GraphvizRenderer.cpp
+        include/text/GraphvizRenderer.h
+        src/text/diagram/DiagramDocument.cpp
+        include/text/diagram/DiagramDocument.h
+        src/text/diagram/DiagramView.cpp
+        include/text/diagram/DiagramView.h
+        src/text/diagram/DiagramCanvas.cpp
+        include/text/diagram/DiagramCanvas.h
+        src/text/diagram/DiagramToolbar.cpp
+        include/text/diagram/DiagramToolbar.h
 )
 
 add_dependencies(Episteme ext_edlib ext_tree-sitter ext_tree-sitter-markdown)
@@ -143,7 +156,9 @@ add_dependencies(Episteme ext_edlib ext_tree-sitter ext_tree-sitter-markdown)
 target_include_directories(Episteme PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include/app
         ${CMAKE_CURRENT_SOURCE_DIR}/include/text
+        ${CMAKE_CURRENT_SOURCE_DIR}/include/text/formats
         ${CMAKE_CURRENT_SOURCE_DIR}/include/text/model
+        ${CMAKE_CURRENT_SOURCE_DIR}/include/text/diagram
         ${CMAKE_CURRENT_SOURCE_DIR}/include/text/structure
         ${CMAKE_CURRENT_SOURCE_DIR}/include/file
         ${CMAKE_CURRENT_SOURCE_DIR}/include/file/model
@@ -178,6 +193,9 @@ target_link_libraries(Episteme PRIVATE
         Qt6::PdfWidgets
         Qt6::Network
         Qt6::Multimedia
+        Qt6::Svg
+        Qt6::SvgWidgets
+        Qt6::Xml
         qf-inference
         edlib
         tree-sitter

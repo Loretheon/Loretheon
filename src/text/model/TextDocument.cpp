@@ -32,6 +32,11 @@ DocumentStructure buildStructure(DocumentMode mode, const QString &text,
     PlainTextStructureParser parser;
     return parser.parse(text);
   }
+
+  case DocumentMode::Dot: {
+    PlainTextStructureParser parser;
+    return parser.parse(text);
+  }
   }
 
   return {};

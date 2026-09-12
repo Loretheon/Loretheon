@@ -3,8 +3,8 @@
 
 #include "../ai/edit/PendingEdit.h"
 #include "DocumentMode.h"
-#include "TextFormatDelegate.h"
 #include "Toolbar.h"
+#include "formats/TextFormatDelegate.h"
 #include <QMouseEvent>
 
 #include <QHash>

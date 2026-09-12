@@ -12,6 +12,7 @@ namespace {
 
 constexpr QLatin1StringView MarkdownExtension("md");
 constexpr QLatin1StringView TextExtension("txt");
+constexpr QLatin1StringView DotExtension("dot");
 constexpr QLatin1StringView UntitledBaseName("Untitled");
 
 QString normalizedExtension(const QString &extension) {
@@ -85,9 +86,15 @@ DocumentManager::DocumentManager(QObject *parent)
 TextDocument *DocumentManager::currentDocument() const { return current; }
 
 DocumentMode DocumentManager::typeForExtension(const QString &extension) {
-  return normalizedExtension(extension) == MarkdownExtension
-             ? DocumentMode::Markdown
-             : DocumentMode::PlainText;
+  const auto normalized = normalizedExtension(extension);
+
+  if (normalized == MarkdownExtension) {
+    return DocumentMode::Markdown;
+  }
+  if (normalized == "dot") {
+    return DocumentMode::Dot;
+  }
+  return DocumentMode::PlainText;
 }
 
 QString DocumentManager::uniqueDefaultPath(const QString &baseName,

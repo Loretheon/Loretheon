@@ -1,9 +1,9 @@
 #include "TextEdit.h"
 
 #include "../../include/text/Toolbar.h"
+#include "../../include/text/formats/HTMLFormatDelegate.h"
+#include "../../include/text/formats/MarkdownFormatDelegate.h"
 #include "DocumentMode.h"
-#include "HTMLFormatDelegate.h"
-#include "MarkdownFormatDelegate.h"
 
 #include <QCheckBox>
 #include <QFile>

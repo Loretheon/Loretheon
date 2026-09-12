@@ -1,4 +1,4 @@
-#include "HTMLFormatDelegate.h"
+#include "../../../include/text/formats/HTMLFormatDelegate.h"
 
 #include <QRegularExpression>
 #include <QTextBlock>
