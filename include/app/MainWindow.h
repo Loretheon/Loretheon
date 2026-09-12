@@ -56,6 +56,7 @@ private slots:
   void aboutQt();
   void manageModels();
   void onThemeSelected(const QString &theme);
+  QSet<QString> modifiedPaths() const;
 };
 
 #endif // EPISTEME_MAINWINDOW_H

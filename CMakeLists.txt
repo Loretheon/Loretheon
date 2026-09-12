@@ -134,6 +134,8 @@ add_executable(Episteme
         ${CMAKE_CURRENT_SOURCE_DIR}/styles/catppuccin-frappe/resources.qrc
         ${CMAKE_CURRENT_SOURCE_DIR}/styles/catppuccin-macchiato/resources.qrc
         ${CMAKE_CURRENT_SOURCE_DIR}/styles/catppuccin-mocha/resources.qrc
+        src/file/DirectoryExplorerSettings.cpp
+        include/file/DirectoryExplorerSettings.h
 )
 
 add_dependencies(Episteme ext_edlib ext_tree-sitter ext_tree-sitter-markdown)

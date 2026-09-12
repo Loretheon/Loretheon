@@ -86,7 +86,25 @@ MainWindow::MainWindow() {
   connect(fileWidget, &FileWidget::fileSelected, documentManager,
           &DocumentManager::openFile);
 
+  connect(fileWidget, &FileWidget::newNoteRequested, documentManager,
+          &DocumentManager::newMarkdownFileIn);
+
+  connect(fileWidget, &FileWidget::newFolderRequested, documentManager,
+          &DocumentManager::newFolderIn);
+
+  connect(fileWidget, &FileWidget::deleteRequested, documentManager,
+          &DocumentManager::deleteFile);
+
+  connect(fileWidget, &FileWidget::convertToMarkdownRequested, documentManager,
+          &DocumentManager::convertToMarkdown);
+
+  connect(fileWidget, &FileWidget::convertToTextRequested, documentManager,
+          &DocumentManager::convertToText);
+
   connect(documentManager, &DocumentManager::documentCreated, fileWidget,
+          &FileWidget::beginEditingPath);
+
+  connect(documentManager, &DocumentManager::fileConverted, fileWidget,
           &FileWidget::beginEditingPath);
 
   connect(fileWidget, &FileWidget::renameRequested, documentManager,
@@ -95,20 +113,26 @@ MainWindow::MainWindow() {
   connect(documentManager, &DocumentManager::documentChanged, textWidget,
           &TextWidget::setActiveDocument);
 
+  connect(documentManager, &DocumentManager::documentChanged, fileWidget,
+          [this](TextDocument *document) {
+            fileWidget->setActivePath(document ? document->filePath()
+                                               : QString());
+            fileWidget->setModifiedPaths(modifiedPaths());
+          });
+
   connect(documentManager, &DocumentManager::documentChanged, chatWidget,
           [this](TextDocument *) {
             chatWidget->setActiveEditor(textWidget->editor());
           });
 
-  /*
-   * Keep the edit session synchronized with the active editor too.
-   *
-   * In the current application there is one TextEdit owned by
-   * TextWidget, but keeping this explicit makes the dependency clear.
-   */
   connect(
       documentManager, &DocumentManager::documentChanged, this,
       [this](TextDocument *) { editSession->setEditor(textWidget->editor()); });
+
+  connect(textWidget->editor()->document(), &QTextDocument::modificationChanged,
+          this, [this](bool) {
+            fileWidget->setModifiedPaths(modifiedPaths());
+          });
 
   /*
    * Left:
@@ -215,6 +239,19 @@ void MainWindow::onThemeSelected(const QString &theme) {
 
 }
 
+QSet<QString> MainWindow::modifiedPaths() const {
+  QSet<QString> paths;
+
+  if (!documentManager)
+    return paths;
+
+  TextDocument *current = documentManager->currentDocument();
+  if (current && current->isModified() && !current->filePath().isEmpty())
+    paths.insert(current->filePath());
+
+  return paths;
+}
+
 void MainWindow::createActions() {
   // Helper function for safe icon loading
   auto getSafeIcon = [](const QString &themeIcon,
@@ -278,6 +315,24 @@ void MainWindow::createActions() {
 
   connect(saveAct, &QAction::triggered, documentManager,
           &DocumentManager::save);
+
+  connect(documentManager, &DocumentManager::documentChanged, this,
+          [this](TextDocument *) { fileWidget->setModifiedPaths(modifiedPaths()); });
+
+  connect(documentManager, &DocumentManager::documentCreated, this,
+          [this](const QString &) {
+            fileWidget->setModifiedPaths(modifiedPaths());
+          });
+
+  connect(documentManager, &DocumentManager::fileRenamed, this,
+          [this](const QString &, const QString &) {
+            fileWidget->setModifiedPaths(modifiedPaths());
+          });
+
+  connect(documentManager, &DocumentManager::fileConverted, this,
+          [this](const QString &, const QString &) {
+            fileWidget->setModifiedPaths(modifiedPaths());
+          });
 
   // Exit Action
   exitAct = new QAction(

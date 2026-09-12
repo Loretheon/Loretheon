@@ -1,10 +1,14 @@
 #ifndef EPISTEME_FILEWIDGET_H
 #define EPISTEME_FILEWIDGET_H
 
+#include <QSet>
+#include <QString>
 #include <QWidget>
 
 #include "FileSystemModel.h"
 #include "FileSystemView.h"
+
+class QResizeEvent;
 
 class FileWidget : public QWidget {
   Q_OBJECT
@@ -14,14 +18,28 @@ public:
 
 public slots:
   void beginEditingPath(const QString &path);
+  void setActivePath(const QString &path);
+  void setModifiedPaths(const QSet<QString> &paths);
 
-signals:
-  void fileSelected(const QString &path);
+  signals:
+    void fileSelected(const QString &path);
   void renameRequested(const QString &oldPath, const QString &newPath);
 
+  void newNoteRequested(const QString &parentPath);
+  void newFolderRequested(const QString &parentPath);
+  void deleteRequested(const QString &path);
+
+  void convertToMarkdownRequested(const QString &path);
+  void convertToTextRequested(const QString &path);
+
+protected:
+  void resizeEvent(QResizeEvent *event) override;
+
 private:
-  FileSystemModel *fileSystemModel;
-  FileSystemView *fileSystemView;
+  void distributeColumnWidths();
+
+  FileSystemModel *fileSystemModel = nullptr;
+  FileSystemView *fileSystemView = nullptr;
 
   QString pendingEditPath;
 };

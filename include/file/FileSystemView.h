@@ -9,8 +9,18 @@ class FileSystemView : public QTreeView {
 public:
   explicit FileSystemView(QWidget *parent = nullptr);
 
-signals:
-  void renameFinished(const QString &oldPath, const QString &newPath);
+  void hideColumn(int column);
+  void showColumn(int column);
+
+  signals:
+    void renameFinished(const QString &oldPath, const QString &newPath);
+
+  void newNoteRequested(const QString &parentPath);
+  void newFolderRequested(const QString &parentPath);
+  void deleteRequested(const QString &path);
+
+  void convertToMarkdownRequested(const QString &path);
+  void convertToTextRequested(const QString &path);
 
 protected:
   void currentChanged(const QModelIndex &current,
@@ -20,6 +30,8 @@ protected:
   void contextMenuEvent(QContextMenuEvent *event) override;
 
 private:
+  void saveColumnVisibility();
+
   QString editingOldPath;
 };
 
