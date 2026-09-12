@@ -1,4 +1,3 @@
-// DiagramView.cpp
 #include "DiagramView.h"
 #include "DiagramCanvas.h"
 #include "DiagramDocument.h"
@@ -28,10 +27,11 @@ DiagramView::DiagramView(QWidget *parent) : QWidget(parent) {
   setFocusPolicy(Qt::StrongFocus);
   m_scroll->viewport()->installEventFilter(this);
 
-  connect(m_canvas, &DiagramCanvas::zoomChanged, this, &DiagramView::zoomChanged);
-  connect(m_canvas, &DiagramCanvas::elementClicked, this, &DiagramView::elementClicked);
+  connect(m_canvas, &DiagramCanvas::zoomChanged,         this, &DiagramView::zoomChanged);
+  connect(m_canvas, &DiagramCanvas::elementClicked,      this, &DiagramView::elementClicked);
   connect(m_canvas, &DiagramCanvas::elementRightClicked, this, &DiagramView::elementRightClicked);
-  connect(m_canvas, &DiagramCanvas::elementHovered, this, &DiagramView::elementHovered);
+  connect(m_canvas, &DiagramCanvas::elementHovered,      this, &DiagramView::elementHovered);
+  connect(m_canvas, &DiagramCanvas::elementActivated,    this, &DiagramView::elementActivated);
 }
 
 void DiagramView::setDocument(DiagramDocument *doc) {
@@ -46,17 +46,9 @@ qreal DiagramView::zoom() const {
   return m_canvas->zoom();
 }
 
-void DiagramView::zoomIn() {
-  setZoom(m_canvas->zoom() * 1.25);
-}
-
-void DiagramView::zoomOut() {
-  setZoom(m_canvas->zoom() / 1.25);
-}
-
-void DiagramView::zoomReset() {
-  setZoom(1.0);
-}
+void DiagramView::zoomIn()  { setZoom(m_canvas->zoom() * 1.25); }
+void DiagramView::zoomOut() { setZoom(m_canvas->zoom() / 1.25); }
+void DiagramView::zoomReset() { setZoom(1.0); }
 
 void DiagramView::zoomFit() {
   DiagramDocument *doc = m_canvas->document();
@@ -78,9 +70,6 @@ void DiagramView::focusOnElement(const QString &id) {
   if (!doc) return;
   const QRectF b = doc->boundsForId(id);
   if (b.isNull()) return;
-
-  const QSize s = doc->naturalSize();
-  if (s.isEmpty()) return;
 
   const qreal z = m_canvas->zoom();
   const QRectF box = QRectF(b.left() * z, b.top() * z,

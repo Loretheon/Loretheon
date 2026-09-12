@@ -1,4 +1,3 @@
-// DiagramCanvas.cpp
 #include "DiagramCanvas.h"
 #include "DiagramDocument.h"
 
@@ -6,7 +5,6 @@
 #include <QPainter>
 #include <QSvgRenderer>
 #include <QToolTip>
-#include <QtMath>
 
 DiagramCanvas::DiagramCanvas(QWidget *parent) : QWidget(parent) {
   setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
@@ -33,6 +31,7 @@ void DiagramCanvas::onDocumentChanged() {
   if (s.isEmpty()) setFixedSize(1, 1);
   else setFixedSize(qMax(1, int(s.width()  * m_zoom)),
                     qMax(1, int(s.height() * m_zoom)));
+  unsetCursor();
   update();
 }
 
@@ -79,6 +78,18 @@ QPointF DiagramCanvas::widgetToSvg(const QPointF &p) const {
                  (p.y() - box.top())  / sy);
 }
 
+QRectF DiagramCanvas::svgRectToWidget(const QRectF &svgRect) const {
+  if (!m_doc || m_doc->naturalSize().isEmpty()) return {};
+  const QRectF box = letterboxRect();
+  const QSize s = m_doc->naturalSize();
+  const qreal sx = box.width()  / qreal(s.width());
+  const qreal sy = box.height() / qreal(s.height());
+  return QRectF(box.left() + svgRect.left()   * sx,
+                box.top()  + svgRect.top()    * sy,
+                svgRect.width()  * sx,
+                svgRect.height() * sy);
+}
+
 void DiagramCanvas::paintEvent(QPaintEvent *) {
   QPainter p(this);
   p.setRenderHint(QPainter::Antialiasing, true);
@@ -90,25 +101,57 @@ void DiagramCanvas::paintEvent(QPaintEvent *) {
   const QRectF box = letterboxRect();
   m_doc->renderer()->render(&p, box);
 
-  if (!m_selectedId.isEmpty() && m_doc) {
+  const QColor accent("#8caaee");
+
+  if (!m_hoveredId.isEmpty()) {
+    const QRectF b = m_doc->boundsForId(m_hoveredId);
+    if (!b.isNull()) {
+      QRectF r = svgRectToWidget(b).adjusted(-2, -2, 2, 2);
+
+      QColor wash = accent;
+      wash.setAlpha(40);
+      p.setPen(Qt::NoPen);
+      p.setBrush(wash);
+      p.drawRoundedRect(r, 5, 5);
+
+      QColor line = accent;
+      line.setAlpha(160);
+      QPen pen(line);
+      pen.setWidthF(1.5);
+      p.setPen(pen);
+      p.setBrush(Qt::NoBrush);
+      p.drawRoundedRect(r, 5, 5);
+    }
+  }
+
+  if (!m_selectedId.isEmpty()) {
     const QRectF b = m_doc->boundsForId(m_selectedId);
     if (!b.isNull()) {
-      const QSize s = m_doc->naturalSize();
-      const qreal sx = box.width()  / qreal(s.width());
-      const qreal sy = box.height() / qreal(s.height());
-      QRectF widgetRect(box.left() + b.left()   * sx,
-                        box.top()  + b.top()    * sy,
-                        b.width()  * sx,
-                        b.height() * sy);
-      widgetRect = widgetRect.adjusted(-2, -2, 2, 2);
+      QRectF r = svgRectToWidget(b).adjusted(-2, -2, 2, 2);
 
-      QPen pen(palette().color(QPalette::Highlight));
+      QColor wash = accent;
+      wash.setAlpha(55);
+      p.setPen(Qt::NoPen);
+      p.setBrush(wash);
+      p.drawRoundedRect(r, 5, 5);
+
+      QPen pen(accent);
       pen.setWidthF(2.0);
       p.setPen(pen);
       p.setBrush(Qt::NoBrush);
-      p.drawRoundedRect(widgetRect, 4, 4);
+      p.drawRoundedRect(r, 5, 5);
     }
   }
+}
+
+void DiagramCanvas::updateCursorForHover(const QString &id) {
+  if (id.isEmpty() || !m_doc) { unsetCursor(); return; }
+  const auto info = m_doc->infoForId(id);
+  if (info.nodeKind == DiagramDocument::NodeKind::Reference ||
+      info.nodeKind == DiagramDocument::NodeKind::External)
+    setCursor(Qt::PointingHandCursor);
+  else
+    unsetCursor();
 }
 
 void DiagramCanvas::mousePressEvent(QMouseEvent *ev) {
@@ -128,6 +171,12 @@ void DiagramCanvas::mousePressEvent(QMouseEvent *ev) {
     if (!id.isEmpty()) {
       setSelectedId(id);
       emit elementClicked(id, name, ev->globalPosition().toPoint());
+
+      const auto info = m_doc->infoForId(id);
+      if (info.nodeKind != DiagramDocument::NodeKind::Plain &&
+          !info.referencePath.isEmpty()) {
+        emit elementActivated(id, info.referencePath, info.nodeKind);
+      }
     } else {
       setSelectedId(QString());
       emit backgroundClicked(ev->globalPosition().toPoint());
@@ -135,26 +184,54 @@ void DiagramCanvas::mousePressEvent(QMouseEvent *ev) {
   }
 }
 
+void DiagramCanvas::mouseDoubleClickEvent(QMouseEvent *ev) {
+  if (!m_doc || ev->button() != Qt::LeftButton) return;
+  const QPointF svgPt = widgetToSvg(ev->position());
+  const QString id = m_doc->idAt(svgPt);
+  if (id.isEmpty()) return;
+  const auto info = m_doc->infoForId(id);
+  if (info.nodeKind != DiagramDocument::NodeKind::Plain &&
+      !info.referencePath.isEmpty()) {
+    emit elementActivated(id, info.referencePath, info.nodeKind);
+  }
+}
+
 void DiagramCanvas::mouseMoveEvent(QMouseEvent *ev) {
   if (!m_doc || !m_doc->renderer()->isValid()) return;
   const QPointF svgPt = widgetToSvg(ev->position());
   const QString id = m_doc->idAt(svgPt);
+
   if (id != m_hoveredId) {
     m_hoveredId = id;
-    const QString name = id.isEmpty() ? QString() : m_doc->nameForId(id);
-    if (!name.isEmpty()) {
-      QToolTip::showText(ev->globalPosition().toPoint(), name, this);
+    updateCursorForHover(id);
+
+    if (!id.isEmpty()) {
+      const auto info = m_doc->infoForId(id);
+      QString tip = info.name;
+      if (info.nodeKind == DiagramDocument::NodeKind::External) {
+        tip = tr("Open externally: %1").arg(info.referencePath);
+      } else if (info.nodeKind == DiagramDocument::NodeKind::Reference) {
+        tip = tr("Open: %1").arg(info.referencePath);
+      }
+      if (!tip.isEmpty()) QToolTip::showText(ev->globalPosition().toPoint(), tip, this);
+      else                QToolTip::hideText();
     } else {
       QToolTip::hideText();
     }
-    emit elementHovered(id, name, ev->globalPosition().toPoint());
+
+    emit elementHovered(id,
+                        id.isEmpty() ? QString() : m_doc->nameForId(id),
+                        ev->globalPosition().toPoint());
+    update();
   }
 }
 
 void DiagramCanvas::leaveEvent(QEvent *) {
   if (!m_hoveredId.isEmpty()) {
     m_hoveredId.clear();
+    unsetCursor();
     QToolTip::hideText();
     emit elementHovered(QString(), QString(), QPoint());
+    update();
   }
 }

@@ -1,4 +1,3 @@
-// GraphvizRenderer.cpp
 #include "../../include/text/GraphvizRenderer.h"
 
 #include <QDebug>
@@ -160,10 +159,8 @@ QString GraphvizRenderer::optimizeGraphvizSvg(const QString &rawSvg,
   const QString edgeStroke = "#949cbb";
   const QString textFill   = "#c6d0f5";
 
-  const QString effNodeFill   = bgColor.isEmpty()   ? nodeFill   : bgColor;
-  const QString effNodeStroke = "#8caaee";
-  const QString effEdgeStroke = "#949cbb";
-  const QString effText       = textColor.isEmpty() ? textFill  : textColor;
+  const QString effNodeFill = bgColor.isEmpty()   ? nodeFill  : bgColor;
+  const QString effText     = textColor.isEmpty() ? textFill  : textColor;
 
   const QStringList colorAttrs = {"fill", "stroke", "stop-color"};
   const QStringList tags = {"svg", "g", "text", "tspan", "polygon",
@@ -218,7 +215,7 @@ QString GraphvizRenderer::optimizeGraphvizSvg(const QString &rawSvg,
     QDomElement el = polyNodes.at(i).toElement();
     if (el.isNull()) continue;
     if (!el.hasAttribute("fill"))   el.setAttribute("fill", effNodeFill);
-    if (!el.hasAttribute("stroke")) el.setAttribute("stroke", effEdgeStroke);
+    if (!el.hasAttribute("stroke")) el.setAttribute("stroke", edgeStroke);
   }
 
   const QDomNodeList ellipseNodes = doc.elementsByTagName("ellipse");
@@ -226,7 +223,7 @@ QString GraphvizRenderer::optimizeGraphvizSvg(const QString &rawSvg,
     QDomElement el = ellipseNodes.at(i).toElement();
     if (el.isNull()) continue;
     if (!el.hasAttribute("fill"))   el.setAttribute("fill", effNodeFill);
-    if (!el.hasAttribute("stroke")) el.setAttribute("stroke", effNodeStroke);
+    if (!el.hasAttribute("stroke")) el.setAttribute("stroke", nodeStroke);
   }
 
   const QDomNodeList rectNodes = doc.elementsByTagName("rect");
@@ -234,14 +231,14 @@ QString GraphvizRenderer::optimizeGraphvizSvg(const QString &rawSvg,
     QDomElement el = rectNodes.at(i).toElement();
     if (el.isNull()) continue;
     if (!el.hasAttribute("fill"))   el.setAttribute("fill", effNodeFill);
-    if (!el.hasAttribute("stroke")) el.setAttribute("stroke", effNodeStroke);
+    if (!el.hasAttribute("stroke")) el.setAttribute("stroke", nodeStroke);
   }
 
   const QDomNodeList pathNodes = doc.elementsByTagName("path");
   for (int i = 0; i < pathNodes.count(); ++i) {
     QDomElement el = pathNodes.at(i).toElement();
     if (el.isNull()) continue;
-    if (!el.hasAttribute("stroke")) el.setAttribute("stroke", effEdgeStroke);
+    if (!el.hasAttribute("stroke")) el.setAttribute("stroke", edgeStroke);
     if (!el.hasAttribute("fill"))   el.setAttribute("fill", "none");
   }
 
@@ -249,14 +246,14 @@ QString GraphvizRenderer::optimizeGraphvizSvg(const QString &rawSvg,
   for (int i = 0; i < lineNodes.count(); ++i) {
     QDomElement el = lineNodes.at(i).toElement();
     if (el.isNull()) continue;
-    if (!el.hasAttribute("stroke")) el.setAttribute("stroke", effEdgeStroke);
+    if (!el.hasAttribute("stroke")) el.setAttribute("stroke", edgeStroke);
   }
 
   const QDomNodeList polylineNodes = doc.elementsByTagName("polyline");
   for (int i = 0; i < polylineNodes.count(); ++i) {
     QDomElement el = polylineNodes.at(i).toElement();
     if (el.isNull()) continue;
-    if (!el.hasAttribute("stroke")) el.setAttribute("stroke", effEdgeStroke);
+    if (!el.hasAttribute("stroke")) el.setAttribute("stroke", edgeStroke);
     if (!el.hasAttribute("fill"))   el.setAttribute("fill", "none");
   }
 

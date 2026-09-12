@@ -1,4 +1,3 @@
-// TextWidget.h
 #ifndef EPISTEME_TEXTWIDGET_H
 #define EPISTEME_TEXTWIDGET_H
 
@@ -27,6 +26,12 @@ public:
   DiagramView *diagram() const { return svgView; }
   DiagramDocument *diagramDocument() const { return diagramDoc; }
 
+  void setProjectRoot(const QString &root);
+
+  signals:
+    void openDocumentRequested(const QString &path);
+  void statusMessage(const QString &text, int timeoutMs = 3000);
+
 public slots:
   void setActiveDocument(TextDocument *newDocument);
 
@@ -34,9 +39,13 @@ private slots:
   void syncPreview();
   void disconnectActiveDocument();
   void clearPreview();
-
+  void onElementClicked(const QString &id, const QString &name,
+                        const QPoint &globalPos);
 private:
   void findInEditor(const QString &text);
+  void showNodeContextMenu(const QString &id,
+                           const QString &name,
+                           const QPoint &globalPos);
 
   QStackedWidget *viewStack = nullptr;
   QWidget *diagramPage = nullptr;

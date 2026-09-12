@@ -4,19 +4,21 @@
 #include "ui/ModelDialog.h"
 
 #include <QAction>
+#include <QActionGroup>
 #include <QApplication>
+#include <QDir>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QIcon>
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QScreen>
+#include <QSettings>
 #include <QSplitter>
 #include <QStatusBar>
 #include <QVBoxLayout>
 #include <QWidget>
-#include <QSettings>
-#include <QActionGroup>
 
 static InferenceService::LlmConfig configuredLlm() {
   InferenceService::LlmConfig config;
@@ -67,17 +69,12 @@ MainWindow::MainWindow() {
   documentManager = new DocumentManager(this);
 
   inferenceService = new InferenceService(this);
-  //
-  // inferenceService->initialize(LlamaManager::Backend::Vulkan,
-  //                              QFPaths::sttModelsDir());
 
   const auto llmConfig = configuredLlm();
 
   inferenceService->initialize(
       LlamaManager::Backend::Vulkan, QFPaths::sttModelsDir(),
       InferenceService::SttModel::Nemotron35, llmConfig);
-
-  // inferenceService->setModelDirectory(QFPaths::llmModelsDir());
 
   editSession = new EditSession(textWidget->editor(), this);
 
@@ -129,42 +126,40 @@ MainWindow::MainWindow() {
       documentManager, &DocumentManager::documentChanged, this,
       [this](TextDocument *) { editSession->setEditor(textWidget->editor()); });
 
+  connect(textWidget, &TextWidget::openDocumentRequested, documentManager,
+          &DocumentManager::openFile);
+
+  connect(textWidget, &TextWidget::statusMessage, this,
+          [this](const QString &text, int timeoutMs) {
+            statusBar()->showMessage(text, timeoutMs);
+          });
+
+  connect(documentManager, &DocumentManager::documentChanged, this,
+          [this](TextDocument *document) {
+            const QString root =
+                document && !document->filePath().isEmpty()
+                    ? QFileInfo(document->filePath()).absolutePath()
+                    : QString();
+            textWidget->setProjectRoot(root);
+          });
+
   connect(textWidget->editor()->document(), &QTextDocument::modificationChanged,
           this, [this](bool) {
             fileWidget->setModifiedPaths(modifiedPaths());
           });
 
-  /*
-   * Left:
-   *     File manager
-   *
-   * Right:
-   *     Text editor
-   *     AI chat
-   */
   QSplitter *mainSplitter = new QSplitter(Qt::Horizontal, widget);
 
   mainSplitter->addWidget(fileWidget);
 
-  /*
-   * The right side gets its own vertical splitter so the editor
-   * and chat remain independently resizable.
-   */
   QSplitter *rightSplitter = new QSplitter(Qt::Vertical, mainSplitter);
 
   rightSplitter->addWidget(textWidget);
 
   rightSplitter->addWidget(chatWidget);
 
-  /*
-   * Give the file manager a useful but relatively narrow width.
-   * The editor gets most of the space.
-   */
   mainSplitter->setSizes({240, 960});
 
-  /*
-   * Give the editor more vertical space than the chat.
-   */
   rightSplitter->setSizes({650, 300});
 
   QVBoxLayout *layout = new QVBoxLayout(widget);
@@ -229,14 +224,12 @@ void MainWindow::loadTheme(const QString &themeName) {
 
   currentTheme = themeName;
 
-  // Save theme preference
   QSettings settings;
   settings.setValue("theme", themeName);
 }
 
 void MainWindow::onThemeSelected(const QString &theme) {
   loadTheme(theme);
-
 }
 
 QSet<QString> MainWindow::modifiedPaths() const {
@@ -253,7 +246,6 @@ QSet<QString> MainWindow::modifiedPaths() const {
 }
 
 void MainWindow::createActions() {
-  // Helper function for safe icon loading
   auto getSafeIcon = [](const QString &themeIcon,
                         const QString &fallbackPath = "") -> QIcon {
     QIcon icon = QIcon::fromTheme(themeIcon);
@@ -265,10 +257,6 @@ void MainWindow::createActions() {
     return icon;
   };
 
-  // Do NOT force an icon theme.
-  // Qt will use the user's desktop theme (Adwaita, Breeze, etc.).
-
-  // New Text File Action
   newTextAct =
       new QAction(getSafeIcon("document-new", ":/icons/document-new.png"),
                   tr("&Text File"), this);
@@ -278,7 +266,6 @@ void MainWindow::createActions() {
   connect(newTextAct, &QAction::triggered, documentManager,
           &DocumentManager::newTextFile);
 
-  // New Markdown File Action
   newMarkdownAct =
       new QAction(getSafeIcon("document-new", ":/icons/document-new.png"),
                   tr("&Markdown File"), this);
@@ -287,7 +274,6 @@ void MainWindow::createActions() {
   connect(newMarkdownAct, &QAction::triggered, documentManager,
           &DocumentManager::newMarkdownFile);
 
-  // Open Action
   openAct =
       new QAction(getSafeIcon("document-open", ":/icons/document-open.png"),
                   tr("&Open..."), this);
@@ -306,7 +292,6 @@ void MainWindow::createActions() {
     }
   });
 
-  // Save Action
   saveAct =
       new QAction(getSafeIcon("document-save", ":/icons/document-save.png"),
                   tr("&Save"), this);
@@ -334,7 +319,6 @@ void MainWindow::createActions() {
             fileWidget->setModifiedPaths(modifiedPaths());
           });
 
-  // Exit Action
   exitAct = new QAction(
       getSafeIcon("application-exit", ":/icons/application-exit.png"),
       tr("E&xit"), this);
@@ -343,21 +327,18 @@ void MainWindow::createActions() {
 
   connect(exitAct, &QAction::triggered, this, &QWidget::close);
 
-  // Manage Models Action
   manageModelsAct = new QAction(tr("&Manage Models..."), this);
   manageModelsAct->setStatusTip(tr("Download or select LLM and speech models"));
 
   connect(manageModelsAct, &QAction::triggered, this,
           &MainWindow::manageModels);
 
-  // About Action
   aboutAct = new QAction(getSafeIcon("help-about", ":/icons/help-about.png"),
                          tr("&About"), this);
   aboutAct->setStatusTip(tr("Show the application's About box"));
 
   connect(aboutAct, &QAction::triggered, this, &MainWindow::about);
 
-  // About Qt Action
   aboutQtAct = new QAction(tr("About &Qt"), this);
   aboutQtAct->setStatusTip(tr("Show the Qt library's About box"));
 
@@ -385,7 +366,6 @@ void MainWindow::createMenus() {
 
   toolsMenu->addAction(manageModelsAct);
 
-  // Theme menu
   themeMenu = menuBar()->addMenu(tr("&Theme"));
 
   QActionGroup *themeGroup = new QActionGroup(this);

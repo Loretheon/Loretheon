@@ -1,10 +1,10 @@
-// DiagramView.h
 #pragma once
 
 #include <QWidget>
 
+#include "DiagramDocument.h"
+
 class DiagramCanvas;
-class DiagramDocument;
 class QScrollArea;
 
 class DiagramView : public QWidget {
@@ -30,6 +30,9 @@ public slots:
   void elementClicked(const QString &id, const QString &name, const QPoint &globalPos);
   void elementRightClicked(const QString &id, const QString &name, const QPoint &globalPos);
   void elementHovered(const QString &id, const QString &name, const QPoint &globalPos);
+  void elementActivated(const QString &id,
+                        const QString &target,
+                        DiagramDocument::NodeKind kind);
 
 protected:
   bool eventFilter(QObject *obj, QEvent *ev) override;

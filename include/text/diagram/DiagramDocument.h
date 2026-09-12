@@ -1,4 +1,3 @@
-// DiagramDocument.h
 #pragma once
 
 #include <QObject>
@@ -12,6 +11,17 @@
 class DiagramDocument : public QObject {
   Q_OBJECT
 public:
+  enum class NodeKind { Plain, Reference, External, Application };
+
+  struct NodeInfo {
+    QString id;
+    QString name;
+    QString kind;
+    NodeKind nodeKind = NodeKind::Plain;
+    QString referencePath;
+    QRectF  bounds;
+  };
+
   explicit DiagramDocument(QObject *parent = nullptr);
 
   void setSvg(const QString &themedSvg);
@@ -24,24 +34,26 @@ public:
 
   QString idAt(const QPointF &svgPoint) const;
   QString nameForId(const QString &id) const;
-  QRectF boundsForId(const QString &id) const;
+  QRectF  boundsForId(const QString &id) const;
+  NodeInfo infoForId(const QString &id) const;
   QStringList allIds() const;
+
+  void setProjectRoot(const QString &root);
+  QString projectRoot() const { return m_projectRoot; }
+
+  static QString extractReference(const QString &label);
+  static bool looksLikeReference(const QString &label);
 
   signals:
     void changed();
 
 private:
-  struct Region {
-    QString id;
-    QString name;
-    QString kind;
-    QRectF  bounds;
-  };
-
   void rebuild();
+  void classifyNode(NodeInfo &info, const QString &urlAttr);
 
-  QString     m_svg;
-  QSize       m_naturalSize;
+  QString m_svg;
+  QString m_projectRoot;
+  QSize   m_naturalSize;
   QSvgRenderer m_renderer;
-  QVector<Region> m_regions;
+  QVector<NodeInfo> m_regions;
 };
