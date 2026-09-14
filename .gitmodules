@@ -12,3 +12,7 @@
 [submodule "external/tree-sitter-markdown"]
 	path = external/tree-sitter-markdown
 	url = https://github.com/tree-sitter-grammars/tree-sitter-markdown.git
+[submodule "external/lunasvg"]
+	path = external/lunasvg
+	url = https://github.com/sammycage/lunasvg.git
+	dirty = true
