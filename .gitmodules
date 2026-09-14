@@ -16,3 +16,15 @@
 	path = external/lunasvg
 	url = https://github.com/sammycage/lunasvg.git
 	dirty = true
+[submodule "external/tree-sitter-dot"]
+	path = external/tree-sitter-dot
+	url = https://github.com/rydesun/tree-sitter-dot.git
+	ignore = dirty
+[submodule "external/tree-sitter-mermaid"]
+	path = external/tree-sitter-mermaid
+	url = https://github.com/monaqa/tree-sitter-mermaid.git
+	ignore = dirty
+[submodule "external/tree-sitter-plantuml"]
+	path = external/tree-sitter-plantuml
+	url = https://github.com/lyndsysimon/tree-sitter-plantuml.git
+	ignore = dirty

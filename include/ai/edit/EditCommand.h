@@ -4,7 +4,7 @@
 #include <QString>
 
 struct EditCommand {
-  enum class Operation { Replace, Insert, Delete, Unknown };
+  enum class Operation { Replace, Insert, Delete, ReplaceScope, Unknown };
 
   enum class Position { Before, After, Inside };
 
@@ -20,7 +20,7 @@ struct EditCommand {
   QString scope() const { return scopeId; }
 
   // Target validation check (scope must be defined, operation-specific
-  // constraints)
+  // constraints).
   bool isTargetValid() const {
     if (scopeId.isEmpty()) {
       return false;
@@ -28,6 +28,11 @@ struct EditCommand {
 
     if (operation == Operation::Insert) {
       return findString.isEmpty();
+    }
+
+    if (operation == Operation::ReplaceScope) {
+      // Whole-scope replacement: no find string, position must be Inside.
+      return findString.isEmpty() && position == Position::Inside;
     }
 
     if (operation == Operation::Replace || operation == Operation::Delete) {
@@ -52,6 +57,8 @@ struct EditCommand {
       cmd.operation = Operation::Delete;
     } else if (opStr == QStringLiteral("replace")) {
       cmd.operation = Operation::Replace;
+    } else if (opStr == QStringLiteral("replace_scope")) {
+      cmd.operation = Operation::ReplaceScope;
     } else {
       cmd.operation = Operation::Unknown;
     }
@@ -93,4 +100,5 @@ struct EditCommand {
     }
 
     return cmd;
-  }};
+  }
+};

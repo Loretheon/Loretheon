@@ -107,15 +107,17 @@ const PendingEdit *TextEdit::pendingEditAtPosition(int position) const {
 }
 
 QString TextEdit::pendingEditPreview(const PendingEdit &edit) const {
+  // Use the generated content directly. Do not rely on match.matchedText
+  // because it is empty for insertions and for whole-scope replacement.
   switch (edit.command.operation) {
   case EditCommand::Operation::Insert:
-    return edit.match.matchedText + QStringLiteral("\n\n") + edit.generatedText;
-
   case EditCommand::Operation::Replace:
+  case EditCommand::Operation::ReplaceScope:
     return edit.generatedText;
 
   case EditCommand::Operation::Delete:
-    return {};
+    return edit.command.findString.isEmpty() ? QString()
+                                              : edit.command.findString;
   }
 
   return {};
@@ -505,6 +507,7 @@ QWidget *TextEdit::createReviewRow(const PendingEdit &edit) {
 
   case EditCommand::Operation::Insert:
   case EditCommand::Operation::Replace:
+  case EditCommand::Operation::ReplaceScope:
     preview->setText(edit.generatedText.isEmpty() ? tr("Generating…")
                                                   : edit.generatedText);
     break;
@@ -626,7 +629,8 @@ void TextEdit::updateAllHighlights() {
       continue;
     }
 
-    const int length = edit.command.findString.length();
+    // Replace, ReplaceScope, Delete: tint the matched range.
+    const int length = edit.match.end - edit.match.start;
 
     if (length <= 0 || start >= documentLength) {
       continue;
@@ -732,6 +736,9 @@ QString TextEdit::pendingEditSummary(const PendingEdit &edit) const {
 
   case EditCommand::Operation::Replace:
     return tr("Replace \"%1\"").arg(edit.command.findString);
+
+  case EditCommand::Operation::ReplaceScope:
+    return tr("Replace entire body");
 
   case EditCommand::Operation::Delete:
     return tr("Delete \"%1\"").arg(edit.command.findString);

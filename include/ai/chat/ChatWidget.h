@@ -3,12 +3,14 @@
 
 #include "PayloadLogger.h"
 
+#include "../context/ContextModel.h"
 #include "../edit/EditCommand.h"
 #include "../edit/EditMatch.h"
 #include "../edit/PendingEdit.h"
 
 #include <QList>
 #include <QString>
+#include <QStringList>
 #include <QVector>
 #include <QWidget>
 
@@ -21,6 +23,7 @@ class QTextEdit;
 class QVBoxLayout;
 
 class ChatWidgetEditFlow;
+class ContextPanel;
 
 class EditPlanner;
 class EditSession;
@@ -43,9 +46,11 @@ public:
 
   void submitTranscribedText(const QString &text);
 
-  signals:
+  ContextModel *contextModel() const { return m_contextModel; }
+
+signals:
   void contextScopesChanged(const QStringList &scopeIds);
-  
+
 private slots:
   void onPlanValidatedFromSession(const QVector<EditCommand> &commands);
   void onSendClicked();
@@ -100,6 +105,8 @@ private slots:
 
   void onReviewReady();
 
+  void onDocumentStructureChanged();
+
 private:
   enum class EditPhase { None, PlanReview, Content };
 
@@ -114,6 +121,12 @@ private:
   void renderLastAssistantMessage();
 
   void resetEditState();
+
+  void refreshContextModel();
+
+  // Expands a set of scope IDs so that "document" implies every scope it
+  // currently contains. Used when marking scopes as sent.
+  QStringList expandSentScopes(const QStringList &scopeIds) const;
 
 private:
   NotificationManager *m_notifications = nullptr;
@@ -139,6 +152,10 @@ private:
   QCheckBox *m_editModeCheckbox = nullptr;
 
   EditSessionWidget *m_editSessionWidget = nullptr;
+
+  ContextPanel *m_contextPanel = nullptr;
+
+  ContextModel *m_contextModel = nullptr;
 
   QVBoxLayout *m_layout = nullptr;
 

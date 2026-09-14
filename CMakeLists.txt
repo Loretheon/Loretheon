@@ -195,6 +195,10 @@ add_executable(Episteme
         include/app/theme/ThemeAware.h
         src/app/theme/ThemeManager.cpp
         include/app/theme/ThemeManager.h
+        include/ai/context/ContextModel.cpp
+        include/ai/context/ContextModel.h
+        include/ai/context/ContextPanel.cpp
+        include/ai/context/ContextPanel.h
 
 )
 
@@ -221,6 +225,7 @@ target_include_directories(Episteme PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include/file
         ${CMAKE_CURRENT_SOURCE_DIR}/include/file/model
         ${CMAKE_CURRENT_SOURCE_DIR}/include/ai
+        ${CMAKE_CURRENT_SOURCE_DIR}/include/ai/context
         ${CMAKE_CURRENT_SOURCE_DIR}/include/ai/chat
         ${CMAKE_CURRENT_SOURCE_DIR}/include/ai/edit
         ${CMAKE_CURRENT_SOURCE_DIR}/external/QF-ML/include

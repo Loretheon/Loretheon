@@ -27,7 +27,7 @@ struct SectionInfo {
   int end = 0;
 };
 
-enum class RequestedOperation { Insert, Replace, Delete, Unknown };
+enum class RequestedOperation { Insert, Replace, ReplaceScope, Delete, Unknown };
 
 QString findSectionHeading(const DocumentNode &node,
                            const QString &documentText) {
@@ -92,13 +92,6 @@ QVector<SectionInfo> collectSections(const DocumentStructure &structure,
 
   collectSections(structure.root(), documentText, sections);
 
-  /*
-   * When a document has no section nodes at all — whether because it is
-   * empty or because it contains only non-heading content — the root
-   * itself is the only valid edit target. Expose it so the planner has a
-   * scope to reference and so that empty-scope commands can be
-   * normalized to the root's actual ID.
-   */
   if (sections.isEmpty()) {
     const DocumentNode &root = structure.root();
 
@@ -108,17 +101,6 @@ QVector<SectionInfo> collectSections(const DocumentStructure &structure,
   }
 
   return sections;
-}
-
-QString scopeMap(const QVector<SectionInfo> &sections) {
-  QStringList lines;
-
-  for (const SectionInfo &section : sections) {
-    lines.append(QStringLiteral("\"%1\" -> \"%2\"")
-                     .arg(section.heading, section.scopeId));
-  }
-
-  return lines.join('\n');
 }
 
 QString hierarchyMap(const QVector<SectionInfo> &sections) {
@@ -142,9 +124,6 @@ const SectionInfo *findSection(const QVector<SectionInfo> &sections,
   return nullptr;
 }
 
-// A scope ID is equivalent to another if they match exactly, or if one is
-// empty and the other is the document root section (range covering the
-// whole document starting at offset zero).
 bool scopeIdsEquivalent(const QString &a, const QString &b,
                         const QVector<SectionInfo> &sections) {
   if (a == b) {
@@ -229,6 +208,11 @@ RequestedOperation requestedOperation(const QString &request) {
       QStringLiteral(R"(\b(delete|remove|erase|drop)\b)"),
       QRegularExpression::CaseInsensitiveOption);
 
+  static const QRegularExpression replaceScopePattern(
+      QStringLiteral(
+          R"(\b(replace|rewrite|regenerate)\s+(the\s+)?(entire|whole|complete|full|section|body|content)\b)"),
+      QRegularExpression::CaseInsensitiveOption);
+
   static const QRegularExpression insertPattern(
       QStringLiteral(R"(\b(insert|add|append|create)\b)"),
       QRegularExpression::CaseInsensitiveOption);
@@ -240,6 +224,10 @@ RequestedOperation requestedOperation(const QString &request) {
 
   if (deletePattern.match(request).hasMatch()) {
     return RequestedOperation::Delete;
+  }
+
+  if (replaceScopePattern.match(request).hasMatch()) {
+    return RequestedOperation::ReplaceScope;
   }
 
   if (insertPattern.match(request).hasMatch()) {
@@ -261,6 +249,9 @@ QString operationName(RequestedOperation operation) {
   case RequestedOperation::Replace:
     return QStringLiteral("replace");
 
+  case RequestedOperation::ReplaceScope:
+    return QStringLiteral("replace_scope");
+
   case RequestedOperation::Delete:
     return QStringLiteral("delete");
 
@@ -278,6 +269,9 @@ QString operationName(const EditCommand &command) {
 
   case EditCommand::Operation::Replace:
     return QStringLiteral("replace");
+
+  case EditCommand::Operation::ReplaceScope:
+    return QStringLiteral("replace_scope");
 
   case EditCommand::Operation::Delete:
     return QStringLiteral("delete");
@@ -418,7 +412,7 @@ void EditPlanner::start(TextEdit *editor, const QString &userRequest) {
 
   const QString prompt =
       QStringLiteral(
-          "You are planning edits to a Markdown document.\n"
+          "You are planning edits to a document.\n"
           "\n"
           "Return exactly one JSON array.\n"
           "Do not return markdown fences.\n"
@@ -447,16 +441,25 @@ void EditPlanner::start(TextEdit *editor, const QString &userRequest) {
           "Each edit MUST contain exactly:\n"
           "operation, scope, position, find, all, instruction.\n"
           "\n"
-          "operation: %2\n"
-          "position: before or after\n"
-          "scope: use the exact resolved scope ID\n"
+          "operation must be one of: insert, replace, delete, replace_scope.\n"
           "\n"
           "For insert:\n"
           "- find MUST be empty.\n"
+          "- position MUST be before or after.\n"
           "\n"
           "For replace/delete:\n"
           "- find MUST be a short, distinctive piece of existing text "
           "inside the selected scope.\n"
+          "- position MUST be before or after.\n"
+          "\n"
+          "For replace_scope:\n"
+          "- Use this when the user asks to rewrite or replace the ENTIRE "
+          "body of a section or scope.\n"
+          "- find MUST be empty.\n"
+          "- position MUST be inside.\n"
+          "- all MUST be false.\n"
+          "- Do NOT use replace_scope when only part of the content "
+          "changes; use replace with a find string instead.\n"
           "\n"
           "all MUST be false unless the user explicitly requests all, "
           "every, or each occurrence.\n"
@@ -628,11 +631,8 @@ bool EditPlanner::takeCompleteJsonValue(QString &buffer, QString &jsonText) {
       --objectDepth;
 
       if (objectDepth == 0 && arrayDepth == 0) {
-
         jsonText = buffer.left(i + 1);
-
         buffer.remove(0, i + 1);
-
         return true;
       }
 
@@ -648,11 +648,8 @@ bool EditPlanner::takeCompleteJsonValue(QString &buffer, QString &jsonText) {
       --arrayDepth;
 
       if (objectDepth == 0 && arrayDepth == 0) {
-
         jsonText = buffer.left(i + 1);
-
         buffer.remove(0, i + 1);
-
         return true;
       }
     }
@@ -684,7 +681,6 @@ void EditPlanner::processStream() {
       QJsonDocument::fromJson(jsonText.toUtf8(), &parseError);
 
   if (parseError.error != QJsonParseError::NoError || !json.isArray()) {
-
     m_payloadLogger.log(QStringLiteral("EDIT_PLAN_PARSE_ERROR"),
                         QStringLiteral("Error: %1 | Received JSON: %2")
                             .arg(parseError.errorString(), jsonText));
@@ -729,7 +725,6 @@ void EditPlanner::processStream() {
   edits.reserve(items.size());
 
   for (int i = 0; i < items.size(); ++i) {
-
     const QJsonObject object = items.at(i).toObject();
 
     if (object.isEmpty()) {
@@ -754,7 +749,6 @@ void EditPlanner::processStream() {
     if (!operationValue.isString() || !scopeValue.isString() ||
         !positionValue.isString() || !findValue.isString() ||
         !allValue.isBool() || !instructionValue.isString()) {
-
       emit failed(
           QStringLiteral("Edit plan item %1 is missing a required field.")
               .arg(i + 1));
@@ -775,6 +769,8 @@ void EditPlanner::processStream() {
       command.operation = EditCommand::Operation::Replace;
     } else if (operation == QStringLiteral("delete")) {
       command.operation = EditCommand::Operation::Delete;
+    } else if (operation == QStringLiteral("replace_scope")) {
+      command.operation = EditCommand::Operation::ReplaceScope;
     } else {
       emit failed(QStringLiteral("Edit plan item %1 has an invalid operation.")
                       .arg(i + 1));
@@ -785,6 +781,8 @@ void EditPlanner::processStream() {
       command.position = EditCommand::Position::Before;
     } else if (position == QStringLiteral("after")) {
       command.position = EditCommand::Position::After;
+    } else if (position == QStringLiteral("inside")) {
+      command.position = EditCommand::Position::Inside;
     } else {
       emit failed(QStringLiteral("Edit plan item %1 has an invalid position.")
                       .arg(i + 1));
@@ -801,9 +799,6 @@ void EditPlanner::processStream() {
 
     const SectionInfo *section = findSection(sections, command.scopeId);
 
-    // An empty scope ID is the legacy signal for the document root. Accept
-    // it only for insertions into an empty document; otherwise require a
-    // concrete scope.
     if (!section && command.scopeId.isEmpty()) {
       if (command.operation != EditCommand::Operation::Insert) {
         emit failed(QStringLiteral("Edit plan item %1 uses an empty scope but "
@@ -826,9 +821,12 @@ void EditPlanner::processStream() {
       return;
     }
 
+    // For ReplaceScope, the expected operation may be reported as Replace
+    // by the naive keyword detector; accept either.
     if (expectedOperation != RequestedOperation::Unknown &&
-        operationName(expectedOperation) != operationName(command)) {
-
+        operationName(expectedOperation) != operationName(command) &&
+        !(expectedOperation == RequestedOperation::Replace &&
+          command.operation == EditCommand::Operation::ReplaceScope)) {
       emit failed(
           QStringLiteral("The edit planner generated '%1', but "
                          "the user's request requires '%2'.")
@@ -837,7 +835,6 @@ void EditPlanner::processStream() {
     }
 
     if (command.replaceAll && !explicitlyRequestsAll(m_userRequest)) {
-
       emit failed(
           QStringLiteral("Edit plan item %1 uses all=true without an explicit "
                          "request to affect all occurrences.")
@@ -865,7 +862,6 @@ void EditPlanner::processStream() {
     }
 
     if (command.operation == EditCommand::Operation::Insert) {
-
       if (!command.findString.isEmpty()) {
         emit failed(QStringLiteral("Edit plan item %1 is an insert but has a "
                                    "non-empty find string.")
@@ -879,9 +875,31 @@ void EditPlanner::processStream() {
                 .arg(i + 1));
         return;
       }
+    } else if (command.operation == EditCommand::Operation::ReplaceScope) {
+      if (!command.findString.isEmpty()) {
+        emit failed(
+            QStringLiteral("Edit plan item %1 is a replace_scope but has a "
+                           "non-empty find string.")
+                .arg(i + 1));
+        return;
+      }
 
+      if (command.position != EditCommand::Position::Inside) {
+        emit failed(
+            QStringLiteral("Edit plan item %1 is a replace_scope but its "
+                           "position is not inside.")
+                .arg(i + 1));
+        return;
+      }
+
+      if (command.replaceAll) {
+        emit failed(
+            QStringLiteral("Edit plan item %1 is a replace_scope with "
+                           "all=true.")
+                .arg(i + 1));
+        return;
+      }
     } else {
-
       if (command.findString.trimmed().isEmpty()) {
         emit failed(
             QStringLiteral("Edit plan item %1 requires find text.").arg(i + 1));
@@ -889,7 +907,6 @@ void EditPlanner::processStream() {
       }
 
       if (!section || !findExistsInScope(command, *section, documentText)) {
-
         emit failed(QStringLiteral("Edit plan item %1 uses find text that does "
                                    "not exist in the selected scope.")
                         .arg(i + 1));
@@ -973,20 +990,26 @@ void EditPlanner::processStream() {
     return;
   }
 
-  QStringList contextScopeIds;
+  // Emit the union of scopes actually referenced by the plan. This is what
+  // the editor will highlight and what the context model will mark sent.
+  QStringList referencedScopes;
+  QSet<QString> seenReferenced;
 
-  for (const SectionInfo *target : targets) {
-    contextScopeIds.append(target->scopeId);
+  for (const EditCommand &edit : edits) {
+    if (edit.scopeId.isEmpty()) {
+      continue;
+    }
+
+    if (seenReferenced.contains(edit.scopeId)) {
+      continue;
+    }
+
+    seenReferenced.insert(edit.scopeId);
+    referencedScopes.append(edit.scopeId);
   }
 
-  emit contextScopes(contextScopeIds);
+  emit contextScopes(referencedScopes);
 
-  /*
-   * The final planner token is still being delivered to every
-   * llmDelta receiver when this code runs. Defer planValidated() so
-   * downstream code cannot start the next LLM request from inside the
-   * same llmDelta emission.
-   */
   QMetaObject::invokeMethod(
       this, [this, edits]() { emit planValidated(edits); },
       Qt::QueuedConnection);

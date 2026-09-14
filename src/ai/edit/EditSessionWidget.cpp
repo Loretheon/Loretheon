@@ -91,6 +91,7 @@ QComboBox *createComboBox(const QStringList &items, QWidget *parent) {
 }
 
 } // namespace
+
 void EditSessionWidget::setPlanCommand(int editNumber,
                                        const EditCommand &command) {
   EditCard *card = cardFor(editNumber);
@@ -106,12 +107,25 @@ void EditSessionWidget::setPlanCommand(int editNumber,
   }
 
   if (card->operationCombo) {
-    const int operationIndex = card->operationCombo->findText(
-        command.operation == EditCommand::Operation::Insert
-            ? QStringLiteral("insert")
-            : command.operation == EditCommand::Operation::Delete
-                  ? QStringLiteral("delete")
-                  : QStringLiteral("replace"));
+    QString operationName = QStringLiteral("replace");
+
+    switch (command.operation) {
+    case EditCommand::Operation::Insert:
+      operationName = QStringLiteral("insert");
+      break;
+    case EditCommand::Operation::Delete:
+      operationName = QStringLiteral("delete");
+      break;
+    case EditCommand::Operation::ReplaceScope:
+      operationName = QStringLiteral("replace_scope");
+      break;
+    case EditCommand::Operation::Replace:
+    default:
+      operationName = QStringLiteral("replace");
+      break;
+    }
+
+    const int operationIndex = card->operationCombo->findText(operationName);
 
     if (operationIndex >= 0) {
       card->operationCombo->setCurrentIndex(operationIndex);
@@ -139,7 +153,6 @@ void EditSessionWidget::setPlanCommand(int editNumber,
     card->instructionEdit->setPlainText(command.instruction);
   }
 
-  // Keep the JSON view in sync for reference.
   card->commandEdit->setPlainText(QString::fromUtf8(
       QJsonDocument(ChatWidgetSerialization::editCommandToJson(command))
           .toJson(QJsonDocument::Indented)));
@@ -173,7 +186,6 @@ EditSessionWidget::EditSessionWidget(QWidget *parent) : QWidget(parent) {
 
   rootLayout->addWidget(m_scrollArea);
 
-  // Batch bar (used after execution begins).
   m_batchBar = new QWidget(this);
 
   auto *batchLayout = new QHBoxLayout(m_batchBar);
@@ -202,7 +214,6 @@ EditSessionWidget::EditSessionWidget(QWidget *parent) : QWidget(parent) {
 
   rootLayout->addWidget(m_batchBar);
 
-  // Plan approval bar (used during plan review).
   m_planApprovalBar = new QWidget(this);
 
   auto *planLayout = new QHBoxLayout(m_planApprovalBar);
@@ -533,8 +544,6 @@ void EditSessionWidget::createPlanEditors(EditCard *card, int editNumber) {
     return;
   }
 
-  // Scope (read-only): changing scope would invalidate structural
-  // assumptions that validatePlan() already verified.
   auto *scopeRow = new QWidget(card->widget);
   auto *scopeLayout = new QVBoxLayout(scopeRow);
   scopeLayout->setContentsMargins(0, 0, 0, 0);
@@ -552,7 +561,6 @@ void EditSessionWidget::createPlanEditors(EditCard *card, int editNumber) {
 
   card->widget->layout()->addWidget(scopeRow);
 
-  // Operation + Position combos.
   auto *comboRow = new QWidget(card->widget);
   auto *comboLayout = new QHBoxLayout(comboRow);
   comboLayout->setContentsMargins(0, 0, 0, 0);
@@ -565,7 +573,7 @@ void EditSessionWidget::createPlanEditors(EditCard *card, int editNumber) {
   opLayout->addWidget(createSectionLabel(tr("Operation"), opCol));
   card->operationCombo = createComboBox(
       {QStringLiteral("insert"), QStringLiteral("replace"),
-       QStringLiteral("delete")},
+       QStringLiteral("delete"), QStringLiteral("replace_scope")},
       opCol);
   opLayout->addWidget(card->operationCombo);
 
@@ -585,7 +593,6 @@ void EditSessionWidget::createPlanEditors(EditCard *card, int editNumber) {
 
   card->widget->layout()->addWidget(comboRow);
 
-  // Find string (editable).
   card->findEdit = createEditableText(card->widget);
   card->findEdit->setMinimumHeight(40);
   card->findEdit->setMaximumHeight(120);
@@ -593,7 +600,6 @@ void EditSessionWidget::createPlanEditors(EditCard *card, int editNumber) {
   card->widget->layout()->addWidget(
       createSection(tr("Find"), card->findEdit, card->widget));
 
-  // Instruction (editable).
   card->instructionEdit = createEditableText(card->widget);
   card->instructionEdit->setMinimumHeight(50);
   card->instructionEdit->setMaximumHeight(140);
@@ -838,7 +844,6 @@ void EditSessionWidget::setResultText(int editNumber, const QString &text) {
 QVector<EditCommand> EditSessionWidget::collectEditedCommands() const {
   QVector<EditCommand> result;
 
-  // Preserve numeric order of edit cards.
   QList<int> keys = m_cards.keys();
   std::sort(keys.begin(), keys.end());
 
@@ -866,6 +871,8 @@ QVector<EditCommand> EditSessionWidget::collectEditedCommands() const {
       command.operation = EditCommand::Operation::Insert;
     } else if (op == QStringLiteral("delete")) {
       command.operation = EditCommand::Operation::Delete;
+    } else if (op == QStringLiteral("replace_scope")) {
+      command.operation = EditCommand::Operation::ReplaceScope;
     } else {
       command.operation = EditCommand::Operation::Replace;
     }
@@ -883,7 +890,6 @@ QVector<EditCommand> EditSessionWidget::collectEditedCommands() const {
     command.findString = card->findEdit->toPlainText();
     command.instruction = card->instructionEdit->toPlainText();
 
-    // newString is populated later by streaming generation.
     result.append(command);
   }
 

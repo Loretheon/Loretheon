@@ -1,4 +1,6 @@
 #include "../../../include/ai/chat/ChatWidgetLayout.h"
+#include "../../../include/ai/context/ContextModel.h"
+#include "../../../include/ai/context/ContextPanel.h"
 #include "../../../include/ai/edit/EditSessionWidget.h"
 
 #include <QCheckBox>
@@ -7,6 +9,7 @@
 #include <QLineEdit>
 #include <QPushButton>
 #include <QSplitter>
+#include <QTabWidget>
 #include <QTextDocument>
 #include <QTextEdit>
 #include <QVBoxLayout>
@@ -17,8 +20,7 @@ constexpr int TranscriptInputHeight = 38;
 constexpr int TranscriptSendWidth = 76;
 } // namespace
 
-void ChatWidgetLayout::build(QWidget *parent) {
-  // Transcript display
+void ChatWidgetLayout::build(QWidget *parent, ContextModel *contextModel) {
   transcript = new QTextEdit(parent);
   transcript->setReadOnly(true);
   transcript->setAcceptRichText(true);
@@ -29,42 +31,43 @@ void ChatWidgetLayout::build(QWidget *parent) {
   QTextDocument *document = transcript->document();
   document->setDocumentMargin(TranscriptOuterMargin);
 
-  // Input field
   input = new QLineEdit(parent);
   input->setPlaceholderText(QObject::tr("Ask the assistant…"));
   input->setClearButtonEnabled(true);
   input->setMinimumHeight(TranscriptInputHeight);
   input->setObjectName("chatInput");
 
-  // Send button
   sendButton = new QPushButton(QObject::tr("Send"), parent);
   sendButton->setMinimumHeight(TranscriptInputHeight);
   sendButton->setMinimumWidth(TranscriptSendWidth);
   sendButton->setDefault(true);
   sendButton->setObjectName("sendButton");
 
-  // Edit mode toggle
   editModeCheckbox = new QCheckBox(QObject::tr("Edit document"), parent);
   editModeCheckbox->setToolTip(
       QObject::tr("Plan and preview document edits before applying them."));
   editModeCheckbox->setObjectName("editModeCheckbox");
   editModeCheckbox->setStyleSheet(
       "QCheckBox::indicator { width: 13px; height: 13px; }");
-  
+
   editSessionWidget = new EditSessionWidget(parent);
 
-  // Content splitter
+  contextPanel = new ContextPanel(contextModel, parent);
+
+  rightTabs = new QTabWidget(parent);
+  rightTabs->addTab(editSessionWidget, QObject::tr("Edits"));
+  rightTabs->addTab(contextPanel, QObject::tr("Context"));
+
   contentSplitter = new QSplitter(Qt::Horizontal, parent);
   contentSplitter->setChildrenCollapsible(false);
   contentSplitter->setHandleWidth(6);
   contentSplitter->addWidget(transcript);
-  contentSplitter->addWidget(editSessionWidget);
+  contentSplitter->addWidget(rightTabs);
   contentSplitter->setSizes({680, 420});
   contentSplitter->setStretchFactor(0, 1);
   contentSplitter->setStretchFactor(1, 0);
   contentSplitter->setObjectName("contentSplitter");
 
-  // Controls layout
   QWidget *controlsFrame = new QWidget(parent);
   controlsFrame->setObjectName("controlsFrame");
   auto *controlsLayout = new QHBoxLayout(controlsFrame);
@@ -74,7 +77,6 @@ void ChatWidgetLayout::build(QWidget *parent) {
   controlsLayout->addWidget(input, 1);
   controlsLayout->addWidget(sendButton);
 
-  // Root layout
   rootLayout = new QVBoxLayout(parent);
   rootLayout->setContentsMargins(0, 0, 0, 0);
   rootLayout->setSpacing(0);

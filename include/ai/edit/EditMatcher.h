@@ -1,4 +1,3 @@
-// EditMatcher.h
 #pragma once
 
 #include "EditCommand.h"
@@ -27,4 +26,7 @@ private:
 
   Result findFuzzy(const QString &text, const QString &needle,
                    int offset) const;
+
+  Result findWholeScopeBody(const TextDocument &document,
+                            const EditCommand &command) const;
 };

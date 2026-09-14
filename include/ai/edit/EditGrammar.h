@@ -23,44 +23,30 @@ inline QString makeAlternatives(const QStringList &values) {
   alternatives.reserve(values.size());
 
   for (const QString &value : values) {
-
     alternatives.append(QStringLiteral("\"%1\"").arg(escapeLiteral(value)));
   }
 
   if (alternatives.isEmpty()) {
-
     return QStringLiteral("\"\"");
   }
 
   return alternatives.join(QStringLiteral(" | "));
 }
 
-/*
- * Bounded array of edit commands.
- *
- * This remains the local llama.cpp representation.
- *
- * Remote/OpenAI-compatible providers should use jsonSchema()
- * instead of this GBNF grammar.
- */
 inline constexpr int kMaxEditsPerPlan = 8;
 
 inline QString makeBoundedTailChain() {
   QString rules;
 
   for (int i = 0; i < kMaxEditsPerPlan - 1; ++i) {
-
     const int nextIndex = i + 1;
 
     if (nextIndex < kMaxEditsPerPlan - 1) {
-
       rules += QStringLiteral("commandTail%1 ::= "
                               "\"\" | ws \",\" ws command commandTail%2\n")
                    .arg(i)
                    .arg(nextIndex);
-
     } else {
-
       rules += QStringLiteral("commandTail%1 ::= \"\"\n").arg(i);
     }
   }
@@ -81,70 +67,85 @@ inline QString gbnf(const QStringList &scopeIds) {
 
   grammar += makeBoundedTailChain();
 
-  grammar += QStringLiteral("command ::= insert | replace | delete\n"
+  grammar += QStringLiteral(
+      "command ::= insert | replace | delete | replace_scope\n"
 
-                            "insert ::= \"{\" ws "
-                            "\"\\\"operation\\\"\" ws \":\" ws "
-                            "\"\\\"insert\\\"\" ws \",\" ws "
-                            "\"\\\"scope\\\"\" ws \":\" ws "
-                            "\"\\\"\" scopeValue \"\\\"\" ws \",\" ws "
-                            "\"\\\"position\\\"\" ws \":\" ws "
-                            "\"\\\"\" positionValue \"\\\"\" ws \",\" ws "
-                            "\"\\\"find\\\"\" ws \":\" ws "
-                            "\"\\\"\\\"\" ws \",\" ws "
-                            "\"\\\"all\\\"\" ws \":\" ws "
-                            "boolean ws \",\" ws "
-                            "\"\\\"instruction\\\"\" ws \":\" ws "
-                            "string ws \"}\"\n"
+      "insert ::= \"{\" ws "
+      "\"\\\"operation\\\"\" ws \":\" ws "
+      "\"\\\"insert\\\"\" ws \",\" ws "
+      "\"\\\"scope\\\"\" ws \":\" ws "
+      "\"\\\"\" scopeValue \"\\\"\" ws \",\" ws "
+      "\"\\\"position\\\"\" ws \":\" ws "
+      "\"\\\"\" positionValue \"\\\"\" ws \",\" ws "
+      "\"\\\"find\\\"\" ws \":\" ws "
+      "\"\\\"\\\"\" ws \",\" ws "
+      "\"\\\"all\\\"\" ws \":\" ws "
+      "boolean ws \",\" ws "
+      "\"\\\"instruction\\\"\" ws \":\" ws "
+      "string ws \"}\"\n"
 
-                            "replace ::= \"{\" ws "
-                            "\"\\\"operation\\\"\" ws \":\" ws "
-                            "\"\\\"replace\\\"\" ws \",\" ws "
-                            "\"\\\"scope\\\"\" ws \":\" ws "
-                            "\"\\\"\" scopeValue \"\\\"\" ws \",\" ws "
-                            "\"\\\"position\\\"\" ws \":\" ws "
-                            "\"\\\"\" positionValue \"\\\"\" ws \",\" ws "
-                            "\"\\\"find\\\"\" ws \":\" ws "
-                            "string ws \",\" ws "
-                            "\"\\\"all\\\"\" ws \":\" ws "
-                            "boolean ws \",\" ws "
-                            "\"\\\"instruction\\\"\" ws \":\" ws "
-                            "string ws \"}\"\n"
+      "replace ::= \"{\" ws "
+      "\"\\\"operation\\\"\" ws \":\" ws "
+      "\"\\\"replace\\\"\" ws \",\" ws "
+      "\"\\\"scope\\\"\" ws \":\" ws "
+      "\"\\\"\" scopeValue \"\\\"\" ws \",\" ws "
+      "\"\\\"position\\\"\" ws \":\" ws "
+      "\"\\\"\" positionValue \"\\\"\" ws \",\" ws "
+      "\"\\\"find\\\"\" ws \":\" ws "
+      "string ws \",\" ws "
+      "\"\\\"all\\\"\" ws \":\" ws "
+      "boolean ws \",\" ws "
+      "\"\\\"instruction\\\"\" ws \":\" ws "
+      "string ws \"}\"\n"
 
-                            "delete ::= \"{\" ws "
-                            "\"\\\"operation\\\"\" ws \":\" ws "
-                            "\"\\\"delete\\\"\" ws \",\" ws "
-                            "\"\\\"scope\\\"\" ws \":\" ws "
-                            "\"\\\"\" scopeValue \"\\\"\" ws \",\" ws "
-                            "\"\\\"position\\\"\" ws \":\" ws "
-                            "\"\\\"\" positionValue \"\\\"\" ws \",\" ws "
-                            "\"\\\"find\\\"\" ws \":\" ws "
-                            "string ws \",\" ws "
-                            "\"\\\"all\\\"\" ws \":\" ws "
-                            "boolean ws \",\" ws "
-                            "\"\\\"instruction\\\"\" ws \":\" ws "
-                            "string ws \"}\"\n"
+      "delete ::= \"{\" ws "
+      "\"\\\"operation\\\"\" ws \":\" ws "
+      "\"\\\"delete\\\"\" ws \",\" ws "
+      "\"\\\"scope\\\"\" ws \":\" ws "
+      "\"\\\"\" scopeValue \"\\\"\" ws \",\" ws "
+      "\"\\\"position\\\"\" ws \":\" ws "
+      "\"\\\"\" positionValue \"\\\"\" ws \",\" ws "
+      "\"\\\"find\\\"\" ws \":\" ws "
+      "string ws \",\" ws "
+      "\"\\\"all\\\"\" ws \":\" ws "
+      "boolean ws \",\" ws "
+      "\"\\\"instruction\\\"\" ws \":\" ws "
+      "string ws \"}\"\n"
 
-                            "scopeValue ::= %1\n"
+      "replace_scope ::= \"{\" ws "
+      "\"\\\"operation\\\"\" ws \":\" ws "
+      "\"\\\"replace_scope\\\"\" ws \",\" ws "
+      "\"\\\"scope\\\"\" ws \":\" ws "
+      "\"\\\"\" scopeValue \"\\\"\" ws \",\" ws "
+      "\"\\\"position\\\"\" ws \":\" ws "
+      "\"\\\"inside\\\"\" ws \",\" ws "
+      "\"\\\"find\\\"\" ws \":\" ws "
+      "\"\\\"\\\"\" ws \",\" ws "
+      "\"\\\"all\\\"\" ws \":\" ws "
+      "\"false\" ws \",\" ws "
+      "\"\\\"instruction\\\"\" ws \":\" ws "
+      "string ws \"}\"\n"
 
-                            "positionValue ::= "
-                            "\"before\" | "
-                            "\"after\"\n"
+      "scopeValue ::= %1\n"
 
-                            "boolean ::= "
-                            "\"true\" | "
-                            "\"false\"\n"
+      "positionValue ::= "
+      "\"before\" | "
+      "\"after\"\n"
 
-                            "string ::= "
-                            "\"\\\"\" char* \"\\\"\"\n"
+      "boolean ::= "
+      "\"true\" | "
+      "\"false\"\n"
 
-                            "char ::= "
-                            "[^\"\\\\\\x7F\\x00-\\x1F] | "
-                            "\"\\\\\" "
-                            "([\"\\\\/bfnrt] | "
-                            "\"u\" [0-9a-fA-F]{4})\n"
+      "string ::= "
+      "\"\\\"\" char* \"\\\"\"\n"
 
-                            "ws ::= [ \\t]*\n")
+      "char ::= "
+      "[^\"\\\\\\x7F\\x00-\\x1F] | "
+      "\"\\\\\" "
+      "([\"\\\\/bfnrt] | "
+      "\"u\" [0-9a-fA-F]{4})\n"
+
+      "ws ::= [ \\t]*\n")
                  .arg(makeAlternatives(scopeIds));
 
   return grammar;
@@ -152,26 +153,6 @@ inline QString gbnf(const QStringList &scopeIds) {
 
 /*
  * Canonical edit-plan schema for OpenAI-compatible structured output.
- *
- * The root is an object rather than an array because OpenRouter's
- * structured-output interface is documented around JSON-schema objects.
- *
- * Example:
- *
- * {
- *   "edits": [
- *     {
- *       "operation": "replace",
- *       "scope": "paragraph-1",
- *       "position": "before",
- *       "find": "old text",
- *       "all": false,
- *       "instruction": "Replace this..."
- *     }
- *   ]
- * }
- *
- * scope is restricted to the actual scope IDs supplied by the caller.
  */
 inline QJsonObject jsonSchema(const QStringList &scopeIds) {
   QJsonObject operation;
@@ -181,7 +162,8 @@ inline QJsonObject jsonSchema(const QStringList &scopeIds) {
   operation.insert(QStringLiteral("enum"),
                    QJsonArray{QStringLiteral("insert"),
                               QStringLiteral("replace"),
-                              QStringLiteral("delete")});
+                              QStringLiteral("delete"),
+                              QStringLiteral("replace_scope")});
 
   QJsonObject scope;
 
@@ -190,15 +172,9 @@ inline QJsonObject jsonSchema(const QStringList &scopeIds) {
   QJsonArray scopeEnum;
 
   for (const QString &scopeId : scopeIds) {
-
     scopeEnum.append(scopeId);
   }
 
-  /*
-   * If there are no scopes, an empty enum guarantees that no
-   * edit can be produced. The caller should normally prevent
-   * edit planning when scopeIds is empty.
-   */
   scope.insert(QStringLiteral("enum"), scopeEnum);
 
   QJsonObject position;
@@ -206,7 +182,8 @@ inline QJsonObject jsonSchema(const QStringList &scopeIds) {
   position.insert(QStringLiteral("type"), QStringLiteral("string"));
 
   position.insert(QStringLiteral("enum"), QJsonArray{QStringLiteral("before"),
-                                                     QStringLiteral("after")});
+                                                     QStringLiteral("after"),
+                                                     QStringLiteral("inside")});
 
   QJsonObject find;
 
@@ -272,20 +249,6 @@ inline QJsonObject jsonSchema(const QStringList &scopeIds) {
   return root;
 }
 
-/*
- * Complete OpenAI/OpenRouter response_format object.
- *
- * This can be inserted directly into the chat-completions request:
- *
- * "response_format": {
- *     "type": "json_schema",
- *     "json_schema": {
- *         "name": "edit_plan",
- *         "strict": true,
- *         "schema": { ... }
- *     }
- * }
- */
 inline QJsonObject jsonResponseFormat(const QStringList &scopeIds) {
   QJsonObject jsonSchemaDefinition;
 

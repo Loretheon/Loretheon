@@ -7,9 +7,12 @@ class QLineEdit;
 class QPushButton;
 class QCheckBox;
 class QSplitter;
+class QTabWidget;
 class QVBoxLayout;
 
 class EditSessionWidget;
+class ContextPanel;
+class ContextModel;
 
 struct ChatWidgetLayout {
   QTextEdit *transcript = nullptr;
@@ -22,9 +25,13 @@ struct ChatWidgetLayout {
 
   EditSessionWidget *editSessionWidget = nullptr;
 
+  ContextPanel *contextPanel = nullptr;
+
+  QTabWidget *rightTabs = nullptr;
+
   QSplitter *contentSplitter = nullptr;
 
   QVBoxLayout *rootLayout = nullptr;
 
-  void build(QWidget *parent);
+  void build(QWidget *parent, ContextModel *contextModel);
 };

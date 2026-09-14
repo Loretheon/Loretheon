@@ -1,5 +1,7 @@
 #include "EditApplier.h"
 
+#include "TextDocument.h"
+
 #include <QTextCursor>
 
 #include <algorithm>
@@ -178,7 +180,8 @@ bool EditApplier::beginStreaming(QTextDocument &document,
 
   QString originalText;
 
-  if (command.operation == EditCommand::Operation::Replace) {
+  if (command.operation == EditCommand::Operation::Replace ||
+      command.operation == EditCommand::Operation::ReplaceScope) {
     originalText = documentText.mid(match.start, match.end - match.start);
 
     if (originalText != match.matchedText) {
@@ -197,7 +200,8 @@ bool EditApplier::beginStreaming(QTextDocument &document,
   m_streamingCursor = QTextCursor(&document);
   m_streamingCursor.setPosition(match.start);
 
-  if (command.operation == EditCommand::Operation::Replace) {
+  if (command.operation == EditCommand::Operation::Replace ||
+      command.operation == EditCommand::Operation::ReplaceScope) {
     m_streamingCursor.setPosition(match.end, QTextCursor::KeepAnchor);
 
     m_streamingCursor.removeSelectedText();
@@ -232,7 +236,8 @@ bool EditApplier::finishStreaming() {
 
   const bool requiresContent =
       m_streamingCommand.operation == EditCommand::Operation::Insert ||
-      m_streamingCommand.operation == EditCommand::Operation::Replace;
+      m_streamingCommand.operation == EditCommand::Operation::Replace ||
+      m_streamingCommand.operation == EditCommand::Operation::ReplaceScope;
 
   if (requiresContent && m_streamingLength == 0) {
     const QString reason =
@@ -268,7 +273,8 @@ void EditApplier::cancelStreaming() {
   cursor.removeSelectedText();
 
   const bool restoreOriginal =
-      m_streamingCommand.operation == EditCommand::Operation::Replace &&
+      (m_streamingCommand.operation == EditCommand::Operation::Replace ||
+       m_streamingCommand.operation == EditCommand::Operation::ReplaceScope) &&
       !m_streamingOriginalText.isEmpty();
 
   if (restoreOriginal) {
@@ -314,7 +320,8 @@ bool EditApplier::applyOne(QTextDocument &document, const EditCommand &command,
 
   cursor.removeSelectedText();
 
-  if (command.operation == EditCommand::Operation::Replace) {
+  if (command.operation == EditCommand::Operation::Replace ||
+      command.operation == EditCommand::Operation::ReplaceScope) {
     cursor.insertText(command.newString);
   }
 
