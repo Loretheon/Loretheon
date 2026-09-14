@@ -10,10 +10,12 @@
 #include <QHash>
 #include <QPlainTextEdit>
 #include <QString>
+#include <QStringList>
 
 #include <memory>
 
 class QCheckBox;
+class QComboBox;
 class QLabel;
 class QLayout;
 class QPushButton;
@@ -26,6 +28,14 @@ class TextEdit : public QPlainTextEdit {
 
 public:
   Q_ENUM(DocumentMode)
+
+  enum class HighlightMode {
+    Intent,  // Highlight the full scope range for any referenced scope.
+    Sent,    // Highlight only the heading lines of referenced scopes.
+    Both     // Solid tint for full ranges, lighter tint for heading lines.
+  };
+
+  Q_ENUM(HighlightMode)
 
   explicit TextEdit(QWidget *parent = nullptr);
 
@@ -64,6 +74,14 @@ public:
   void clearPendingEdits();
 
   void refreshPendingEdits();
+
+  void setHighlightedScopes(const QStringList &scopeIds);
+
+  void clearHighlightedScopes();
+
+  void setHighlightMode(HighlightMode mode);
+
+  HighlightMode highlightMode() const { return m_highlightMode; }
 
 public slots:
   void setDocumentMode(DocumentMode mode);
@@ -158,6 +176,10 @@ private:
 
   void updatePendingHighlight();
 
+  void updateAllHighlights();
+
+  void applyScopeHighlights(QList<QTextEdit::ExtraSelection> &selections);
+
   QString pendingEditSummary(const PendingEdit &edit) const;
 
   QString pendingEditStatus(const PendingEdit &edit) const;
@@ -184,6 +206,8 @@ private:
 
   QCheckBox *m_autoAcceptCheckBox = nullptr;
 
+  QComboBox *m_highlightModeCombo = nullptr;
+
   DocumentMode m_mode{DocumentMode::PlainText};
 
   std::unique_ptr<TextFormatDelegate> m_delegate;
@@ -193,6 +217,10 @@ private:
   bool m_autoAcceptEdits{false};
 
   QHash<int, PendingEdit> m_pendingEdits;
+
+  HighlightMode m_highlightMode{HighlightMode::Intent};
+
+  QStringList m_highlightedScopes;
 };
 
 #endif // EPISTEME_TEXTEDIT_H

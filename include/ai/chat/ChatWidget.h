@@ -5,6 +5,7 @@
 
 #include "../edit/EditCommand.h"
 #include "../edit/EditMatch.h"
+#include "../edit/PendingEdit.h"
 
 #include <QList>
 #include <QString>
@@ -42,8 +43,11 @@ public:
 
   void submitTranscribedText(const QString &text);
 
+  signals:
+  void contextScopesChanged(const QStringList &scopeIds);
+  
 private slots:
-
+  void onPlanValidatedFromSession(const QVector<EditCommand> &commands);
   void onSendClicked();
 
   void onLlmDelta(const QString &text);
@@ -52,7 +56,19 @@ private slots:
 
   void onLlmError(const QString &error);
 
+  void onPendingEditStarted(const PendingEdit &edit);
+
+  void onPendingEditUpdated(const PendingEdit &edit);
+
+  void onPendingEditFinished(const PendingEdit &edit);
+
+  void onPlanValidated(const QVector<EditCommand> &commands);
+
   void onPlanFailed(const QString &reason);
+
+  void onPlanApprovalRequested(const QVector<EditCommand> &commands);
+
+  void onPlanCancelled();
 
   void onEditCandidatesReady(const QVector<EditMatch> &candidates);
 
@@ -85,11 +101,7 @@ private slots:
   void onReviewReady();
 
 private:
-  enum class EditPhase { None, Content };
-
-  /*
-   * Chat / transcript
-   */
+  enum class EditPhase { None, PlanReview, Content };
 
   void sendPrompt(const QString &prompt);
 
@@ -118,10 +130,6 @@ private:
 
   PayloadLogger m_payloadLogger;
 
-  /*
-   * Widgets
-   */
-
   QTextEdit *m_transcript = nullptr;
 
   QLineEdit *m_input = nullptr;
@@ -133,10 +141,6 @@ private:
   EditSessionWidget *m_editSessionWidget = nullptr;
 
   QVBoxLayout *m_layout = nullptr;
-
-  /*
-   * Chat state
-   */
 
   QString m_currentEditRequest;
 

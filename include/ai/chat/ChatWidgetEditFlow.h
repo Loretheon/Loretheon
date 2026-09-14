@@ -19,6 +19,10 @@ public slots:
 
   void requestNextEditCommand();
 
+  void onPlanValidated(const QVector<EditCommand> &commands);
+
+  void onPlanApprovalRequested(const QVector<EditCommand> &editedCommands);
+
   void beginStreamingResolvedPlan();
 
   void executeNextPlannedEdit();

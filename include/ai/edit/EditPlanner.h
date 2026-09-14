@@ -22,8 +22,16 @@ public:
 
   void abort();
 
-signals:
-  void planReady(const QVector<EditCommand> &commands);
+  signals:
+    // Emitted when the LLM has produced a structurally valid plan.
+    // The commands are parsed and scope-checked, but matches have not
+    // been resolved. The UI should display these for user review before
+    // EditSession::executePlan() is called.
+    void planValidated(const QVector<EditCommand> &commands);
+
+
+  void contextScopes(const QStringList &scopeIds);
+
 
   void failed(const QString &reason);
 

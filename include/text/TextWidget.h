@@ -31,6 +31,11 @@ public:
 
   void setThemeTokens(const ThemeTokens &tokens) override;
 
+
+public slots:
+void setContextScopes(const QStringList &scopeIds);
+
+  
   signals:
     void openDocumentRequested(const QString &path);
   void statusMessage(const QString &text, int timeoutMs = 4000);

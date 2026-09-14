@@ -146,7 +146,7 @@ add_executable(Episteme
         include/text/structure/PlainTextStructureParser.h
         src/ai/edit/EditSessionWidget.cpp
         include/ai/edit/EditSessionWidget.h
-        include/ai/edit/PendingEdit.cpp
+        src/ai/edit/PendingEdit.cpp
         include/ai/edit/PendingEdit.h
         src/app/PayloadLogger.cpp
         include/app/PayloadLogger.h

@@ -1,9 +1,13 @@
 #include "../../../include/ai/edit/EditSessionWidget.h"
 
+#include "ChatWidgetSerialization.h"
+
 #include <QButtonGroup>
+#include <QComboBox>
 #include <QFont>
 #include <QFrame>
 #include <QHBoxLayout>
+#include <QJsonDocument>
 #include <QLabel>
 #include <QPushButton>
 #include <QRadioButton>
@@ -55,6 +59,13 @@ QTextEdit *createReadOnlyText(QWidget *parent) {
   return edit;
 }
 
+QTextEdit *createEditableText(QWidget *parent) {
+  auto *edit = createReadOnlyText(parent);
+  edit->setReadOnly(false);
+  edit->setPlaceholderText(QObject::tr("(empty)"));
+  return edit;
+}
+
 QWidget *createSection(const QString &title, QTextEdit *editor,
                        QWidget *parent) {
   auto *container = new QWidget(parent);
@@ -72,7 +83,69 @@ QWidget *createSection(const QString &title, QTextEdit *editor,
   return container;
 }
 
+QComboBox *createComboBox(const QStringList &items, QWidget *parent) {
+  auto *combo = new QComboBox(parent);
+  combo->addItems(items);
+  combo->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+  return combo;
+}
+
 } // namespace
+void EditSessionWidget::setPlanCommand(int editNumber,
+                                       const EditCommand &command) {
+  EditCard *card = cardFor(editNumber);
+
+  if (!card) {
+    card = createEditCard(editNumber, command.instruction);
+  }
+
+  if (card->scopeLabel) {
+    card->scopeLabel->setText(command.scopeId.isEmpty()
+                                  ? tr("(document root)")
+                                  : command.scopeId);
+  }
+
+  if (card->operationCombo) {
+    const int operationIndex = card->operationCombo->findText(
+        command.operation == EditCommand::Operation::Insert
+            ? QStringLiteral("insert")
+            : command.operation == EditCommand::Operation::Delete
+                  ? QStringLiteral("delete")
+                  : QStringLiteral("replace"));
+
+    if (operationIndex >= 0) {
+      card->operationCombo->setCurrentIndex(operationIndex);
+    }
+  }
+
+  if (card->positionCombo) {
+    const int positionIndex = card->positionCombo->findText(
+        command.position == EditCommand::Position::Before
+            ? QStringLiteral("before")
+            : command.position == EditCommand::Position::After
+                  ? QStringLiteral("after")
+                  : QStringLiteral("inside"));
+
+    if (positionIndex >= 0) {
+      card->positionCombo->setCurrentIndex(positionIndex);
+    }
+  }
+
+  if (card->findEdit) {
+    card->findEdit->setPlainText(command.findString);
+  }
+
+  if (card->instructionEdit) {
+    card->instructionEdit->setPlainText(command.instruction);
+  }
+
+  // Keep the JSON view in sync for reference.
+  card->commandEdit->setPlainText(QString::fromUtf8(
+      QJsonDocument(ChatWidgetSerialization::editCommandToJson(command))
+          .toJson(QJsonDocument::Indented)));
+
+  setStatus(editNumber, tr("Awaiting approval"));
+}
 
 EditSessionWidget::EditSessionWidget(QWidget *parent) : QWidget(parent) {
   auto *rootLayout = new QVBoxLayout(this);
@@ -100,6 +173,7 @@ EditSessionWidget::EditSessionWidget(QWidget *parent) : QWidget(parent) {
 
   rootLayout->addWidget(m_scrollArea);
 
+  // Batch bar (used after execution begins).
   m_batchBar = new QWidget(this);
 
   auto *batchLayout = new QHBoxLayout(m_batchBar);
@@ -128,6 +202,27 @@ EditSessionWidget::EditSessionWidget(QWidget *parent) : QWidget(parent) {
 
   rootLayout->addWidget(m_batchBar);
 
+  // Plan approval bar (used during plan review).
+  m_planApprovalBar = new QWidget(this);
+
+  auto *planLayout = new QHBoxLayout(m_planApprovalBar);
+
+  planLayout->setContentsMargins(8, 0, 8, 0);
+
+  planLayout->setSpacing(6);
+
+  m_approvePlanButton = new QPushButton(tr("Approve Plan"), m_planApprovalBar);
+
+  m_cancelPlanButton = new QPushButton(tr("Cancel"), m_planApprovalBar);
+
+  planLayout->addStretch();
+
+  planLayout->addWidget(m_cancelPlanButton);
+
+  planLayout->addWidget(m_approvePlanButton);
+
+  rootLayout->addWidget(m_planApprovalBar);
+
   connect(m_acceptAllButton, &QPushButton::clicked, this,
           &EditSessionWidget::acceptAllPendingEditsRequested);
 
@@ -140,12 +235,31 @@ EditSessionWidget::EditSessionWidget(QWidget *parent) : QWidget(parent) {
   connect(m_skipButton, &QPushButton::clicked, this,
           &EditSessionWidget::skipRequested);
 
+  connect(m_approvePlanButton, &QPushButton::clicked, this,
+          &EditSessionWidget::onApprovePlanClicked);
+
+  connect(m_cancelPlanButton, &QPushButton::clicked, this,
+          &EditSessionWidget::onCancelPlanClicked);
+
   m_batchBar->hide();
+  m_planApprovalBar->hide();
+}
+
+void EditSessionWidget::showPlanApprovalBar() {
+  m_planReviewActive = true;
+
+  m_batchBar->hide();
+  m_planApprovalBar->show();
+}
+
+void EditSessionWidget::hidePlanApprovalBar() {
+  m_planReviewActive = false;
+
+  m_planApprovalBar->hide();
 }
 
 void EditSessionWidget::clearHistory() {
   for (EditCard *card : std::as_const(m_cards)) {
-
     if (!card) {
       continue;
     }
@@ -157,7 +271,6 @@ void EditSessionWidget::clearHistory() {
   m_cards.clear();
 
   for (auto &ui : m_conflictGroups) {
-
     delete ui.wrapper;
     ui.wrapper = nullptr;
   }
@@ -165,6 +278,8 @@ void EditSessionWidget::clearHistory() {
   m_conflictGroups.clear();
 
   m_batchBar->hide();
+  m_planApprovalBar->hide();
+  m_planReviewActive = false;
 }
 
 void EditSessionWidget::startEdit(int editNumber, const QString &request) {
@@ -219,7 +334,6 @@ void EditSessionWidget::setStatus(int editNumber, const QString &status) {
   const QString normalized = status.trimmed().toLower();
 
   if (normalized == QStringLiteral("ready for review")) {
-
     card->reviewVisible = true;
 
     updateReviewControls(card);
@@ -399,6 +513,8 @@ EditSessionWidget::createEditCard(int editNumber, const QString &request) {
   layout->addWidget(
       createSection(tr("Result"), card->resultEdit, card->widget));
 
+  createPlanEditors(card, editNumber);
+
   createReviewControls(card, editNumber);
 
   layout->addWidget(card->reviewBar);
@@ -410,6 +526,82 @@ EditSessionWidget::createEditCard(int editNumber, const QString &request) {
   updateReviewControls(card);
 
   return card;
+}
+
+void EditSessionWidget::createPlanEditors(EditCard *card, int editNumber) {
+  if (!card || card->scopeLabel) {
+    return;
+  }
+
+  // Scope (read-only): changing scope would invalidate structural
+  // assumptions that validatePlan() already verified.
+  auto *scopeRow = new QWidget(card->widget);
+  auto *scopeLayout = new QVBoxLayout(scopeRow);
+  scopeLayout->setContentsMargins(0, 0, 0, 0);
+  scopeLayout->setSpacing(3);
+
+  scopeLayout->addWidget(createSectionLabel(tr("Scope"), scopeRow));
+
+  card->scopeLabel = new QLabel(tr("(unknown)"), scopeRow);
+  card->scopeLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+  card->scopeLabel->setStyleSheet(
+      QStringLiteral("QLabel { font-family: monospace; padding: 4px; "
+                     "background: palette(base); border: 1px solid "
+                     "palette(mid); border-radius: 4px; }"));
+  scopeLayout->addWidget(card->scopeLabel);
+
+  card->widget->layout()->addWidget(scopeRow);
+
+  // Operation + Position combos.
+  auto *comboRow = new QWidget(card->widget);
+  auto *comboLayout = new QHBoxLayout(comboRow);
+  comboLayout->setContentsMargins(0, 0, 0, 0);
+  comboLayout->setSpacing(8);
+
+  auto *opCol = new QWidget(comboRow);
+  auto *opLayout = new QVBoxLayout(opCol);
+  opLayout->setContentsMargins(0, 0, 0, 0);
+  opLayout->setSpacing(3);
+  opLayout->addWidget(createSectionLabel(tr("Operation"), opCol));
+  card->operationCombo = createComboBox(
+      {QStringLiteral("insert"), QStringLiteral("replace"),
+       QStringLiteral("delete")},
+      opCol);
+  opLayout->addWidget(card->operationCombo);
+
+  auto *posCol = new QWidget(comboRow);
+  auto *posLayout = new QVBoxLayout(posCol);
+  posLayout->setContentsMargins(0, 0, 0, 0);
+  posLayout->setSpacing(3);
+  posLayout->addWidget(createSectionLabel(tr("Position"), posCol));
+  card->positionCombo = createComboBox(
+      {QStringLiteral("inside"), QStringLiteral("before"),
+       QStringLiteral("after")},
+      posCol);
+  posLayout->addWidget(card->positionCombo);
+
+  comboLayout->addWidget(opCol);
+  comboLayout->addWidget(posCol);
+
+  card->widget->layout()->addWidget(comboRow);
+
+  // Find string (editable).
+  card->findEdit = createEditableText(card->widget);
+  card->findEdit->setMinimumHeight(40);
+  card->findEdit->setMaximumHeight(120);
+
+  card->widget->layout()->addWidget(
+      createSection(tr("Find"), card->findEdit, card->widget));
+
+  // Instruction (editable).
+  card->instructionEdit = createEditableText(card->widget);
+  card->instructionEdit->setMinimumHeight(50);
+  card->instructionEdit->setMaximumHeight(140);
+
+  card->widget->layout()->addWidget(
+      createSection(tr("Instruction"), card->instructionEdit, card->widget));
+
+  Q_UNUSED(editNumber)
 }
 
 void EditSessionWidget::createReviewControls(EditCard *card, int editNumber) {
@@ -492,37 +684,26 @@ void EditSessionWidget::updateStatusAppearance(EditCard *card,
   QString indicator = QStringLiteral("palette(mid)");
 
   if (normalized == QStringLiteral("accepted")) {
-
     border = QStringLiteral("#4caf50");
-
     indicator = QStringLiteral("#4caf50");
-
   } else if (normalized == QStringLiteral("rejected") ||
              normalized == QStringLiteral("failed")) {
-
     border = QStringLiteral("#d32f2f");
-
     indicator = QStringLiteral("#d32f2f");
-
   } else if (normalized == QStringLiteral("aborted")) {
-
     border = QStringLiteral("#f57c00");
-
     indicator = QStringLiteral("#f57c00");
-
   } else if (normalized == QStringLiteral("conflicting")) {
-
     border = QStringLiteral("#ab47bc");
-
     indicator = QStringLiteral("#ab47bc");
-
   } else if (normalized == QStringLiteral("writing") ||
              normalized == QStringLiteral("resolving") ||
              normalized == QStringLiteral("ready for review")) {
-
     border = QStringLiteral("#1976d2");
-
     indicator = QStringLiteral("#1976d2");
+  } else if (normalized == QStringLiteral("awaiting approval")) {
+    border = QStringLiteral("#fbc02d");
+    indicator = QStringLiteral("#fbc02d");
   }
 
   card->widget->setStyleSheet(QStringLiteral("QFrame {"
@@ -547,7 +728,6 @@ void EditSessionWidget::showConflictGroup(int groupId,
   }
 
   for (int editNumber : editNumbers) {
-
     if (!cardFor(editNumber)) {
       createEditCard(editNumber, QString());
     }
@@ -604,7 +784,6 @@ void EditSessionWidget::rebuildConflictWrapper(ConflictGroupUi &ui) {
   ui.choiceGroup = new QButtonGroup(ui.wrapper);
 
   for (int editNumber : ui.editNumbers) {
-
     auto *radio =
         new QRadioButton(tr("Keep edit %1").arg(editNumber), ui.wrapper);
 
@@ -644,4 +823,93 @@ void EditSessionWidget::rebuildConflictWrapper(ConflictGroupUi &ui) {
           &EditSessionWidget::conflictBatchAborted);
 
   m_historyLayout->insertWidget(m_historyLayout->count() - 1, ui.wrapper);
+}
+
+void EditSessionWidget::setResultText(int editNumber, const QString &text) {
+  EditCard *card = cardFor(editNumber);
+
+  if (!card) {
+    card = createEditCard(editNumber, QString());
+  }
+
+  setResultText(card, text);
+}
+
+QVector<EditCommand> EditSessionWidget::collectEditedCommands() const {
+  QVector<EditCommand> result;
+
+  // Preserve numeric order of edit cards.
+  QList<int> keys = m_cards.keys();
+  std::sort(keys.begin(), keys.end());
+
+  for (int key : keys) {
+    EditCard *card = m_cards.value(key, nullptr);
+
+    if (!card || !card->scopeLabel) {
+      continue;
+    }
+
+    EditCommand command;
+
+    const QString scopeText = card->scopeLabel->text();
+
+    command.scopeId = (scopeText == tr("(document root)")) ? QString()
+                                                           : scopeText;
+
+    if (command.scopeId == tr("(unknown)")) {
+      command.scopeId.clear();
+    }
+
+    const QString op = card->operationCombo->currentText().toLower();
+
+    if (op == QStringLiteral("insert")) {
+      command.operation = EditCommand::Operation::Insert;
+    } else if (op == QStringLiteral("delete")) {
+      command.operation = EditCommand::Operation::Delete;
+    } else {
+      command.operation = EditCommand::Operation::Replace;
+    }
+
+    const QString pos = card->positionCombo->currentText().toLower();
+
+    if (pos == QStringLiteral("before")) {
+      command.position = EditCommand::Position::Before;
+    } else if (pos == QStringLiteral("after")) {
+      command.position = EditCommand::Position::After;
+    } else {
+      command.position = EditCommand::Position::Inside;
+    }
+
+    command.findString = card->findEdit->toPlainText();
+    command.instruction = card->instructionEdit->toPlainText();
+
+    // newString is populated later by streaming generation.
+    result.append(command);
+  }
+
+  return result;
+}
+
+void EditSessionWidget::onApprovePlanClicked() {
+  if (!m_planReviewActive) {
+    return;
+  }
+
+  const QVector<EditCommand> commands = collectEditedCommands();
+
+  m_planReviewActive = false;
+  m_planApprovalBar->hide();
+
+  emit planApprovalRequested(commands);
+}
+
+void EditSessionWidget::onCancelPlanClicked() {
+  if (!m_planReviewActive) {
+    return;
+  }
+
+  m_planReviewActive = false;
+  m_planApprovalBar->hide();
+
+  emit planCancelled();
 }

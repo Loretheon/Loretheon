@@ -98,6 +98,58 @@ void ChatWidgetEditFlow::requestNextEditCommand() {
                                  m_widget->m_currentEditRequest);
 }
 
+void ChatWidgetEditFlow::onPlanValidated(
+    const QVector<EditCommand> &commands) {
+  if (!m_widget->m_awaitingEdit) {
+    return;
+  }
+
+  m_widget->m_plannedEdits =
+      QList<EditCommand>(commands.begin(), commands.end());
+
+  m_widget->m_editPhase = ChatWidget::EditPhase::PlanReview;
+
+  m_widget->m_editSessionWidget->clearHistory();
+
+  for (int i = 0; i < m_widget->m_plannedEdits.size(); ++i) {
+    const EditCommand &command = m_widget->m_plannedEdits.at(i);
+
+    const int number = i + 1;
+
+    m_widget->m_editSessionWidget->startEdit(number, command.instruction);
+    m_widget->m_editSessionWidget->setPlanCommand(number, command);
+  }
+
+  m_widget->m_editSessionWidget->showPlanApprovalBar();
+
+  m_widget->appendStatusMessage(
+      QObject::tr("Plan ready. Review and approve to proceed."));
+}
+
+void ChatWidgetEditFlow::onPlanApprovalRequested(
+    const QVector<EditCommand> &editedCommands) {
+  if (!m_widget->m_awaitingEdit || !m_widget->m_editSession) {
+    return;
+  }
+
+  if (editedCommands.isEmpty()) {
+    m_widget->appendStatusMessage(QObject::tr("Plan was emptied."));
+
+    resetState();
+    return;
+  }
+
+  m_widget->m_plannedEdits =
+      QList<EditCommand>(editedCommands.begin(), editedCommands.end());
+
+  m_widget->m_editPhase = ChatWidget::EditPhase::Content;
+
+  if (!m_widget->m_editSession->executePlan(editedCommands)) {
+    // executePlan emits failed(); nothing else to do here.
+    resetState();
+  }
+}
+
 void ChatWidgetEditFlow::beginStreamingResolvedPlan() {
   if (!m_widget->m_awaitingEdit || !m_widget->m_planReadyToStream) {
     return;
@@ -154,6 +206,8 @@ void ChatWidgetEditFlow::executeNextPlannedEdit() {
   }
 
   if (command.operation == EditCommand::Operation::Delete) {
+    ++m_widget->m_nextPlannedEditIndex;
+    executeNextPlannedEdit();
     return;
   }
 
@@ -198,26 +252,10 @@ void ChatWidgetEditFlow::requestEditContent() {
 }
 
 void ChatWidgetEditFlow::onPlanReady(const QVector<EditCommand> &commands) {
+  // executePlan() has already resolved matches; this callback starts the
+  // per-edit streaming phase.
   m_widget->m_plannedEdits =
       QList<EditCommand>(commands.begin(), commands.end());
-
-  m_widget->m_editSessionWidget->clearHistory();
-
-  for (int i = 0; i < m_widget->m_plannedEdits.size(); ++i) {
-    const EditCommand &command = m_widget->m_plannedEdits.at(i);
-
-    const int number = i + 1;
-
-    m_widget->m_editSessionWidget->startEdit(number, command.instruction);
-
-    QString json = QString::fromUtf8(
-        QJsonDocument(ChatWidgetSerialization::editCommandToJson(command))
-            .toJson(QJsonDocument::Indented));
-
-    m_widget->m_editSessionWidget->setCommand(number, json);
-
-    m_widget->m_editSessionWidget->setStatus(number, QObject::tr("Queued"));
-  }
 
   if (m_widget->m_plannedEdits.isEmpty()) {
     m_widget->appendStatusMessage(QObject::tr("No edits required."));
@@ -274,6 +312,9 @@ void ChatWidgetEditFlow::onEditApplied(bool fuzzy, int distance) {
                                             result);
 
   m_widget->appendStatusMessage(result);
+
+  ++m_widget->m_nextPlannedEditIndex;
+  executeNextPlannedEdit();
 }
 
 void ChatWidgetEditFlow::onEditFailed(const QString &reason) {
@@ -297,8 +338,13 @@ void ChatWidgetEditFlow::onEditAborted() {
 }
 
 void ChatWidgetEditFlow::onReviewReady() {
-  m_widget->appendStatusMessage(
-      QObject::tr("All planned edits are ready for review."));
+  // Called by EditSession when a single edit (typically a delete) has
+  // finished streaming and moved to review. Advance the plan cursor so the
+  // next edit can begin.
+  if (m_widget->m_currentEditNumber > 0) {
+    ++m_widget->m_nextPlannedEditIndex;
+    executeNextPlannedEdit();
+  }
 }
 
 void ChatWidgetEditFlow::resetState() {
@@ -313,6 +359,10 @@ void ChatWidgetEditFlow::resetState() {
   m_widget->m_awaitingEdit = false;
   m_widget->m_editGenerationStopped = false;
   m_widget->m_editAbortRequested = false;
+
+  if (m_widget->m_editSessionWidget) {
+    m_widget->m_editSessionWidget->hidePlanApprovalBar();
+  }
 }
 
 QString ChatWidgetEditFlow::describeCommand(const EditCommand &command) const {
@@ -330,6 +380,10 @@ QString ChatWidgetEditFlow::describeCommand(const EditCommand &command) const {
   case EditCommand::Operation::Delete:
     operation = QStringLiteral("Delete");
     break;
+
+  case EditCommand::Operation::Unknown:
+    operation = QStringLiteral("Unknown");
+    break;
   }
 
   QString position;
@@ -341,6 +395,10 @@ QString ChatWidgetEditFlow::describeCommand(const EditCommand &command) const {
 
   case EditCommand::Position::After:
     position = QStringLiteral("after");
+    break;
+
+  case EditCommand::Position::Inside:
+    position = QStringLiteral("inside");
     break;
   }
 

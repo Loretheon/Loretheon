@@ -66,18 +66,31 @@ struct EditCommand {
       cmd.position = Position::Inside;
     }
 
-    // Accept either scopeId or scope from JSON input
     if (json.contains(QStringLiteral("scopeId"))) {
       cmd.scopeId = json.value(QStringLiteral("scopeId")).toString();
     } else {
       cmd.scopeId = json.value(QStringLiteral("scope")).toString();
     }
 
-    cmd.findString = json.value(QStringLiteral("findString")).toString();
-    cmd.newString = json.value(QStringLiteral("newString")).toString();
+    if (json.contains(QStringLiteral("findString"))) {
+      cmd.findString = json.value(QStringLiteral("findString")).toString();
+    } else {
+      cmd.findString = json.value(QStringLiteral("find")).toString();
+    }
+
+    if (json.contains(QStringLiteral("newString"))) {
+      cmd.newString = json.value(QStringLiteral("newString")).toString();
+    } else {
+      cmd.newString = json.value(QStringLiteral("replace")).toString();
+    }
+
     cmd.instruction = json.value(QStringLiteral("instruction")).toString();
-    cmd.replaceAll = json.value(QStringLiteral("replaceAll")).toBool(false);
+
+    if (json.contains(QStringLiteral("replaceAll"))) {
+      cmd.replaceAll = json.value(QStringLiteral("replaceAll")).toBool(false);
+    } else {
+      cmd.replaceAll = json.value(QStringLiteral("all")).toBool(false);
+    }
 
     return cmd;
-  }
-};
+  }};

@@ -10,6 +10,10 @@ struct DocumentNode {
   int start = -1;
   int end = -1;
 
+  // SHA-1 (12 hex chars) of the node's own source text. Used by the token
+  // layer to detect drift without reparsing.
+  QString contentHash;
+
   QVector<DocumentNode> children;
 
   bool isRoot() const { return id == QStringLiteral("document"); }

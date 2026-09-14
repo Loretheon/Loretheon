@@ -69,6 +69,53 @@ const DocumentNode *DocumentStructure::findRecursive(const DocumentNode &node,
   return nullptr;
 }
 
+QString DocumentStructure::contentHashFor(const QString &scopeId) const {
+  const DocumentNode *node = find(scopeId);
+
+  return node ? node->contentHash : QString();
+}
+
+bool DocumentStructure::headingRange(const QString &scopeId, int &start,
+                                     int &end) const {
+  start = -1;
+  end = -1;
+
+  const DocumentNode *node = find(scopeId);
+
+  if (!node || node->type != QStringLiteral("section")) {
+    return false;
+  }
+
+  const int scopeStart = qBound(0, node->start, m_text.size());
+  const int scopeEnd = qBound(scopeStart, node->end, m_text.size());
+
+  if (scopeEnd <= scopeStart) {
+    return false;
+  }
+
+  int cursor = scopeStart;
+
+  while (cursor < scopeEnd) {
+    int lineEnd = m_text.indexOf(QChar('\n'), cursor);
+
+    if (lineEnd < 0 || lineEnd > scopeEnd) {
+      lineEnd = scopeEnd;
+    }
+
+    const QString line = m_text.mid(cursor, lineEnd - cursor).trimmed();
+
+    if (line.startsWith(QChar('#'))) {
+      start = cursor;
+      end = lineEnd;
+      return true;
+    }
+
+    cursor = lineEnd + 1;
+  }
+
+  return false;
+}
+
 QStringList DocumentStructure::scopeIds() const {
   QStringList ids;
 
@@ -76,13 +123,19 @@ QStringList DocumentStructure::scopeIds() const {
     return ids;
   }
 
+  // Always expose the root so the planner can reference the whole
+  // document when no sections exist. Sections are appended afterwards;
+  // duplicates are avoided by the contains() check.
+  ids.append(m_root.id);
+
   appendScopeIdsRecursive(m_root, ids);
   return ids;
 }
 
 void DocumentStructure::appendScopeIdsRecursive(const DocumentNode &node,
                                                 QStringList &ids) const {
-  if (node.type == QStringLiteral("section") && !node.id.isEmpty()) {
+  if (node.type == QStringLiteral("section") && !node.id.isEmpty() &&
+      !ids.contains(node.id)) {
     ids.append(node.id);
   }
 

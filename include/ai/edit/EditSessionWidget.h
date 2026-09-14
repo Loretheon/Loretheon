@@ -1,5 +1,7 @@
 #pragma once
 
+#include "EditCommand.h"
+
 #include <QHash>
 #include <QScrollArea>
 #include <QString>
@@ -9,6 +11,7 @@
 
 class QAbstractButton;
 class QButtonGroup;
+class QComboBox;
 class QFrame;
 class QLabel;
 class QPushButton;
@@ -19,7 +22,7 @@ class EditSessionWidget : public QWidget {
 
 public:
   explicit EditSessionWidget(QWidget *parent = nullptr);
-
+  void setPlanCommand(int editNumber, const EditCommand &command);
   void clearHistory();
 
   void startEdit(int editNumber, const QString &request);
@@ -27,6 +30,8 @@ public:
   void setCommand(int editNumber, const QString &command);
 
   void setTarget(int editNumber, const QString &target);
+
+  void setResultText(int editNumber, const QString &text);
 
   void setStatus(int editNumber, const QString &status);
 
@@ -45,6 +50,12 @@ public:
   void showConflictGroup(int groupId, const QVector<int> &editNumbers);
 
   void clearConflictGroup(int groupId);
+
+  void showPlanApprovalBar();
+
+  void hidePlanApprovalBar();
+
+  bool isPlanReviewActive() const { return m_planReviewActive; }
 
 signals:
   void skipRequested();
@@ -65,6 +76,10 @@ signals:
 
   void conflictBatchAborted();
 
+  void planApprovalRequested(const QVector<EditCommand> &commands);
+
+  void planCancelled();
+
 private:
   struct EditCard {
     QWidget *widget = nullptr;
@@ -77,6 +92,12 @@ private:
     QTextEdit *commandEdit = nullptr;
     QTextEdit *targetEdit = nullptr;
     QTextEdit *resultEdit = nullptr;
+
+    QLabel *scopeLabel = nullptr;
+    QComboBox *operationCombo = nullptr;
+    QComboBox *positionCombo = nullptr;
+    QTextEdit *findEdit = nullptr;
+    QTextEdit *instructionEdit = nullptr;
 
     QWidget *reviewBar = nullptr;
     QPushButton *acceptButton = nullptr;
@@ -109,6 +130,14 @@ private:
 
   void rebuildConflictWrapper(ConflictGroupUi &ui);
 
+  void createPlanEditors(EditCard *card, int editNumber);
+
+  QVector<EditCommand> collectEditedCommands() const;
+
+  void onApprovePlanClicked();
+
+  void onCancelPlanClicked();
+
   QScrollArea *m_scrollArea = nullptr;
   QWidget *m_historyContainer = nullptr;
   QVBoxLayout *m_historyLayout = nullptr;
@@ -120,6 +149,12 @@ private:
   QPushButton *m_applyButton = nullptr;
   QPushButton *m_skipButton = nullptr;
 
+  QWidget *m_planApprovalBar = nullptr;
+  QPushButton *m_approvePlanButton = nullptr;
+  QPushButton *m_cancelPlanButton = nullptr;
+
   QHash<int, EditCard *> m_cards;
   QHash<int, ConflictGroupUi> m_conflictGroups;
+
+  bool m_planReviewActive = false;
 };

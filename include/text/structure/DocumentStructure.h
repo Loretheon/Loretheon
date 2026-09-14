@@ -21,6 +21,16 @@ public:
 
   QStringList scopeIds() const;
 
+  // Returns the cached contentHash for a scope, or an empty string if the
+  // scope is not found or has no hash.
+  QString contentHashFor(const QString &scopeId) const;
+
+  // Returns the character range covering just the heading line of a
+  // Markdown section (i.e. the first line beginning with '#'). For
+  // non-section scopes or headings that cannot be located, returns an
+  // invalid range (start == -1). The returned range is half-open.
+  bool headingRange(const QString &scopeId, int &start, int &end) const;
+
   QString sectionIndexForModel(int maxPreviewCharacters = 80) const;
 
   QString indexForModel(int maxPreviewCharacters = 80) const;

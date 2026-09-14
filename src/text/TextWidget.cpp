@@ -146,6 +146,14 @@ TextWidget::TextWidget(QWidget *parent)
   diagramToolbar->setZoom(1.0);
 }
 
+
+void TextWidget::setContextScopes(const QStringList &scopeIds) {
+  if (textEdit) {
+    textEdit->setHighlightedScopes(scopeIds);
+  }
+}
+
+
 void TextWidget::setThemeTokens(const ThemeTokens &tokens) {
   m_tokens = tokens;
   applyThemeToRenderers();

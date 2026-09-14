@@ -62,6 +62,7 @@ MainWindow::MainWindow() {
 
   themeManager = new ThemeManager(this);
 
+
   textWidget = new TextWidget(this);
   fileWidget = new FileWidget(widget);
   documentManager = new DocumentManager(this);
@@ -75,6 +76,11 @@ MainWindow::MainWindow() {
 
   editSession = new EditSession(textWidget->editor(), this);
   chatWidget = new ChatWidget(inferenceService, editSession, this);
+
+
+  connect(chatWidget, &ChatWidget::contextScopesChanged, textWidget,
+        &TextWidget::setContextScopes);
+
 
   connect(fileWidget, &FileWidget::fileSelected, documentManager,
           &DocumentManager::openFile);

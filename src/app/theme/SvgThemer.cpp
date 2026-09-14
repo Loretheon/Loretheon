@@ -244,23 +244,30 @@ void flattenNestedTspans(QDomDocument &doc) {
 }
 
 double parseFontSizePx(const QString &value) {
-  if (value.isEmpty()) return 0.0;
+  if (value.isEmpty())
+    return 0.0;
 
   static const QRegularExpression re(
       R"(^\s*([0-9]*\.?[0-9]+)\s*(px|pt|em|rem|%)?\s*$)",
       QRegularExpression::CaseInsensitiveOption);
   const auto m = re.match(value);
-  if (!m.hasMatch()) return 0.0;
+  if (!m.hasMatch())
+    return 0.0;
 
   bool ok = false;
   const double num = m.captured(1).toDouble(&ok);
-  if (!ok || num <= 0.0) return 0.0;
+  if (!ok || num <= 0.0)
+    return 0.0;
 
   const QString unit = m.captured(2).toLower();
-  if (unit.isEmpty() || unit == "px") return num;
-  if (unit == "pt") return num * (96.0 / 72.0);
-  if (unit == "em" || unit == "rem") return num * 14.0;
-  if (unit == "%") return num * 14.0 / 100.0;
+  if (unit.isEmpty() || unit == "px")
+    return num;
+  if (unit == "pt")
+    return num * (96.0 / 72.0);
+  if (unit == "em" || unit == "rem")
+    return num * 14.0;
+  if (unit == "%")
+    return num * 14.0 / 100.0;
   return num;
 }
 
@@ -270,7 +277,8 @@ double fontSizeFor(const QDomElement &textEl) {
   // 1) explicit attribute
   if (textEl.hasAttribute("font-size")) {
     const double v = parseFontSizePx(textEl.attribute("font-size"));
-    if (v > 0.0) return v;
+    if (v > 0.0)
+      return v;
   }
 
   // 2) inline style
@@ -281,7 +289,8 @@ double fontSizeFor(const QDomElement &textEl) {
     const auto m = styleRe.match(textEl.attribute("style"));
     if (m.hasMatch()) {
       const double v = parseFontSizePx(m.captured(1).trimmed());
-      if (v > 0.0) return v;
+      if (v > 0.0)
+        return v;
     }
   }
 
@@ -292,7 +301,8 @@ double fontSizeFor(const QDomElement &textEl) {
     if (!p.isNull()) {
       if (p.hasAttribute("font-size")) {
         const double v = parseFontSizePx(p.attribute("font-size"));
-        if (v > 0.0) return v;
+        if (v > 0.0)
+          return v;
       }
       if (p.hasAttribute("style")) {
         static const QRegularExpression styleRe(
@@ -301,7 +311,8 @@ double fontSizeFor(const QDomElement &textEl) {
         const auto m = styleRe.match(p.attribute("style"));
         if (m.hasMatch()) {
           const double v = parseFontSizePx(m.captured(1).trimmed());
-          if (v > 0.0) return v;
+          if (v > 0.0)
+            return v;
         }
       }
     }

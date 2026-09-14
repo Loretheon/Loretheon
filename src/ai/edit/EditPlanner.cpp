@@ -93,11 +93,13 @@ QVector<SectionInfo> collectSections(const DocumentStructure &structure,
   collectSections(structure.root(), documentText, sections);
 
   /*
-   * An empty Markdown document has no section nodes, but the
-   * document root itself still has a real scope ID. Use that
-   * existing root scope instead of inventing an empty scope ID.
+   * When a document has no section nodes at all — whether because it is
+   * empty or because it contains only non-heading content — the root
+   * itself is the only valid edit target. Expose it so the planner has a
+   * scope to reference and so that empty-scope commands can be
+   * normalized to the root's actual ID.
    */
-  if (sections.isEmpty() && documentText.isEmpty()) {
+  if (sections.isEmpty()) {
     const DocumentNode &root = structure.root();
 
     if (!root.id.isEmpty()) {
@@ -119,6 +121,16 @@ QString scopeMap(const QVector<SectionInfo> &sections) {
   return lines.join('\n');
 }
 
+QString hierarchyMap(const QVector<SectionInfo> &sections) {
+  QStringList lines;
+
+  for (const SectionInfo &section : sections) {
+    lines.append(QStringLiteral("  %1").arg(section.scopeId));
+  }
+
+  return lines.join('\n');
+}
+
 const SectionInfo *findSection(const QVector<SectionInfo> &sections,
                                const QString &scopeId) {
   for (const SectionInfo &section : sections) {
@@ -128,6 +140,40 @@ const SectionInfo *findSection(const QVector<SectionInfo> &sections,
   }
 
   return nullptr;
+}
+
+// A scope ID is equivalent to another if they match exactly, or if one is
+// empty and the other is the document root section (range covering the
+// whole document starting at offset zero).
+bool scopeIdsEquivalent(const QString &a, const QString &b,
+                        const QVector<SectionInfo> &sections) {
+  if (a == b) {
+    return true;
+  }
+
+  const auto isRootSection = [](const SectionInfo &s) {
+    return s.start == 0;
+  };
+
+  if (a.isEmpty()) {
+    for (const SectionInfo &s : sections) {
+      if (s.scopeId == b) {
+        return isRootSection(s);
+      }
+    }
+    return false;
+  }
+
+  if (b.isEmpty()) {
+    for (const SectionInfo &s : sections) {
+      if (s.scopeId == a) {
+        return isRootSection(s);
+      }
+    }
+    return false;
+  }
+
+  return false;
 }
 
 QVector<const SectionInfo *>
@@ -235,6 +281,9 @@ QString operationName(const EditCommand &command) {
 
   case EditCommand::Operation::Delete:
     return QStringLiteral("delete");
+
+  case EditCommand::Operation::Unknown:
+    return QStringLiteral("unknown");
   }
 
   return {};
@@ -247,6 +296,9 @@ QString positionName(const EditCommand &command) {
 
   case EditCommand::Position::After:
     return QStringLiteral("after");
+
+  case EditCommand::Position::Inside:
+    return QStringLiteral("inside");
   }
 
   return {};
@@ -412,7 +464,7 @@ void EditPlanner::start(TextEdit *editor, const QString &userRequest) {
           "instruction must describe exactly what this single edit "
           "should accomplish, including all requested details.\n"
           "\n"
-          "Heading-to-scope mapping:\n"
+          "Scope hierarchy:\n"
           "%3\n"
           "\n"
           "Document structure:\n"
@@ -424,8 +476,9 @@ void EditPlanner::start(TextEdit *editor, const QString &userRequest) {
           "Document:\n"
           "%7")
           .arg(targetLines.join('\n'), operationName(requestedOp),
-               scopeMap(sections), document->structure().sectionIndexForModel(),
-               m_userRequest, selectionContext, documentText);
+               hierarchyMap(sections),
+               document->structure().sectionIndexForModel(), m_userRequest,
+               selectionContext, documentText);
 
   m_payloadLogger.log(
       QStringLiteral("EDIT_PLAN_REQUEST"),
@@ -447,6 +500,14 @@ void EditPlanner::start(TextEdit *editor, const QString &userRequest) {
                   {QStringLiteral("content"), prompt}});
 
   m_active = true;
+
+  QStringList contextScopeIds;
+
+  for (const SectionInfo *section : targets) {
+    contextScopeIds.append(section->scopeId);
+  }
+
+  emit contextScopes(contextScopeIds);
 
   m_inferenceService->sendChatRequest(messages, QString(), 0.7, 120000,
                                       EditGrammar::gbnf(scopeIds));
@@ -740,7 +801,24 @@ void EditPlanner::processStream() {
 
     const SectionInfo *section = findSection(sections, command.scopeId);
 
-    if (!section) {
+    // An empty scope ID is the legacy signal for the document root. Accept
+    // it only for insertions into an empty document; otherwise require a
+    // concrete scope.
+    if (!section && command.scopeId.isEmpty()) {
+      if (command.operation != EditCommand::Operation::Insert) {
+        emit failed(QStringLiteral("Edit plan item %1 uses an empty scope but "
+                                   "is not an insertion.")
+                        .arg(i + 1));
+        return;
+      }
+
+      if (!documentText.isEmpty()) {
+        emit failed(QStringLiteral("Edit plan item %1 uses an empty scope but "
+                                   "the document is not empty.")
+                        .arg(i + 1));
+        return;
+      }
+    } else if (!section) {
       emit failed(
           QStringLiteral("Edit plan item %1 contains an invalid scope ID: %2")
               .arg(i + 1)
@@ -771,7 +849,7 @@ void EditPlanner::processStream() {
       bool validTarget = false;
 
       for (const SectionInfo *target : targets) {
-        if (target->scopeId == command.scopeId) {
+        if (scopeIdsEquivalent(target->scopeId, command.scopeId, sections)) {
           validTarget = true;
           break;
         }
@@ -810,7 +888,7 @@ void EditPlanner::processStream() {
         return;
       }
 
-      if (!findExistsInScope(command, *section, documentText)) {
+      if (!section || !findExistsInScope(command, *section, documentText)) {
 
         emit failed(QStringLiteral("Edit plan item %1 uses find text that does "
                                    "not exist in the selected scope.")
@@ -847,17 +925,37 @@ void EditPlanner::processStream() {
     QSet<QString> seenScopes;
 
     for (const EditCommand &edit : edits) {
-      if (seenScopes.contains(edit.scopeId)) {
+      QString key = edit.scopeId;
+
+      if (key.isEmpty()) {
+        for (const SectionInfo &s : sections) {
+          if (s.start == 0) {
+            key = s.scopeId;
+            break;
+          }
+        }
+      }
+
+      if (seenScopes.contains(key)) {
         emit failed(QStringLiteral(
             "The planner produced multiple edits for the same section."));
         return;
       }
 
-      seenScopes.insert(edit.scopeId);
+      seenScopes.insert(key);
     }
 
     for (const SectionInfo *target : targets) {
-      if (!seenScopes.contains(target->scopeId)) {
+      bool covered = false;
+
+      for (const QString &seen : seenScopes) {
+        if (scopeIdsEquivalent(target->scopeId, seen, sections)) {
+          covered = true;
+          break;
+        }
+      }
+
+      if (!covered) {
         emit failed(QStringLiteral(
             "The planner did not produce an edit for a requested section."));
         return;
@@ -875,12 +973,21 @@ void EditPlanner::processStream() {
     return;
   }
 
+  QStringList contextScopeIds;
+
+  for (const SectionInfo *target : targets) {
+    contextScopeIds.append(target->scopeId);
+  }
+
+  emit contextScopes(contextScopeIds);
+
   /*
    * The final planner token is still being delivered to every
-   * llmDelta receiver when this code runs. Defer planReady() so
-   * ChatWidget cannot start the next LLM request from inside the
+   * llmDelta receiver when this code runs. Defer planValidated() so
+   * downstream code cannot start the next LLM request from inside the
    * same llmDelta emission.
    */
   QMetaObject::invokeMethod(
-      this, [this, edits]() { emit planReady(edits); }, Qt::QueuedConnection);
+      this, [this, edits]() { emit planValidated(edits); },
+      Qt::QueuedConnection);
 }

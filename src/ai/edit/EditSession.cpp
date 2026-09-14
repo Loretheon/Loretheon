@@ -6,6 +6,8 @@
 #include "../../text/TextEdit.h"
 #include "../../text/model/TextDocument.h"
 
+#include <QDebug>
+
 #include <algorithm>
 
 namespace {
@@ -78,7 +80,7 @@ void EditSession::detectConflicts() {
   }
 }
 
-bool EditSession::resolvePlan(const QJsonArray &planArray) {
+bool EditSession::validatePlan(const QJsonArray &planArray) {
   abort();
 
   if (!m_editor) {
@@ -92,8 +94,172 @@ bool EditSession::resolvePlan(const QJsonArray &planArray) {
     return false;
   }
 
+  setState(State::ValidatingPlan);
+
+  QVector<EditCommand> commands;
+  commands.reserve(planArray.size());
+
+  for (int i = 0; i < planArray.size(); ++i) {
+    const QJsonValue value = planArray.at(i);
+
+    if (!value.isObject()) {
+      setState(State::Idle);
+      emit failed(
+          QStringLiteral("Plan item %1 is not an object.").arg(i + 1));
+      return false;
+    }
+
+    const EditCommand command = EditCommand::fromJson(value.toObject());
+
+    qDebug() << "[VALIDATE] item" << i << "operation raw ="
+             << value.toObject().value(QStringLiteral("operation")).toString()
+             << "mapped =" << static_cast<int>(command.operation)
+             << "scope =" << command.scopeId
+             << "find =" << command.findString;
+
+    if (!command.isCommandValid()) {
+      setState(State::Idle);
+      emit failed(
+          QStringLiteral("Plan item %1 is not a valid edit command.")
+              .arg(i + 1));
+      return false;
+    }
+
+    commands.append(command);
+  }
+
+  if (commands.isEmpty()) {
+    setState(State::Idle);
+    emit failed(QStringLiteral("Plan contains no valid edit commands."));
+    return false;
+  }
+
   document->rebuildStructure();
+
+  const DocumentStructure &structure = document->structure();
+
+  for (int i = 0; i < commands.size(); ++i) {
+    const EditCommand &command = commands.at(i);
+
+    if (command.scopeId.isEmpty()) {
+      if (command.operation != EditCommand::Operation::Insert) {
+        setState(State::Idle);
+        emit failed(
+            QStringLiteral("Plan item %1 uses an empty scope but is not an "
+                           "insertion.")
+                .arg(i + 1));
+        return false;
+      }
+
+      continue;
+    }
+
+    if (!structure.find(command.scopeId)) {
+      setState(State::Idle);
+      emit failed(QStringLiteral("Plan item %1 references unknown scope '%2'.")
+                      .arg(i + 1)
+                      .arg(command.scopeId));
+      return false;
+    }
+  }
+
   m_documentRevision = document->revision();
+
+  setState(State::AwaitingPlanApproval);
+
+  emit planValidated(commands);
+  return true;
+}
+
+bool EditSession::executePlan(const QVector<EditCommand> &commands) {
+  qDebug() << "[EXECUTE] received" << commands.size() << "commands";
+
+  for (int i = 0; i < commands.size(); ++i) {
+    const EditCommand &c = commands.at(i);
+    qDebug() << "  [" << i << "]"
+             << "operation =" << static_cast<int>(c.operation)
+             << "scope =" << c.scopeId
+             << "position =" << static_cast<int>(c.position)
+             << "find =" << c.findString
+             << "instruction =" << c.instruction;
+  }
+
+  if (!m_editor) {
+    emit failed(noActiveEditorError());
+    return false;
+  }
+
+  TextDocument *document = qobject_cast<TextDocument *>(m_editor->document());
+  if (!document) {
+    emit failed(invalidDocumentError());
+    return false;
+  }
+
+  if (commands.isEmpty()) {
+    emit failed(QStringLiteral("Approved plan is empty."));
+    return false;
+  }
+
+  document->rebuildStructure();
+
+  if (m_documentRevision != InvalidRevision &&
+      document->revision() != m_documentRevision) {
+    setState(State::Idle);
+    emit failed(QStringLiteral(
+        "Document changed after plan validation. Please re-plan."));
+    return false;
+  }
+
+  m_pendingEdits.clear();
+
+  setState(State::Matching);
+
+  m_documentRevision = document->revision();
+
+  for (int index = 0; index < commands.size(); ++index) {
+    const EditCommand &command = commands.at(index);
+
+    qDebug() << "[EXECUTE] resolving item" << index
+             << "operation =" << static_cast<int>(command.operation);
+
+    EditMatch match;
+
+    if (!resolveCommand(command, match)) {
+      setState(State::Idle);
+      return false;
+    }
+
+    qDebug() << "[EXECUTE] resolved item" << index
+             << "start =" << match.start
+             << "end =" << match.end;
+
+    PendingEdit edit;
+    edit.id = index + 1;
+    edit.command = command;
+    edit.match = match;
+    edit.accepted = true;
+    edit.completed = false;
+
+    m_pendingEdits.append(edit);
+  }
+
+  detectConflicts();
+
+  if (hasConflicts()) {
+    emit conflictsDetected();
+  }
+
+  setState(State::WaitingForReview);
+  emit planReady(commands);
+  emit pendingEditsChanged();
+
+  return true;
+}
+
+bool EditSession::resolvePlan(const QJsonArray &planArray) {
+  if (!validatePlan(planArray)) {
+    return false;
+  }
 
   QVector<EditCommand> commands;
   commands.reserve(planArray.size());
@@ -110,38 +276,7 @@ bool EditSession::resolvePlan(const QJsonArray &planArray) {
     }
   }
 
-  if (commands.isEmpty()) {
-    emit failed(QStringLiteral("Plan contains no valid edit commands."));
-    return false;
-  }
-
-  m_pendingEdits.reserve(m_pendingEdits.size() + commands.size());
-
-  for (int index = 0; index < commands.size(); ++index) {
-    EditMatch match;
-
-    if (!resolveCommand(commands.at(index), match)) {
-      continue;
-    }
-
-    PendingEdit edit;
-    edit.id = index + 1;
-    edit.command = commands.at(index);
-    edit.match = match;
-    edit.accepted = true;
-    edit.completed = false;
-
-    m_pendingEdits.append(edit);
-  }
-
-  detectConflicts();
-
-  if (hasConflicts()) {
-    emit conflictsDetected();
-  }
-
-  emit planReady(commands);
-  return true;
+  return executePlan(commands);
 }
 
 bool EditSession::propose(const EditCommand &command) {
@@ -500,9 +635,16 @@ bool EditSession::resolveCommand(const EditCommand &command, EditMatch &match) {
     return false;
   }
 
+  qDebug() << "[RESOLVE] operation =" << static_cast<int>(command.operation)
+           << "(Insert =" << static_cast<int>(EditCommand::Operation::Insert)
+           << ") scope =" << command.scopeId;
+
   if (command.operation == EditCommand::Operation::Insert) {
+    qDebug() << "[RESOLVE] routing to createInsertionMatch";
     return createInsertionMatch(command, match);
   }
+
+  qDebug() << "[RESOLVE] routing to EditMatcher::find";
 
   const EditMatcher::Result result = m_matcher.find(*document, command);
 
@@ -585,7 +727,9 @@ bool EditSession::createInsertionMatch(const EditCommand &command,
   const QString documentText = document->toPlainText();
   const int documentLength = documentText.size();
 
-  // An empty scope represents the synthetic document root.
+  const DocumentStructure &structure = document->structure();
+  const DocumentNode *scope = nullptr;
+
   if (command.scopeId.isEmpty()) {
     if (!documentText.isEmpty()) {
       emit failed(
@@ -594,37 +738,30 @@ bool EditSession::createInsertionMatch(const EditCommand &command,
 
       return false;
     }
+  } else {
+    scope = structure.find(command.scopeId);
 
-    if (!command.findString.isEmpty()) {
-      emit failed(
-          QStringLiteral("The empty document root cannot have an insertion "
-                         "anchor."));
+    if (!scope) {
+      emit failed(QStringLiteral("Insertion scope '%1' was not found.")
+                      .arg(command.scopeId));
 
       return false;
     }
-
-    match.start = 0;
-    match.end = 0;
-    match.highlightStart = 0;
-    match.highlightEnd = documentLength;
-    match.editDistance = 0;
-    match.matchedText.clear();
-
-    return true;
   }
 
-  const DocumentStructure &structure = document->structure();
-  const DocumentNode *scope = structure.find(command.scopeId);
+  const int scopeStart = scope ? scope->start : 0;
+  const int scopeEnd = scope ? scope->end : documentLength;
 
-  if (!scope) {
-    emit failed(QStringLiteral("Insertion scope '%1' was not found.")
-                    .arg(command.scopeId));
+  const bool scopeIsRoot =
+      scopeStart == 0 && scopeEnd == documentLength && documentLength > 0;
+
+  if (scopeIsRoot) {
+    emit failed(
+        QStringLiteral("Cannot insert into the document root of a non-empty "
+                       "document. Choose a section."));
 
     return false;
   }
-
-  const int scopeStart = scope->start;
-  const int scopeEnd = scope->end;
 
   const bool validStart = scopeStart >= 0 && scopeStart <= documentLength;
 

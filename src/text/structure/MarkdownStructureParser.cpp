@@ -4,19 +4,14 @@
 #include <tree_sitter/api.h>
 
 #include <QByteArray>
+#include <QCryptographicHash>
+#include <QRegularExpression>
 #include <QString>
 
 namespace {
 
-QString nodeId(const TSNode &node) {
-  if (ts_node_is_null(node)) {
-    return {};
-  }
-
-  const auto rawId = reinterpret_cast<quintptr>(node.id);
-
-  return QStringLiteral("ts:%1").arg(static_cast<qulonglong>(rawId), 0, 16);
-}
+constexpr int StableHashLength = 6;
+constexpr int ContentHashLength = 12;
 
 bool ensureParser(TSParser *&parser) {
   if (parser) {
@@ -103,6 +98,35 @@ int utf16Offset(const QByteArray &utf8, uint32_t byteOffset) {
   return QString::fromUtf8(utf8.constData(), offset).size();
 }
 
+QString firstHeadingLine(const QString &text, int start, int end) {
+  const int safeStart = qBound(0, start, text.size());
+  const int safeEnd = qBound(safeStart, end, text.size());
+
+  if (safeEnd <= safeStart) {
+    return {};
+  }
+
+  int cursor = safeStart;
+
+  while (cursor < safeEnd) {
+    int lineEnd = text.indexOf(QChar('\n'), cursor);
+
+    if (lineEnd < 0 || lineEnd > safeEnd) {
+      lineEnd = safeEnd;
+    }
+
+    const QString line = text.mid(cursor, lineEnd - cursor).trimmed();
+
+    if (line.startsWith(QChar('#'))) {
+      return line;
+    }
+
+    cursor = lineEnd + 1;
+  }
+
+  return {};
+}
+
 } // namespace
 
 DocumentStructure MarkdownStructureParser::parse(const QString &text) const {
@@ -132,9 +156,9 @@ DocumentStructure MarkdownStructureParser::parse(const QString &text) const {
 
   const TSNode rootNode = ts_tree_root_node(tree);
 
-  DocumentNode root = makeNode(rootNode, text);
+  DocumentNode root = makeNode(rootNode, text, QString());
 
-  appendChildren(rootNode, root, text);
+  appendChildren(rootNode, root, text, QString());
 
   structure.setRoot(std::move(root));
 
@@ -180,9 +204,9 @@ MarkdownStructureParser::parse(const QString &text, TSParser *&parser,
 
   const TSNode rootNode = ts_tree_root_node(tree);
 
-  DocumentNode root = makeNode(rootNode, text);
+  DocumentNode root = makeNode(rootNode, text, QString());
 
-  appendChildren(rootNode, root, text);
+  appendChildren(rootNode, root, text, QString());
 
   structure.setRoot(std::move(root));
 
@@ -207,8 +231,76 @@ void MarkdownStructureParser::destroyTree(TSTree *&tree) {
   tree = nullptr;
 }
 
+QString MarkdownStructureParser::slugify(const QString &text) {
+  QString result = text.trimmed();
+
+  while (result.startsWith(QChar('#'))) {
+    result.remove(0, 1);
+  }
+
+  result = result.trimmed();
+
+  static const QRegularExpression inlineMarkup(QStringLiteral("[`*_~]"));
+
+  result.remove(inlineMarkup);
+
+  result = result.toLower();
+
+  static const QRegularExpression nonAlnum(QStringLiteral("[^a-z0-9]+"));
+
+  result.replace(nonAlnum, QStringLiteral("-"));
+
+  while (result.startsWith(QChar('-'))) {
+    result.remove(0, 1);
+  }
+
+  while (result.endsWith(QChar('-'))) {
+    result.chop(1);
+  }
+
+  if (result.isEmpty()) {
+    result = QStringLiteral("section");
+  }
+
+  return result;
+}
+
+QString MarkdownStructureParser::makeStableId(const QString &parentChain,
+                                              const QString &headingLine) {
+  const QString slug = slugify(headingLine);
+
+  const QByteArray hashInput =
+      (parentChain + QStringLiteral("|") + headingLine).toUtf8();
+
+  const QByteArray digest =
+      QCryptographicHash::hash(hashInput, QCryptographicHash::Sha1);
+
+  const QString hashHex =
+      QString::fromLatin1(digest.toHex()).left(StableHashLength);
+
+  return QStringLiteral("md:section:%1#%2").arg(slug, hashHex);
+}
+
+QString MarkdownStructureParser::contentHashFor(const QString &text, int start,
+                                                int end) {
+  const int safeStart = qBound(0, start, text.size());
+  const int safeEnd = qBound(safeStart, end, text.size());
+
+  if (safeEnd <= safeStart) {
+    return {};
+  }
+
+  const QByteArray utf8 = text.mid(safeStart, safeEnd - safeStart).toUtf8();
+
+  const QByteArray digest =
+      QCryptographicHash::hash(utf8, QCryptographicHash::Sha1);
+
+  return QString::fromLatin1(digest.toHex()).left(ContentHashLength);
+}
+
 DocumentNode MarkdownStructureParser::makeNode(const TSNode &node,
-                                               const QString &text) {
+                                               const QString &text,
+                                               const QString &parentChain) {
   DocumentNode result;
 
   if (ts_node_is_null(node)) {
@@ -217,19 +309,35 @@ DocumentNode MarkdownStructureParser::makeNode(const TSNode &node,
 
   const QByteArray utf8 = text.toUtf8();
 
-  result.id = nodeId(node);
   result.type = QString::fromUtf8(ts_node_type(node));
 
   result.start = utf16Offset(utf8, ts_node_start_byte(node));
 
   result.end = utf16Offset(utf8, ts_node_end_byte(node));
 
+  // The root node always gets a stable identifier so callers have a
+  // well-known way to reference the whole document. Section nodes get
+  // content-derived IDs. All other nodes stay anonymous.
+  if (ts_node_is_null(ts_node_parent(node))) {
+    result.id = QStringLiteral("document");
+  } else if (result.type == QStringLiteral("section")) {
+    const QString headingLine =
+        firstHeadingLine(text, result.start, result.end);
+
+    result.id = makeStableId(parentChain, headingLine);
+  }
+
+  if (result.end > result.start) {
+    result.contentHash = contentHashFor(text, result.start, result.end);
+  }
+
   return result;
 }
 
 void MarkdownStructureParser::appendChildren(const TSNode &node,
                                              DocumentNode &parent,
-                                             const QString &text) {
+                                             const QString &text,
+                                             const QString &parentChain) {
   const uint32_t childCount = ts_node_named_child_count(node);
 
   for (uint32_t index = 0; index < childCount; ++index) {
@@ -239,9 +347,20 @@ void MarkdownStructureParser::appendChildren(const TSNode &node,
       continue;
     }
 
-    DocumentNode childNode = makeNode(child, text);
+    QString childChain = parentChain;
 
-    appendChildren(child, childNode, text);
+    DocumentNode childNode = makeNode(child, text, parentChain);
+
+    if (childNode.type == QStringLiteral("section")) {
+      const QString slug =
+          slugify(firstHeadingLine(text, childNode.start, childNode.end));
+
+      childChain = parentChain.isEmpty()
+                       ? slug
+                       : parentChain + QStringLiteral("/") + slug;
+    }
+
+    appendChildren(child, childNode, text, childChain);
 
     parent.children.append(std::move(childNode));
   }

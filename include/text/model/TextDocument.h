@@ -29,6 +29,10 @@ public:
 
   void rebuildStructure() const;
 
+  // Convenience accessor for the token layer. Returns the cached content
+  // hash for a scope, or an empty string if the scope is unknown.
+  QString scopeContentHash(const QString &scopeId) const;
+
 private:
   QString path;
 
@@ -38,10 +42,6 @@ private:
 
   mutable int m_structureRevision = -1;
 
-  /*
-   * Markdown parser state is kept with the document so
-   * Tree-sitter can incrementally reparse after edits.
-   */
   mutable TSParser *m_markdownParser = nullptr;
 
   mutable TSTree *m_markdownTree = nullptr;

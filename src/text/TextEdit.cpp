@@ -4,8 +4,11 @@
 #include "../../include/text/formats/HTMLFormatDelegate.h"
 #include "../../include/text/formats/MarkdownFormatDelegate.h"
 #include "DocumentMode.h"
+#include "TextDocument.h"
 
 #include <QCheckBox>
+#include <QColor>
+#include <QComboBox>
 #include <QFile>
 #include <QFileInfo>
 #include <QHBoxLayout>
@@ -16,6 +19,7 @@
 #include <QResizeEvent>
 #include <QScrollArea>
 #include <QSettings>
+#include <QStringList>
 #include <QTextCharFormat>
 #include <QTextCursor>
 #include <QTextStream>
@@ -28,6 +32,7 @@ namespace {
 
 constexpr auto LastOpenedFileKey = "document/lastOpenedFile";
 constexpr auto AutoAcceptEditsKey = "editing/autoAcceptEdits";
+constexpr auto HighlightModeKey = "editing/highlightMode";
 
 constexpr int ReviewBarHorizontalMargin = 8;
 constexpr int ReviewBarVerticalMargin = 6;
@@ -61,6 +66,21 @@ TextEdit::TextEdit(QWidget *parent) : QPlainTextEdit(parent) {
   setMouseTracking(true);
 
   m_autoAcceptEdits = settings.value(AutoAcceptEditsKey, false).toBool();
+
+  const int storedHighlightMode =
+      settings.value(HighlightModeKey, 0).toInt();
+
+  switch (storedHighlightMode) {
+  case 1:
+    m_highlightMode = HighlightMode::Sent;
+    break;
+  case 2:
+    m_highlightMode = HighlightMode::Both;
+    break;
+  default:
+    m_highlightMode = HighlightMode::Intent;
+    break;
+  }
 
   setupToolbar();
   setupReviewBar();
@@ -131,7 +151,6 @@ void TextEdit::mouseMoveEvent(QMouseEvent *event) {
 void TextEdit::setupToolbar() {
   m_toolbar = new Toolbar(this);
 
-  // Set initial geometry across the top
   m_toolbar->setGeometry(0, 0, width(), m_toolbar->sizeHint().height());
 
   setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
@@ -162,6 +181,28 @@ void TextEdit::setupReviewBar() {
 
   m_autoAcceptCheckBox->setChecked(m_autoAcceptEdits);
 
+  m_highlightModeCombo = new QComboBox(m_reviewBar);
+
+  m_highlightModeCombo->addItem(tr("Intent"), QVariant::fromValue(0));
+  m_highlightModeCombo->addItem(tr("Sent"), QVariant::fromValue(1));
+  m_highlightModeCombo->addItem(tr("Both"), QVariant::fromValue(2));
+
+  m_highlightModeCombo->setToolTip(
+      tr("Choose how scopes referenced by the assistant are highlighted."));
+
+  switch (m_highlightMode) {
+  case HighlightMode::Sent:
+    m_highlightModeCombo->setCurrentIndex(1);
+    break;
+  case HighlightMode::Both:
+    m_highlightModeCombo->setCurrentIndex(2);
+    break;
+  case HighlightMode::Intent:
+  default:
+    m_highlightModeCombo->setCurrentIndex(0);
+    break;
+  }
+
   m_reviewScrollArea = new QScrollArea(m_reviewBar);
 
   m_reviewScrollArea->setWidgetResizable(true);
@@ -182,6 +223,7 @@ void TextEdit::setupReviewBar() {
 
   controls->addWidget(m_reviewSummary);
   controls->addStretch();
+  controls->addWidget(m_highlightModeCombo);
   controls->addWidget(m_acceptAllButton);
   controls->addWidget(m_rejectAllButton);
   controls->addWidget(m_autoAcceptCheckBox);
@@ -205,6 +247,22 @@ void TextEdit::setupReviewBar() {
   connect(m_autoAcceptCheckBox, &QCheckBox::toggled, this,
           &TextEdit::setAutoAcceptEdits);
 
+  connect(m_highlightModeCombo, &QComboBox::currentIndexChanged, this,
+          [this](int index) {
+            switch (index) {
+            case 1:
+              setHighlightMode(HighlightMode::Sent);
+              break;
+            case 2:
+              setHighlightMode(HighlightMode::Both);
+              break;
+            case 0:
+            default:
+              setHighlightMode(HighlightMode::Intent);
+              break;
+            }
+          });
+
   m_reviewBar->hide();
 }
 
@@ -225,6 +283,12 @@ void TextEdit::setDocumentMode(DocumentMode mode) {
     break;
 
   case DocumentMode::PlainText:
+    m_delegate.reset();
+    break;
+
+  case DocumentMode::Dot:
+  case DocumentMode::PlantUml:
+  case DocumentMode::Mermaid:
     m_delegate.reset();
     break;
   }
@@ -302,7 +366,7 @@ void TextEdit::setPendingEditAccepted(int editId, bool accepted) {
   it->accepted = accepted;
 
   updateReviewBar();
-  updatePendingHighlight();
+  updateAllHighlights();
 
   if (accepted) {
     emit acceptPendingEditRequested(editId);
@@ -314,34 +378,89 @@ void TextEdit::setPendingEditAccepted(int editId, bool accepted) {
 void TextEdit::showPendingEdit(const PendingEdit &edit) {
   m_pendingEdits.insert(edit.id, edit);
 
-  updatePendingHighlight();
+  updateAllHighlights();
   updateReviewBar();
 }
 
 void TextEdit::updatePendingEdit(const PendingEdit &edit) {
   m_pendingEdits.insert(edit.id, edit);
 
-  updatePendingHighlight();
+  updateAllHighlights();
   updateReviewBar();
 }
 
 void TextEdit::removePendingEdit(int editId) {
   m_pendingEdits.remove(editId);
 
-  updatePendingHighlight();
+  updateAllHighlights();
   updateReviewBar();
 }
 
 void TextEdit::clearPendingEdits() {
   m_pendingEdits.clear();
 
-  updatePendingHighlight();
+  updateAllHighlights();
   updateReviewBar();
 }
 
 void TextEdit::refreshPendingEdits() {
-  updatePendingHighlight();
+  updateAllHighlights();
   updateReviewBar();
+}
+
+void TextEdit::setHighlightedScopes(const QStringList &scopeIds) {
+  if (m_highlightedScopes == scopeIds) {
+    return;
+  }
+
+  m_highlightedScopes = scopeIds;
+
+  updateAllHighlights();
+}
+
+void TextEdit::clearHighlightedScopes() {
+  if (m_highlightedScopes.isEmpty()) {
+    return;
+  }
+
+  m_highlightedScopes.clear();
+
+  updateAllHighlights();
+}
+
+void TextEdit::setHighlightMode(HighlightMode mode) {
+  if (m_highlightMode == mode) {
+    return;
+  }
+
+  m_highlightMode = mode;
+
+  QSettings settings;
+  settings.setValue(HighlightModeKey, static_cast<int>(mode));
+
+  if (m_highlightModeCombo) {
+    int index = 0;
+
+    switch (mode) {
+    case HighlightMode::Sent:
+      index = 1;
+      break;
+    case HighlightMode::Both:
+      index = 2;
+      break;
+    case HighlightMode::Intent:
+    default:
+      index = 0;
+      break;
+    }
+
+    if (m_highlightModeCombo->currentIndex() != index) {
+      QSignalBlocker blocker(m_highlightModeCombo);
+      m_highlightModeCombo->setCurrentIndex(index);
+    }
+  }
+
+  updateAllHighlights();
 }
 
 void TextEdit::rebuildReviewRows() {
@@ -461,8 +580,13 @@ void TextEdit::updateReviewBar() {
   resizeEvent(&event);
 }
 
-void TextEdit::updatePendingHighlight() {
+void TextEdit::updatePendingHighlight() { updateAllHighlights(); }
+
+void TextEdit::updateAllHighlights() {
   QList<QTextEdit::ExtraSelection> selections;
+
+  applyScopeHighlights(selections);
+
   const int documentLength = document()->characterCount();
 
   for (const PendingEdit &edit : std::as_const(m_pendingEdits)) {
@@ -485,7 +609,6 @@ void TextEdit::updatePendingHighlight() {
 
         QTextCursor cursor(document());
         cursor.setPosition(highlightStart);
-
         cursor.setPosition(highlightEnd, QTextCursor::KeepAnchor);
 
         selection.cursor = cursor;
@@ -524,6 +647,82 @@ void TextEdit::updatePendingHighlight() {
   }
 
   setExtraSelections(selections);
+}
+
+void TextEdit::applyScopeHighlights(
+    QList<QTextEdit::ExtraSelection> &selections) {
+  if (m_highlightedScopes.isEmpty()) {
+    return;
+  }
+
+  auto *doc = qobject_cast<TextDocument *>(document());
+
+  if (!doc) {
+    return;
+  }
+
+  doc->rebuildStructure();
+
+  const DocumentStructure &structure = doc->structure();
+
+  const QColor accent(137, 180, 250);
+
+  QColor fullTint = accent;
+  fullTint.setAlpha(40);
+
+  QColor headingTint = accent;
+  headingTint.setAlpha(15);
+
+  const int documentLength = document()->characterCount();
+
+  for (const QString &scopeId : std::as_const(m_highlightedScopes)) {
+    const DocumentNode *node = structure.find(scopeId);
+
+    if (!node) {
+      continue;
+    }
+
+    if (m_highlightMode == HighlightMode::Intent ||
+        m_highlightMode == HighlightMode::Both) {
+      const int start = qBound(0, node->start, documentLength);
+      const int end = qBound(start, node->end, documentLength);
+
+      if (end > start) {
+        QTextCursor cursor(document());
+        cursor.setPosition(start);
+        cursor.setPosition(end, QTextCursor::KeepAnchor);
+
+        QTextEdit::ExtraSelection selection;
+        selection.cursor = cursor;
+        selection.format.setBackground(fullTint);
+
+        selections.append(selection);
+      }
+    }
+
+    if (m_highlightMode == HighlightMode::Sent ||
+        m_highlightMode == HighlightMode::Both) {
+      int headingStart = -1;
+      int headingEnd = -1;
+
+      if (structure.headingRange(scopeId, headingStart, headingEnd)) {
+        const int start = qBound(0, headingStart, documentLength);
+        const int end = qBound(start, headingEnd, documentLength);
+
+        if (end > start) {
+          QTextCursor cursor(document());
+          cursor.setPosition(start);
+          cursor.setPosition(end, QTextCursor::KeepAnchor);
+
+          QTextEdit::ExtraSelection selection;
+          selection.cursor = cursor;
+          selection.format.setBackground(headingTint);
+
+          selections.append(selection);
+        }
+      }
+    }
+  }
 }
 
 QString TextEdit::pendingEditSummary(const PendingEdit &edit) const {
@@ -1001,7 +1200,6 @@ void TextEdit::resizeEvent(QResizeEvent *event) {
 
   const int toolbarHeight = m_toolbar->sizeHint().height();
 
-  // Position and resize the toolbar across the top edge
   m_toolbar->setGeometry(0, 0, width(), toolbarHeight);
 
   int reviewHeight = 0;

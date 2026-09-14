@@ -15,8 +15,70 @@
 #include "../text/TextEdit.h"
 
 #include <QCheckBox>
+#include <QJsonArray>
+#include <QJsonObject>
 #include <QLineEdit>
 #include <QPushButton>
+
+namespace {
+
+QJsonObject commandToPlanJson(const EditCommand &command) {
+  QString operation;
+
+  switch (command.operation) {
+  case EditCommand::Operation::Insert:
+    operation = QStringLiteral("insert");
+    break;
+
+  case EditCommand::Operation::Replace:
+    operation = QStringLiteral("replace");
+    break;
+
+  case EditCommand::Operation::Delete:
+    operation = QStringLiteral("delete");
+    break;
+
+  case EditCommand::Operation::Unknown:
+    operation = QStringLiteral("unknown");
+    break;
+  }
+
+  QString position;
+
+  switch (command.position) {
+  case EditCommand::Position::Before:
+    position = QStringLiteral("before");
+    break;
+
+  case EditCommand::Position::After:
+    position = QStringLiteral("after");
+    break;
+
+  case EditCommand::Position::Inside:
+    position = QStringLiteral("inside");
+    break;
+  }
+
+  return QJsonObject{
+      {QStringLiteral("operation"), operation},
+      {QStringLiteral("scope"), command.scopeId},
+      {QStringLiteral("position"), position},
+      {QStringLiteral("find"), command.findString},
+      {QStringLiteral("all"), command.replaceAll},
+      {QStringLiteral("instruction"), command.instruction}};
+}
+
+QJsonArray commandsToPlanJson(const QVector<EditCommand> &commands) {
+  QJsonArray array;
+
+  for (const EditCommand &command : commands) {
+    array.append(commandToPlanJson(command));
+  }
+
+  return array;
+}
+
+} // namespace
 
 ChatWidget::ChatWidget(InferenceService *inferenceService,
                        EditSession *editSession, QWidget *parent)
@@ -46,12 +108,22 @@ ChatWidget::ChatWidget(InferenceService *inferenceService,
   if (m_inferenceService) {
     m_editPlanner = new EditPlanner(m_inferenceService, this);
 
-    connect(m_editPlanner, &EditPlanner::planReady, m_editFlow,
-            &ChatWidgetEditFlow::onPlanReady);
+    connect(m_editPlanner, &EditPlanner::planValidated, this,
+            &ChatWidget::onPlanValidated);
 
     connect(m_editPlanner, &EditPlanner::failed, m_editFlow,
             &ChatWidgetEditFlow::onPlanFailed);
+
+
+    connect(m_editPlanner, &EditPlanner::contextScopes, this,
+        [this](const QStringList &scopeIds) {
+          emit contextScopesChanged(scopeIds);
+        });
+
+    
   }
+
+
 
   connect(m_sendButton, &QPushButton::clicked, this,
           &ChatWidget::onSendClicked);
@@ -82,11 +154,23 @@ ChatWidget::ChatWidget(InferenceService *inferenceService,
     connect(m_editSession, &EditSession::aborted, m_editFlow,
             &ChatWidgetEditFlow::onEditAborted);
 
-    connect(m_editSession, &EditSession::planReady, m_editFlow,
-            &ChatWidgetEditFlow::onPlanReady);
+    connect(m_editSession, &EditSession::planValidated, this,
+            &ChatWidget::onPlanValidatedFromSession);
+
+    connect(m_editSession, &EditSession::planReady, this,
+            &ChatWidget::onPlanReady);
 
     connect(m_editSession, &EditSession::reviewReady, m_editFlow,
             &ChatWidgetEditFlow::onReviewReady);
+
+    connect(m_editSession, &EditSession::pendingEditStarted, this,
+            &ChatWidget::onPendingEditStarted);
+
+    connect(m_editSession, &EditSession::pendingEditUpdated, this,
+            &ChatWidget::onPendingEditUpdated);
+
+    connect(m_editSession, &EditSession::pendingEditFinished, this,
+            &ChatWidget::onPendingEditFinished);
   }
 
   connect(m_editSessionWidget, &EditSessionWidget::pendingEditAccepted, this,
@@ -106,6 +190,12 @@ ChatWidget::ChatWidget(InferenceService *inferenceService,
   connect(m_editSessionWidget,
           &EditSessionWidget::applyAcceptedPendingEditsRequested, this,
           &ChatWidget::onApplyAcceptedPendingEdits);
+
+  connect(m_editSessionWidget, &EditSessionWidget::planApprovalRequested, this,
+          &ChatWidget::onPlanApprovalRequested);
+
+  connect(m_editSessionWidget, &EditSessionWidget::planCancelled, this,
+          &ChatWidget::onPlanCancelled);
 }
 
 void ChatWidget::setActiveEditor(TextEdit *editor) {
@@ -170,13 +260,106 @@ void ChatWidget::renderLastAssistantMessage() {
 }
 
 void ChatWidget::onLlmDelta(const QString &delta) {
+  if (m_editPhase == EditPhase::Content && m_editSession &&
+      m_editSession->state() == EditSession::State::Streaming) {
+    m_editSession->appendStreaming(delta);
+    return;
+  }
+
   appendAssistantChunk(delta);
 }
 
-void ChatWidget::onLlmFinished() { renderLastAssistantMessage(); }
+void ChatWidget::onLlmFinished() {
+  if (m_editPhase == EditPhase::Content && m_editSession &&
+      m_editSession->state() == EditSession::State::Streaming) {
+    m_editSession->finishStreaming();
+    return;
+  }
+
+  renderLastAssistantMessage();
+}
 
 void ChatWidget::onLlmError(const QString &error) {
   appendStatusMessage(tr("Error: %1").arg(error));
+}
+
+void ChatWidget::onPendingEditStarted(const PendingEdit &edit) {
+  if (!m_editSessionWidget) {
+    return;
+  }
+
+  m_editSessionWidget->startEdit(edit.id, edit.command.instruction);
+
+  m_editSessionWidget->setStatus(edit.id, tr("Writing"));
+}
+
+void ChatWidget::onPendingEditUpdated(const PendingEdit &edit) {
+  if (!m_editSessionWidget) {
+    return;
+  }
+
+  m_editSessionWidget->setResultText(edit.id, edit.generatedText);
+}
+
+void ChatWidget::onPendingEditFinished(const PendingEdit &edit) {
+  if (!m_editSessionWidget) {
+    return;
+  }
+
+  m_editSessionWidget->setResultText(edit.id, edit.generatedText);
+
+  m_editSessionWidget->setPendingEditReady(edit.id);
+}
+
+void ChatWidget::onPlanValidated(const QVector<EditCommand> &commands) {
+  if (!m_editSession) {
+    appendStatusMessage(tr("Edit session is unavailable."));
+    return;
+  }
+
+  const QJsonArray planArray = commandsToPlanJson(commands);
+
+  if (!m_editSession->validatePlan(planArray)) {
+    return;
+  }
+}
+
+void ChatWidget::onPlanValidatedFromSession(
+    const QVector<EditCommand> &commands) {
+  if (m_editFlow) {
+    m_editFlow->onPlanValidated(commands);
+  }
+}
+
+void ChatWidget::onPlanApprovalRequested(
+    const QVector<EditCommand> &commands) {
+  if (m_editFlow) {
+    m_editFlow->onPlanApprovalRequested(commands);
+  }
+}
+
+void ChatWidget::onPlanCancelled() {
+  appendStatusMessage(tr("Plan cancelled."));
+
+  if (m_editSession) {
+    m_editSession->abort();
+  }
+
+  if (m_editFlow) {
+    m_editFlow->resetState();
+  }
+}
+
+void ChatWidget::onPlanReady(const QVector<EditCommand> &commands) {
+  if (m_editFlow) {
+    m_editFlow->onPlanReady(commands);
+  }
+}
+
+void ChatWidget::onPlanFailed(const QString &reason) {
+  if (m_editFlow) {
+    m_editFlow->onPlanFailed(reason);
+  }
 }
 
 void ChatWidget::onPendingEditAccepted(int index) {
@@ -209,21 +392,10 @@ void ChatWidget::onApplyAcceptedPendingEdits() {
   }
 }
 
-void ChatWidget::onPlanReady(const QList<EditCommand> &commands) {
+void ChatWidget::onEditCandidatesReady(
+    const QVector<EditMatch> &candidates) {
   if (m_editFlow) {
-    m_editFlow->onPlanReady(commands.toVector());
-  }
-}
-
-void ChatWidget::onPlanFailed(const QString &reason) {
-  if (m_editFlow) {
-    m_editFlow->onPlanFailed(reason);
-  }
-}
-
-void ChatWidget::onEditCandidatesReady(const QList<EditMatch> &candidates) {
-  if (m_editFlow) {
-    m_editFlow->onEditCandidatesReady(candidates.toVector());
+    m_editFlow->onEditCandidatesReady(candidates);
   }
 }
 
@@ -258,3 +430,23 @@ void ChatWidget::onConflictResolved(int, int) {}
 void ChatWidget::onConflictGroupDiscarded(int) {}
 
 void ChatWidget::onConflictBatchAborted() {}
+
+void ChatWidget::resetEditState() {
+  m_plannedEdits.clear();
+
+  m_nextPlannedEditIndex = 0;
+  m_currentEditNumber = 0;
+  m_streamingEditCount = 0;
+
+  m_currentEditInstruction.clear();
+  m_currentCommandDescription.clear();
+  m_currentCommandJson.clear();
+  m_currentLlmResponse.clear();
+
+  m_awaitingEdit = false;
+  m_editGenerationStopped = false;
+  m_editAbortRequested = false;
+  m_planReadyToStream = false;
+
+  m_editPhase = EditPhase::None;
+}
