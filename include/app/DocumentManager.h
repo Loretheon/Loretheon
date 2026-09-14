@@ -19,8 +19,10 @@ public:
 public slots:
   void newTextFile();
   void newMarkdownFile();
+  void newPlantUmlFile();
   void newTextFileIn(const QString &parentPath);
   void newMarkdownFileIn(const QString &parentPath);
+  void newPlantUmlFileIn(const QString &parentPath);
   void newFolderIn(const QString &parentPath);
   bool openFile(const QString &path);
   bool save();
@@ -28,10 +30,11 @@ public slots:
   bool deleteFile(const QString &path);
   bool convertToMarkdown(const QString &path);
   bool convertToText(const QString &path);
+  bool convertToDot(const QString &path);
+  bool convertToPlantUml(const QString &path);
   void closeCurrent();
-
-  signals:
-    void documentChanged(TextDocument *document);
+signals:
+  void documentChanged(TextDocument *document);
   void documentCreated(const QString &path);
   void fileRenamed(const QString &oldPath, const QString &newPath);
   void fileDeleted(const QString &path);

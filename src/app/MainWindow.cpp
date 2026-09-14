@@ -1,12 +1,14 @@
 #include "MainWindow.h"
 
 #include "app/QfPaths.h"
+#include "inference/InferenceService.h"
 #include "ui/ModelDialog.h"
 
 #include <QAction>
 #include <QActionGroup>
 #include <QApplication>
 #include <QDir>
+#include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QIcon>
@@ -98,6 +100,10 @@ MainWindow::MainWindow() {
   connect(fileWidget, &FileWidget::convertToTextRequested, documentManager,
           &DocumentManager::convertToText);
 
+  connect(fileWidget, &FileWidget::convertToPlantUmlRequested, documentManager,
+          &DocumentManager::convertToPlantUml);
+  connect(fileWidget, &FileWidget::convertToDotRequested, documentManager,
+          &DocumentManager::convertToDot);
   connect(documentManager, &DocumentManager::documentCreated, fileWidget,
           &FileWidget::beginEditingPath);
 
@@ -274,6 +280,14 @@ void MainWindow::createActions() {
   connect(newMarkdownAct, &QAction::triggered, documentManager,
           &DocumentManager::newMarkdownFile);
 
+  newPlantUmlAct =
+      new QAction(getSafeIcon("document-new", ":/icons/document-new.png"),
+                  tr("&PlantUML Diagram"), this);
+  newPlantUmlAct->setStatusTip(tr("Create a new PlantUML diagram"));
+
+  connect(newPlantUmlAct, &QAction::triggered, documentManager,
+          &DocumentManager::newPlantUmlFile);
+
   openAct =
       new QAction(getSafeIcon("document-open", ":/icons/document-open.png"),
                   tr("&Open..."), this);
@@ -285,6 +299,8 @@ void MainWindow::createActions() {
         QFileDialog::getOpenFileName(this, tr("Open File"), QString(),
                                      tr("Text Files (*.txt);;"
                                         "Markdown Files (*.md);;"
+                                        "PlantUML Files (*.puml *.plantuml);;"
+                                        "Graphviz Files (*.dot *.gv);;"
                                         "All Files (*)"));
 
     if (!path.isEmpty()) {
@@ -353,6 +369,8 @@ void MainWindow::createMenus() {
   newMenu->addAction(newTextAct);
 
   newMenu->addAction(newMarkdownAct);
+
+  newMenu->addAction(newPlantUmlAct);
 
   fileMenu->addAction(openAct);
 

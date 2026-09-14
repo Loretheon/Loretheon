@@ -13,8 +13,8 @@ namespace {
 constexpr QLatin1StringView MarkdownExtension("md");
 constexpr QLatin1StringView TextExtension("txt");
 constexpr QLatin1StringView DotExtension("dot");
+constexpr QLatin1StringView PlantUmlExtension("puml");
 constexpr QLatin1StringView UntitledBaseName("Untitled");
-
 QString normalizedExtension(const QString &extension) {
   return extension.trimmed().toLower();
 }
@@ -91,8 +91,11 @@ DocumentMode DocumentManager::typeForExtension(const QString &extension) {
   if (normalized == MarkdownExtension) {
     return DocumentMode::Markdown;
   }
-  if (normalized == "dot") {
+  if (normalized == "dot" || normalized == "gv") {
     return DocumentMode::Dot;
+  }
+  if (normalized == "puml" || normalized == "plantuml") {
+    return DocumentMode::PlantUml;
   }
   return DocumentMode::PlainText;
 }
@@ -188,6 +191,11 @@ void DocumentManager::newMarkdownFile() {
                  QString::fromLatin1(MarkdownExtension));
 }
 
+void DocumentManager::newPlantUmlFile() {
+  createDocument(DocumentMode::PlantUml,
+                 QString::fromLatin1(PlantUmlExtension));
+}
+
 void DocumentManager::newTextFileIn(const QString &parentPath) {
   createDocumentIn(DocumentMode::PlainText,
                    QString::fromLatin1(TextExtension), parentPath);
@@ -196,6 +204,11 @@ void DocumentManager::newTextFileIn(const QString &parentPath) {
 void DocumentManager::newMarkdownFileIn(const QString &parentPath) {
   createDocumentIn(DocumentMode::Markdown,
                    QString::fromLatin1(MarkdownExtension), parentPath);
+}
+
+void DocumentManager::newPlantUmlFileIn(const QString &parentPath) {
+  createDocumentIn(DocumentMode::PlantUml,
+                   QString::fromLatin1(PlantUmlExtension), parentPath);
 }
 
 void DocumentManager::newFolderIn(const QString &parentPath) {
@@ -364,6 +377,10 @@ bool DocumentManager::convertFile(const QString &path,
   return true;
 }
 
+bool DocumentManager::convertToDot(const QString &path) {
+  return convertFile(path, QString::fromLatin1(DotExtension),
+                     DocumentMode::Dot);
+}
 bool DocumentManager::convertToMarkdown(const QString &path) {
   return convertFile(path, QString::fromLatin1(MarkdownExtension),
                      DocumentMode::Markdown);
@@ -372,6 +389,11 @@ bool DocumentManager::convertToMarkdown(const QString &path) {
 bool DocumentManager::convertToText(const QString &path) {
   return convertFile(path, QString::fromLatin1(TextExtension),
                      DocumentMode::PlainText);
+}
+
+bool DocumentManager::convertToPlantUml(const QString &path) {
+  return convertFile(path, QString::fromLatin1(PlantUmlExtension),
+                     DocumentMode::PlantUml);
 }
 
 void DocumentManager::closeCurrent() {

@@ -149,6 +149,8 @@ add_executable(Episteme
         include/text/diagram/DiagramCanvas.h
         src/text/diagram/DiagramToolbar.cpp
         include/text/diagram/DiagramToolbar.h
+        src/text/PlantUmlRenderer.cpp
+        include/text/PlantUmlRenderer.h
 )
 
 add_dependencies(Episteme ext_edlib ext_tree-sitter ext_tree-sitter-markdown)

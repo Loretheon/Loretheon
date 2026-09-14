@@ -82,6 +82,10 @@ void FileSystemView::contextMenuEvent(QContextMenuEvent *event) {
   const QString suffix = QFileInfo(path).suffix().toLower();
   const bool isMarkdown = !isDir && suffix == QStringLiteral("md");
   const bool isText = !isDir && suffix == QStringLiteral("txt");
+  const bool isPlantUml = !isDir && (suffix == QStringLiteral("puml") ||
+                                      suffix == QStringLiteral("plantuml"));
+  const bool isDot = !isDir && (suffix == QStringLiteral("dot") ||
+                                 suffix == QStringLiteral("gv"));
 
   QMenu menu(this);
 
@@ -94,12 +98,23 @@ void FileSystemView::contextMenuEvent(QContextMenuEvent *event) {
 
   QAction *convertToTextAction = nullptr;
   QAction *convertToMarkdownAction = nullptr;
-  if (isMarkdown || isText) {
+  QAction *convertToPlantUmlAction = nullptr;
+  QAction *convertToDotAction = nullptr;
+
+  if (!isDir && (isMarkdown || isText || isPlantUml || isDot)) {
     menu.addSeparator();
-    if (isMarkdown)
-      convertToTextAction = menu.addAction(tr("Convert to Text"));
-    else
+
+    if (!isMarkdown)
       convertToMarkdownAction = menu.addAction(tr("Convert to Markdown"));
+
+    if (!isText)
+      convertToTextAction = menu.addAction(tr("Convert to Text"));
+
+    if (!isDot)
+      convertToDotAction = menu.addAction(tr("Convert to Graphviz"));
+
+    if (!isPlantUml)
+      convertToPlantUmlAction = menu.addAction(tr("Convert to PlantUML"));
   }
 
   menu.addSeparator();
@@ -123,6 +138,10 @@ void FileSystemView::contextMenuEvent(QContextMenuEvent *event) {
     emit convertToTextRequested(path);
   } else if (chosen == convertToMarkdownAction) {
     emit convertToMarkdownRequested(path);
+  } else if (chosen == convertToDotAction) {
+    emit convertToDotRequested(path);
+  } else if (chosen == convertToPlantUmlAction) {
+    emit convertToPlantUmlRequested(path);
   } else if (chosen == copyPathAction) {
     QApplication::clipboard()->setText(path);
   } else if (chosen == revealAction) {

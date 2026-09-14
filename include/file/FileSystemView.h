@@ -13,14 +13,14 @@ public:
   void showColumn(int column);
 
   signals:
-    void renameFinished(const QString &oldPath, const QString &newPath);
-
+  void renameFinished(const QString &oldPath, const QString &newPath);
   void newNoteRequested(const QString &parentPath);
   void newFolderRequested(const QString &parentPath);
   void deleteRequested(const QString &path);
-
   void convertToMarkdownRequested(const QString &path);
   void convertToTextRequested(const QString &path);
+  void convertToDotRequested(const QString &path);
+  void convertToPlantUmlRequested(const QString &path);
 
 protected:
   void currentChanged(const QModelIndex &current,

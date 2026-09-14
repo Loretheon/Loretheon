@@ -1,19 +1,18 @@
-#ifndef EPISTEME_TEXTWIDGET_H
-#define EPISTEME_TEXTWIDGET_H
-
-#include "GraphvizRenderer.h"
+#ifndef TEXTWIDGET_H
+#define TEXTWIDGET_H
 
 #include <QStackedWidget>
 #include <QTabWidget>
-#include <QTextDocument>
 
+#include "DiagramDocument.h"
+#include "DiagramToolbar.h"
+#include "DiagramView.h"
+#include "GraphvizRenderer.h"
+#include "PlantUmlRenderer.h"
 #include "TextBrowser.h"
 #include "TextDocument.h"
 #include "TextEdit.h"
 
-class DiagramDocument;
-class DiagramToolbar;
-class DiagramView;
 
 class TextWidget : public QTabWidget {
   Q_OBJECT
@@ -21,44 +20,37 @@ class TextWidget : public QTabWidget {
 public:
   explicit TextWidget(QWidget *parent = nullptr);
 
-  TextEdit *editor() const { return textEdit; }
-  TextBrowser *browser() const { return textBrowser; }
-  DiagramView *diagram() const { return svgView; }
-  DiagramDocument *diagramDocument() const { return diagramDoc; }
-
   void setProjectRoot(const QString &root);
-
+  void setActiveDocument(TextDocument *document);
+  TextEdit *editor() const { return textEdit; }
   signals:
-    void openDocumentRequested(const QString &path);
-  void statusMessage(const QString &text, int timeoutMs = 3000);
-
-public slots:
-  void setActiveDocument(TextDocument *newDocument);
+    void statusMessage(const QString &message, int timeout = 0);
+  void openDocumentRequested(const QString &path);
 
 private slots:
   void syncPreview();
-  void disconnectActiveDocument();
-  void clearPreview();
   void onElementClicked(const QString &id, const QString &name,
                         const QPoint &globalPos);
+
 private:
+  void disconnectActiveDocument();
+  void clearPreview();
   void findInEditor(const QString &text);
-  void showNodeContextMenu(const QString &id,
-                           const QString &name,
+  void showNodeContextMenu(const QString &id, const QString &name,
                            const QPoint &globalPos);
 
-  QStackedWidget *viewStack = nullptr;
-  QWidget *diagramPage = nullptr;
-  TextBrowser *textBrowser = nullptr;
-  TextEdit *textEdit = nullptr;
-  DiagramView *svgView = nullptr;
-  DiagramToolbar *diagramToolbar = nullptr;
-  DiagramDocument *diagramDoc = nullptr;
-  QTextDocument *previewDocument = nullptr;
-  GraphvizRenderer *graphvizRenderer = nullptr;
-  TextDocument *activeDocument = nullptr;
+  TextEdit *textEdit;
+  TextBrowser *textBrowser;
+  QStackedWidget *viewStack;
+  QWidget *diagramPage;
+  DiagramView *svgView;
+  DiagramToolbar *diagramToolbar;
+  DiagramDocument *diagramDoc;
+  QTextDocument *previewDocument;
+  GraphvizRenderer *graphvizRenderer;
+  PlantUmlRenderer *plantUmlRenderer;
 
-  QString errorMessage;
+  TextDocument *activeDocument = nullptr;
 };
 
-#endif // EPISTEME_TEXTWIDGET_H
+#endif // TEXTWIDGET_H

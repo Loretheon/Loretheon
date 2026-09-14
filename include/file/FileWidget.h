@@ -22,15 +22,15 @@ public slots:
   void setModifiedPaths(const QSet<QString> &paths);
 
   signals:
-    void fileSelected(const QString &path);
+  void fileSelected(const QString &path);
   void renameRequested(const QString &oldPath, const QString &newPath);
-
   void newNoteRequested(const QString &parentPath);
   void newFolderRequested(const QString &parentPath);
   void deleteRequested(const QString &path);
-
   void convertToMarkdownRequested(const QString &path);
   void convertToTextRequested(const QString &path);
+  void convertToDotRequested(const QString &path);
+  void convertToPlantUmlRequested(const QString &path);
 
 protected:
   void resizeEvent(QResizeEvent *event) override;

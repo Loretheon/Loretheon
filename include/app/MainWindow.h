@@ -1,17 +1,17 @@
-#ifndef EPISTEME_MAINWINDOW_H
-#define EPISTEME_MAINWINDOW_H
+#ifndef MAINWINDOW_H
+#define MAINWINDOW_H
 
 #include <QMainWindow>
+#include <QSet>
+#include <QString>
 
-#include "../ai/chat/ChatWidget.h"
-#include "../ai/edit/EditSession.h"
 #include "DocumentManager.h"
-#include "FileWidget.h"
 #include "TextWidget.h"
+#include "FileWidget.h"
+#include "ChatWidget.h"
+#include "EditSession.h"
 #include "inference/InferenceService.h"
 
-class QMenu;
-class QAction;
 class ModelDialog;
 
 class MainWindow : public QMainWindow {
@@ -20,43 +20,43 @@ class MainWindow : public QMainWindow {
 public:
   MainWindow();
 
-private:
-  void createActions();
-  void createMenus();
-  void loadTheme(const QString &themeName);
-
-  QMenu *fileMenu = nullptr;
-  QMenu *newMenu = nullptr;
-  QMenu *toolsMenu = nullptr;
-  QMenu *themeMenu = nullptr;
-  QMenu *helpMenu = nullptr;
-
-  QAction *newTextAct = nullptr;
-  QAction *newMarkdownAct = nullptr;
-  QAction *openAct = nullptr;
-  QAction *saveAct = nullptr;
-  QAction *exitAct = nullptr;
-  QAction *manageModelsAct = nullptr;
-  QAction *aboutAct = nullptr;
-  QAction *aboutQtAct = nullptr;
-
-  DocumentManager *documentManager = nullptr;
-  TextWidget *textWidget = nullptr;
-  FileWidget *fileWidget = nullptr;
-
-  InferenceService *inferenceService = nullptr;
-  EditSession *editSession = nullptr;
-  ChatWidget *chatWidget = nullptr;
-  ModelDialog *modelDialog = nullptr;
-
-  QString currentTheme;
-
 private slots:
   void about();
   void aboutQt();
   void manageModels();
+  void loadTheme(const QString &themeName);
   void onThemeSelected(const QString &theme);
+
+private:
+  void createActions();
+  void createMenus();
   QSet<QString> modifiedPaths() const;
+
+  TextWidget *textWidget;
+  FileWidget *fileWidget;
+  DocumentManager *documentManager;
+  InferenceService *inferenceService;
+  EditSession *editSession;
+  ChatWidget *chatWidget;
+  ModelDialog *modelDialog = nullptr;
+
+  QMenu *fileMenu;
+  QMenu *newMenu;
+  QMenu *toolsMenu;
+  QMenu *themeMenu;
+  QMenu *helpMenu;
+
+  QAction *newTextAct;
+  QAction *newMarkdownAct;
+  QAction *newPlantUmlAct;
+  QAction *openAct;
+  QAction *saveAct;
+  QAction *exitAct;
+  QAction *manageModelsAct;
+  QAction *aboutAct;
+  QAction *aboutQtAct;
+
+  QString currentTheme;
 };
 
-#endif // EPISTEME_MAINWINDOW_H
+#endif // MAINWINDOW_H

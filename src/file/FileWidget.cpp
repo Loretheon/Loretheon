@@ -123,6 +123,10 @@ FileWidget::FileWidget(QWidget *parent) : QWidget(parent) {
           &FileWidget::convertToMarkdownRequested);
   connect(fileSystemView, &FileSystemView::convertToTextRequested, this,
           &FileWidget::convertToTextRequested);
+  connect(fileSystemView, &FileSystemView::convertToPlantUmlRequested, this,
+          &FileWidget::convertToPlantUmlRequested);
+  connect(fileSystemView, &FileSystemView::convertToDotRequested, this,
+        &FileWidget::convertToDotRequested);
 
   auto saveExpanded = [this]() {
     DirectoryExplorerSettings::instance().setExpandedPaths(

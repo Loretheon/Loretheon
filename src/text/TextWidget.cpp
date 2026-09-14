@@ -24,7 +24,8 @@ TextWidget::TextWidget(QWidget *parent)
       diagramToolbar(new DiagramToolbar(this)),
       diagramDoc(new DiagramDocument(this)),
       previewDocument(new QTextDocument(this)),
-      graphvizRenderer(new GraphvizRenderer(this)) {
+      graphvizRenderer(new GraphvizRenderer(this)),
+      plantUmlRenderer(new PlantUmlRenderer(this)) {
   addTab(textEdit, tr("Edit"));
 
   viewStack->addWidget(textBrowser);
@@ -70,6 +71,31 @@ TextWidget::TextWidget(QWidget *parent)
             diagramDoc->clear();
             diagramToolbar->setActionsEnabled(false);
             emit statusMessage(tr("Graphviz: %1").arg(err), 5000);
+          });
+
+  connect(plantUmlRenderer, &PlantUmlRenderer::svgReady, this,
+          [this](const QString &raw) {
+            if (raw.isEmpty()) {
+              diagramDoc->clear();
+              diagramToolbar->setActionsEnabled(false);
+              return;
+            }
+            const QPalette pal = palette();
+            const QString styled = GraphvizRenderer::optimizeGraphvizSvg(
+                raw,
+                pal.color(QPalette::Window).name(),
+                pal.color(QPalette::WindowText).name());
+            qDebug().noquote() << styled.mid(0, 3000);
+            diagramDoc->setSvg(styled);
+            diagramToolbar->setActionsEnabled(true);
+          });
+
+  connect(plantUmlRenderer, &PlantUmlRenderer::renderFailed, this,
+          [this](const QString &err) {
+            qWarning() << "PlantUML:" << err;
+            diagramDoc->clear();
+            diagramToolbar->setActionsEnabled(false);
+            emit statusMessage(tr("PlantUML: %1").arg(err), 5000);
           });
 
   connect(svgView, &DiagramView::elementActivated, this,
@@ -126,7 +152,7 @@ void TextWidget::onElementClicked(const QString &id,
   if (info.nodeKind == DiagramDocument::NodeKind::Reference) {
     const QString path = info.referencePath;
     const QString ext = QFileInfo(path).suffix().toLower();
-    static const QSet<QString> editorExts = {"md", "markdown", "txt", "dot", "gv", "html", "htm"};
+    static const QSet<QString> editorExts = {"md", "markdown", "txt", "dot", "gv", "puml", "plantuml", "html", "htm"};
     if (editorExts.contains(ext) || ext.isEmpty()) {
       emit openDocumentRequested(path);
     } else {
@@ -196,6 +222,13 @@ void TextWidget::syncPreview() {
     diagramToolbar->setActionsEnabled(false);
     graphvizRenderer->renderToSvgAsync(activeDocument->toPlainText());
     break;
+
+  case DocumentMode::PlantUml:
+    viewStack->setCurrentWidget(diagramPage);
+    diagramDoc->clear();
+    diagramToolbar->setActionsEnabled(false);
+    plantUmlRenderer->renderToSvgAsync(activeDocument->toPlainText());
+    break;
   }
 }
 
@@ -213,8 +246,6 @@ void TextWidget::clearPreview() {
   diagramDoc->clear();
   diagramToolbar->setActionsEnabled(false);
 }
-
-
 
 void TextWidget::findInEditor(const QString &text) {
   if (text.isEmpty() || !textEdit) return;
@@ -252,7 +283,8 @@ void TextWidget::showNodeContextMenu(const QString &id,
     menu.addAction(tr("Copy name"), [name] {
       QApplication::clipboard()->setText(name);
     });
-    if (activeDocument && activeDocument->type() == DocumentMode::Dot) {
+    if (activeDocument && (activeDocument->type() == DocumentMode::Dot ||
+                           activeDocument->type() == DocumentMode::PlantUml)) {
       menu.addAction(tr("Find in editor"), [this, name] {
         findInEditor(name);
       });
