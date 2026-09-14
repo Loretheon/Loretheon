@@ -25,7 +25,8 @@ TextWidget::TextWidget(QWidget *parent)
       diagramDoc(new DiagramDocument(this)),
       previewDocument(new QTextDocument(this)),
       graphvizRenderer(new GraphvizRenderer(this)),
-      plantUmlRenderer(new PlantUmlRenderer(this)) {
+      plantUmlRenderer(new PlantUmlRenderer(this)),
+      mermaidRenderer(new MermaidRenderer(this)) {
   addTab(textEdit, tr("Edit"));
 
   viewStack->addWidget(textBrowser);
@@ -60,7 +61,6 @@ TextWidget::TextWidget(QWidget *parent)
                 raw,
                 pal.color(QPalette::Window).name(),
                 pal.color(QPalette::WindowText).name());
-            qDebug().noquote() << styled.mid(0, 3000);
             diagramDoc->setSvg(styled);
             diagramToolbar->setActionsEnabled(true);
           });
@@ -85,7 +85,6 @@ TextWidget::TextWidget(QWidget *parent)
                 raw,
                 pal.color(QPalette::Window).name(),
                 pal.color(QPalette::WindowText).name());
-            qDebug().noquote() << styled.mid(0, 3000);
             diagramDoc->setSvg(styled);
             diagramToolbar->setActionsEnabled(true);
           });
@@ -96,6 +95,25 @@ TextWidget::TextWidget(QWidget *parent)
             diagramDoc->clear();
             diagramToolbar->setActionsEnabled(false);
             emit statusMessage(tr("PlantUML: %1").arg(err), 5000);
+          });
+
+  connect(mermaidRenderer, &MermaidRenderer::svgReady, this,
+          [this](const QString &raw) {
+            if (raw.isEmpty()) {
+              diagramDoc->clear();
+              diagramToolbar->setActionsEnabled(false);
+              return;
+            }
+            diagramDoc->setSvg(raw);
+            diagramToolbar->setActionsEnabled(true);
+          });
+
+  connect(mermaidRenderer, &MermaidRenderer::renderFailed, this,
+          [this](const QString &err) {
+            qWarning() << "Mermaid:" << err;
+            diagramDoc->clear();
+            diagramToolbar->setActionsEnabled(false);
+            emit statusMessage(tr("Mermaid: %1").arg(err), 5000);
           });
 
   connect(svgView, &DiagramView::elementActivated, this,
@@ -152,7 +170,7 @@ void TextWidget::onElementClicked(const QString &id,
   if (info.nodeKind == DiagramDocument::NodeKind::Reference) {
     const QString path = info.referencePath;
     const QString ext = QFileInfo(path).suffix().toLower();
-    static const QSet<QString> editorExts = {"md", "markdown", "txt", "dot", "gv", "puml", "plantuml", "html", "htm"};
+    static const QSet<QString> editorExts = {"md", "markdown", "txt", "dot", "gv", "puml", "plantuml", "mmd", "mermaid", "html", "htm"};
     if (editorExts.contains(ext) || ext.isEmpty()) {
       emit openDocumentRequested(path);
     } else {
@@ -229,6 +247,13 @@ void TextWidget::syncPreview() {
     diagramToolbar->setActionsEnabled(false);
     plantUmlRenderer->renderToSvgAsync(activeDocument->toPlainText());
     break;
+
+  case DocumentMode::Mermaid:
+    viewStack->setCurrentWidget(diagramPage);
+    diagramDoc->clear();
+    diagramToolbar->setActionsEnabled(false);
+    mermaidRenderer->renderToSvgAsync(activeDocument->toPlainText());
+    break;
   }
 }
 
@@ -284,7 +309,8 @@ void TextWidget::showNodeContextMenu(const QString &id,
       QApplication::clipboard()->setText(name);
     });
     if (activeDocument && (activeDocument->type() == DocumentMode::Dot ||
-                           activeDocument->type() == DocumentMode::PlantUml)) {
+                           activeDocument->type() == DocumentMode::PlantUml ||
+                           activeDocument->type() == DocumentMode::Mermaid)) {
       menu.addAction(tr("Find in editor"), [this, name] {
         findInEditor(name);
       });

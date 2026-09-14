@@ -9,15 +9,40 @@ find_package(Qt6 6.4 REQUIRED COMPONENTS
 set(CMAKE_AUTORCC ON)
 qt_standard_project_setup()
 
-set(EPISTEME_NODE_BIN "/home/sujan/.nvm/versions/node/v22.21.0/bin")
-set(ENV{PATH} "${EPISTEME_NODE_BIN}:$ENV{PATH}")
-find_program(TREE_SITTER_CLI NAMES tree-sitter REQUIRED)
-message(STATUS "TREE_SITTER_CLI=${TREE_SITTER_CLI}")
+set(EPISTEME_NODE_BIN ""
+        CACHE PATH "Directory containing Node.js command-line tools")
 
-# Use a fixed external build directory independent of the main build
-set(EPISTEME_EXTERNAL_BUILD_DIR "${CMAKE_CURRENT_SOURCE_DIR}/cmake-build-libs"
+if(NOT EPISTEME_NODE_BIN)
+    if(DEFINED ENV{NVM_BIN} AND EXISTS "$ENV{NVM_BIN}")
+        set(EPISTEME_NODE_BIN "$ENV{NVM_BIN}")
+    endif()
+endif()
+
+if(EPISTEME_NODE_BIN)
+    list(PREPEND CMAKE_PROGRAM_PATH "${EPISTEME_NODE_BIN}")
+endif()
+
+find_program(TREE_SITTER_CLI
+        NAMES tree-sitter
+        REQUIRED)
+
+find_program(MERMAID_CLI
+        NAMES mmdc
+        REQUIRED)
+
+message(STATUS "TREE_SITTER_CLI=${TREE_SITTER_CLI}")
+message(STATUS "MERMAID_CLI=${MERMAID_CLI}")
+
+get_filename_component(EPISTEME_NODE_BIN_RESOLVED
+        "${MERMAID_CLI}"
+        DIRECTORY)
+
+set(EPISTEME_EXTERNAL_BUILD_DIR
+        "${CMAKE_CURRENT_SOURCE_DIR}/cmake-build-libs"
         CACHE PATH "Directory where external libraries are built")
-set(EPISTEME_EXTERNAL_PREFIX "${EPISTEME_EXTERNAL_BUILD_DIR}/install")
+
+set(EPISTEME_EXTERNAL_PREFIX
+        "${EPISTEME_EXTERNAL_BUILD_DIR}/install")
 
 include(ExternalProject)
 
@@ -28,19 +53,19 @@ set(EPISTEME_EXT_CMAKE_ARGS
         -DCMAKE_INSTALL_PREFIX=${EPISTEME_EXTERNAL_PREFIX}
         -DCMAKE_INSTALL_LIBDIR=lib
         -DCMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}
-        -DCMAKE_PROGRAM_PATH=${EPISTEME_NODE_BIN}
+        -DCMAKE_PROGRAM_PATH=${EPISTEME_NODE_BIN_RESOLVED}
         -DCMAKE_POSITION_INDEPENDENT_CODE=ON
 )
 
 function(episteme_external name dir)
     ExternalProject_Add(ext_${name}
-            SOURCE_DIR  "${CMAKE_CURRENT_SOURCE_DIR}/external/${dir}"
-            BINARY_DIR  "${EPISTEME_EXTERNAL_BUILD_DIR}/${name}"
-            STAMP_DIR   "${EPISTEME_EXTERNAL_BUILD_DIR}/stamps/${name}"
-            TMP_DIR     "${EPISTEME_EXTERNAL_BUILD_DIR}/tmp/${name}"
-            LOG_DIR     "${EPISTEME_EXTERNAL_BUILD_DIR}/logs/${name}"
+            SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/${dir}"
+            BINARY_DIR "${EPISTEME_EXTERNAL_BUILD_DIR}/${name}"
+            STAMP_DIR "${EPISTEME_EXTERNAL_BUILD_DIR}/stamps/${name}"
+            TMP_DIR "${EPISTEME_EXTERNAL_BUILD_DIR}/tmp/${name}"
+            LOG_DIR "${EPISTEME_EXTERNAL_BUILD_DIR}/logs/${name}"
             INSTALL_DIR "${EPISTEME_EXTERNAL_PREFIX}"
-            CMAKE_ARGS  ${EPISTEME_EXT_CMAKE_ARGS} ${ARGN}
+            CMAKE_ARGS ${EPISTEME_EXT_CMAKE_ARGS} ${ARGN}
             UPDATE_DISCONNECTED ON
             BUILD_ALWAYS OFF
             EXCLUDE_FROM_ALL ON
@@ -51,14 +76,18 @@ episteme_external(edlib edlib
         -DEDLIB_BUILD_EXAMPLES=OFF
         -DEDLIB_BUILD_UTILITIES=OFF
         -DEDLIB_ENABLE_INSTALL=ON)
+
 episteme_external(tree-sitter tree-sitter
         -DBUILD_SHARED_LIBS=OFF)
+
 episteme_external(tree-sitter-markdown tree-sitter-markdown
         -DBUILD_SHARED_LIBS=OFF
         -DTREE_SITTER_CLI=${TREE_SITTER_CLI})
 
-# QF-ML: use fixed output directory
-add_subdirectory(external/QF-ML ${EPISTEME_EXTERNAL_BUILD_DIR}/QF-ML)
+add_subdirectory(
+        external/QF-ML
+        ${EPISTEME_EXTERNAL_BUILD_DIR}/QF-ML
+)
 
 add_executable(Episteme
         src/main.cpp
@@ -151,9 +180,19 @@ add_executable(Episteme
         include/text/diagram/DiagramToolbar.h
         src/text/PlantUmlRenderer.cpp
         include/text/PlantUmlRenderer.h
+        include/text/MermaidRenderer.h
+        src/text/MermaidRenderer.cpp
 )
 
-add_dependencies(Episteme ext_edlib ext_tree-sitter ext_tree-sitter-markdown)
+add_dependencies(Episteme
+        ext_edlib
+        ext_tree-sitter
+        ext_tree-sitter-markdown
+)
+
+target_compile_definitions(Episteme PRIVATE
+        EPISTEME_MERMAID_CLI="${MERMAID_CLI}"
+)
 
 target_include_directories(Episteme PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include/app
@@ -182,7 +221,7 @@ target_link_directories(Episteme PRIVATE
 )
 
 set_target_properties(Episteme PROPERTIES
-        BUILD_RPATH   "${EPISTEME_EXTERNAL_PREFIX}/lib"
+        BUILD_RPATH "${EPISTEME_EXTERNAL_PREFIX}/lib"
         INSTALL_RPATH "${EPISTEME_EXTERNAL_PREFIX}/lib"
 )
 

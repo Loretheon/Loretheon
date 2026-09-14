@@ -14,14 +14,20 @@ constexpr QLatin1StringView MarkdownExtension("md");
 constexpr QLatin1StringView TextExtension("txt");
 constexpr QLatin1StringView DotExtension("dot");
 constexpr QLatin1StringView PlantUmlExtension("puml");
+constexpr QLatin1StringView MermaidExtension("mmd");
 constexpr QLatin1StringView UntitledBaseName("Untitled");
 QString normalizedExtension(const QString &extension) {
   return extension.trimmed().toLower();
 }
 
 QString documentTypeName(DocumentMode type) {
-  return type == DocumentMode::Markdown ? QStringLiteral("Markdown")
-                                        : QStringLiteral("PlainText");
+  if (type == DocumentMode::Markdown) {
+    return QStringLiteral("Markdown");
+  }
+  if (type == DocumentMode::Mermaid) {
+    return QStringLiteral("Mermaid");
+  }
+  return QStringLiteral("PlainText");
 }
 
 bool writeTextFile(const QString &path, const QString &text) {
@@ -96,6 +102,9 @@ DocumentMode DocumentManager::typeForExtension(const QString &extension) {
   }
   if (normalized == "puml" || normalized == "plantuml") {
     return DocumentMode::PlantUml;
+  }
+  if (normalized == MermaidExtension || normalized == "mermaid") {
+    return DocumentMode::Mermaid;
   }
   return DocumentMode::PlainText;
 }
@@ -381,6 +390,7 @@ bool DocumentManager::convertToDot(const QString &path) {
   return convertFile(path, QString::fromLatin1(DotExtension),
                      DocumentMode::Dot);
 }
+
 bool DocumentManager::convertToMarkdown(const QString &path) {
   return convertFile(path, QString::fromLatin1(MarkdownExtension),
                      DocumentMode::Markdown);

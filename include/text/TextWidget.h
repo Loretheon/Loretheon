@@ -9,6 +9,7 @@
 #include "DiagramView.h"
 #include "GraphvizRenderer.h"
 #include "PlantUmlRenderer.h"
+#include "MermaidRenderer.h"
 #include "TextBrowser.h"
 #include "TextDocument.h"
 #include "TextEdit.h"
@@ -49,6 +50,7 @@ private:
   QTextDocument *previewDocument;
   GraphvizRenderer *graphvizRenderer;
   PlantUmlRenderer *plantUmlRenderer;
+  MermaidRenderer *mermaidRenderer;
 
   TextDocument *activeDocument = nullptr;
 };

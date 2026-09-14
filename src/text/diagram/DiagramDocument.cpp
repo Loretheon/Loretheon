@@ -69,6 +69,7 @@ void DiagramDocument::setProjectRoot(const QString &root) {
 
 void DiagramDocument::setSvg(const QString &themedSvg) {
   m_svg = themedSvg;
+  qDebug().noquote() << m_svg.mid(3950, 100);
   m_renderer.load(m_svg.toUtf8());
   rebuild();
   emit changed();
