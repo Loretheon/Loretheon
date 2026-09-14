@@ -84,6 +84,10 @@ episteme_external(tree-sitter-markdown tree-sitter-markdown
         -DBUILD_SHARED_LIBS=OFF
         -DTREE_SITTER_CLI=${TREE_SITTER_CLI})
 
+episteme_external(lunasvg lunasvg
+        -DBUILD_SHARED_LIBS=OFF
+        -DLUNASVG_BUILD_EXAMPLES=OFF)
+
 add_subdirectory(
         external/QF-ML
         ${EPISTEME_EXTERNAL_BUILD_DIR}/QF-ML
@@ -182,12 +186,23 @@ add_executable(Episteme
         include/text/PlantUmlRenderer.h
         include/text/MermaidRenderer.h
         src/text/MermaidRenderer.cpp
+        src/text/LunasvgRenderer.cpp
+        include/text/LunasvgRenderer.h
+        src/app/theme/ThemeRegistry.cpp
+        include/app/theme/ThemeTokens.h
+        src/app/theme/SvgThemer.cpp
+        include/app/theme/SvgThemer.h
+        include/app/theme/ThemeAware.h
+        src/app/theme/ThemeManager.cpp
+        include/app/theme/ThemeManager.h
+
 )
 
 add_dependencies(Episteme
         ext_edlib
         ext_tree-sitter
         ext_tree-sitter-markdown
+        ext_lunasvg
 )
 
 target_compile_definitions(Episteme PRIVATE
@@ -196,11 +211,13 @@ target_compile_definitions(Episteme PRIVATE
 
 target_include_directories(Episteme PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include/app
+        ${CMAKE_CURRENT_SOURCE_DIR}/include/app/theme
         ${CMAKE_CURRENT_SOURCE_DIR}/include/text
         ${CMAKE_CURRENT_SOURCE_DIR}/include/text/formats
         ${CMAKE_CURRENT_SOURCE_DIR}/include/text/model
         ${CMAKE_CURRENT_SOURCE_DIR}/include/text/diagram
         ${CMAKE_CURRENT_SOURCE_DIR}/include/text/structure
+        ${CMAKE_CURRENT_SOURCE_DIR}/include/text/svg
         ${CMAKE_CURRENT_SOURCE_DIR}/include/file
         ${CMAKE_CURRENT_SOURCE_DIR}/include/file/model
         ${CMAKE_CURRENT_SOURCE_DIR}/include/ai
@@ -210,6 +227,7 @@ target_include_directories(Episteme PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/external/edlib/edlib/include
         ${CMAKE_CURRENT_SOURCE_DIR}/external/tree-sitter/lib/include
         ${CMAKE_CURRENT_SOURCE_DIR}/external/tree-sitter-markdown/tree-sitter-markdown/bindings/c
+        ${CMAKE_CURRENT_SOURCE_DIR}/external/lunasvg/include
         ${EPISTEME_EXTERNAL_PREFIX}/include
 )
 
@@ -218,6 +236,7 @@ target_link_directories(Episteme PRIVATE
         ${EPISTEME_EXTERNAL_BUILD_DIR}/edlib
         ${EPISTEME_EXTERNAL_BUILD_DIR}/tree-sitter
         ${EPISTEME_EXTERNAL_BUILD_DIR}/tree-sitter-markdown
+        ${EPISTEME_EXTERNAL_BUILD_DIR}/lunasvg
 )
 
 set_target_properties(Episteme PROPERTIES
@@ -241,4 +260,6 @@ target_link_libraries(Episteme PRIVATE
         edlib
         tree-sitter
         tree-sitter-markdown
+        ${EPISTEME_EXTERNAL_PREFIX}/lib/liblunasvg.a
+        ${EPISTEME_EXTERNAL_PREFIX}/lib/libplutovg.a
 )

@@ -1,5 +1,6 @@
 #include "MainWindow.h"
 
+#include "TextEdit.h"
 #include "app/QfPaths.h"
 #include "inference/InferenceService.h"
 #include "ui/ModelDialog.h"
@@ -15,6 +16,7 @@
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QPalette>
 #include <QScreen>
 #include <QSettings>
 #include <QSplitter>
@@ -30,11 +32,8 @@ static InferenceService::LlmConfig configuredLlm() {
 
   if (mode == QStringLiteral("remote")) {
     config.mode = InferenceService::LlmMode::Remote;
-
     config.endpoint = qEnvironmentVariable("TALOS_LLM_URL").trimmed();
-
     config.model = qEnvironmentVariable("TALOS_LLM_MODEL").trimmed();
-
     config.apiKey = qEnvironmentVariable("TALOS_LLM_API_KEY").trimmed();
 
     const QString auth =
@@ -57,19 +56,15 @@ MainWindow::MainWindow() {
   setCentralWidget(widget);
 
   setCorner(Qt::TopLeftCorner, Qt::LeftDockWidgetArea);
-
   setCorner(Qt::BottomLeftCorner, Qt::LeftDockWidgetArea);
-
   setCorner(Qt::TopRightCorner, Qt::RightDockWidgetArea);
-
   setCorner(Qt::BottomRightCorner, Qt::RightDockWidgetArea);
 
+  themeManager = new ThemeManager(this);
+
   textWidget = new TextWidget(this);
-
   fileWidget = new FileWidget(widget);
-
   documentManager = new DocumentManager(this);
-
   inferenceService = new InferenceService(this);
 
   const auto llmConfig = configuredLlm();
@@ -79,7 +74,6 @@ MainWindow::MainWindow() {
       InferenceService::SttModel::Nemotron35, llmConfig);
 
   editSession = new EditSession(textWidget->editor(), this);
-
   chatWidget = new ChatWidget(inferenceService, editSession, this);
 
   connect(fileWidget, &FileWidget::fileSelected, documentManager,
@@ -102,8 +96,10 @@ MainWindow::MainWindow() {
 
   connect(fileWidget, &FileWidget::convertToPlantUmlRequested, documentManager,
           &DocumentManager::convertToPlantUml);
+
   connect(fileWidget, &FileWidget::convertToDotRequested, documentManager,
           &DocumentManager::convertToDot);
+
   connect(documentManager, &DocumentManager::documentCreated, fileWidget,
           &FileWidget::beginEditingPath);
 
@@ -150,8 +146,14 @@ MainWindow::MainWindow() {
           });
 
   connect(textWidget->editor()->document(), &QTextDocument::modificationChanged,
-          this, [this](bool) {
-            fileWidget->setModifiedPaths(modifiedPaths());
+          this,
+          [this](bool) { fileWidget->setModifiedPaths(modifiedPaths()); });
+
+  connect(themeManager, &ThemeManager::themeChanged, this,
+          [this](const QString &name, const ThemeTokens &tokens) {
+            currentTheme = name;
+            applyThemeToPalette(tokens);
+            propagateTheme(tokens);
           });
 
   QSplitter *mainSplitter = new QSplitter(Qt::Horizontal, widget);
@@ -161,17 +163,14 @@ MainWindow::MainWindow() {
   QSplitter *rightSplitter = new QSplitter(Qt::Vertical, mainSplitter);
 
   rightSplitter->addWidget(textWidget);
-
   rightSplitter->addWidget(chatWidget);
 
   mainSplitter->setSizes({240, 960});
-
   rightSplitter->setSizes({650, 300});
 
   QVBoxLayout *layout = new QVBoxLayout(widget);
 
   layout->setContentsMargins(5, 5, 5, 5);
-
   layout->addWidget(mainSplitter);
 
   setLayout(layout);
@@ -179,20 +178,17 @@ MainWindow::MainWindow() {
   createActions();
   createMenus();
 
-  // Load saved theme or default to mocha
   QSettings settings;
-  currentTheme = settings.value("theme", "mocha").toString();
+  currentTheme = settings.value("theme", ThemeRegistry::instance().defaultName())
+                     .toString();
   loadTheme(currentTheme);
 
   setWindowTitle(tr("Episteme"));
-
   setMinimumSize(800, 800);
 
   QScreen *screen = QGuiApplication::primaryScreen();
 
-  if (screen) {
-    setGeometry(screen->availableGeometry());
-  }
+  if (screen) setGeometry(screen->availableGeometry());
 }
 
 void MainWindow::about() {
@@ -213,36 +209,66 @@ void MainWindow::manageModels() {
 }
 
 void MainWindow::loadTheme(const QString &themeName) {
-  QString resourcePath = QString(":/catppuccin-%1/stylesheet.qss").arg(themeName);
+  const QString resourcePath =
+      QString(":/catppuccin-%1/stylesheet.qss").arg(themeName);
 
   QFile file(resourcePath);
 
   if (!file.open(QFile::ReadOnly | QFile::Text)) {
-    qDebug() << "Failed to load theme:" << themeName << "-" << file.errorString();
+    qDebug() << "Failed to load theme:" << themeName << "-"
+             << file.errorString();
     return;
   }
 
   const QString stylesheet = QString::fromUtf8(file.readAll());
   file.close();
 
-  qDebug() << "Loaded theme:" << themeName << ", stylesheet size:" << stylesheet.size();
   qApp->setStyleSheet(stylesheet);
 
-  currentTheme = themeName;
+  themeManager->loadTheme(themeName, stylesheet);
 
   QSettings settings;
   settings.setValue("theme", themeName);
 }
 
-void MainWindow::onThemeSelected(const QString &theme) {
-  loadTheme(theme);
+void MainWindow::onThemeSelected(const QString &theme) { loadTheme(theme); }
+
+void MainWindow::applyThemeToPalette(const ThemeTokens &tokens) {
+  QPalette pal = qApp->palette();
+
+  pal.setColor(QPalette::Window, tokens.base);
+  pal.setColor(QPalette::WindowText, tokens.text);
+  pal.setColor(QPalette::Base, tokens.surface0);
+  pal.setColor(QPalette::AlternateBase, tokens.mantle);
+  pal.setColor(QPalette::Text, tokens.text);
+  pal.setColor(QPalette::PlaceholderText, tokens.overlay0);
+  pal.setColor(QPalette::Button, tokens.surface0);
+  pal.setColor(QPalette::ButtonText, tokens.text);
+  pal.setColor(QPalette::BrightText, tokens.red);
+  pal.setColor(QPalette::Highlight, tokens.blue);
+  pal.setColor(QPalette::HighlightedText, tokens.base);
+  pal.setColor(QPalette::Link, tokens.blue);
+  pal.setColor(QPalette::LinkVisited, tokens.mauve);
+  pal.setColor(QPalette::ToolTipBase, tokens.surface0);
+  pal.setColor(QPalette::ToolTipText, tokens.text);
+  pal.setColor(QPalette::Light, tokens.surface2);
+  pal.setColor(QPalette::Midlight, tokens.surface1);
+  pal.setColor(QPalette::Dark, tokens.crust);
+  pal.setColor(QPalette::Mid, tokens.overlay0);
+  pal.setColor(QPalette::Shadow, tokens.crust);
+
+  qApp->setPalette(pal);
+}
+
+void MainWindow::propagateTheme(const ThemeTokens &tokens) {
+  if (textWidget) textWidget->setThemeTokens(tokens);
+
 }
 
 QSet<QString> MainWindow::modifiedPaths() const {
   QSet<QString> paths;
 
-  if (!documentManager)
-    return paths;
+  if (!documentManager) return paths;
 
   TextDocument *current = documentManager->currentDocument();
   if (current && current->isModified() && !current->filePath().isEmpty())
@@ -318,7 +344,9 @@ void MainWindow::createActions() {
           &DocumentManager::save);
 
   connect(documentManager, &DocumentManager::documentChanged, this,
-          [this](TextDocument *) { fileWidget->setModifiedPaths(modifiedPaths()); });
+          [this](TextDocument *) {
+            fileWidget->setModifiedPaths(modifiedPaths());
+          });
 
   connect(documentManager, &DocumentManager::documentCreated, this,
           [this](const QString &) {
@@ -367,13 +395,10 @@ void MainWindow::createMenus() {
   newMenu = fileMenu->addMenu(tr("&New"));
 
   newMenu->addAction(newTextAct);
-
   newMenu->addAction(newMarkdownAct);
-
   newMenu->addAction(newPlantUmlAct);
 
   fileMenu->addAction(openAct);
-
   fileMenu->addAction(saveAct);
 
   fileMenu->addSeparator();
@@ -389,25 +414,21 @@ void MainWindow::createMenus() {
   QActionGroup *themeGroup = new QActionGroup(this);
   themeGroup->setExclusive(true);
 
-  const QStringList themes = {"frappe", "latte", "macchiato", "mocha"};
+  const QStringList themes = ThemeRegistry::instance().names();
 
   for (const QString &theme : themes) {
     QAction *themeAction = themeMenu->addAction(theme);
     themeAction->setCheckable(true);
     themeGroup->addAction(themeAction);
 
-    if (theme == currentTheme) {
-      themeAction->setChecked(true);
-    }
+    if (theme == currentTheme) themeAction->setChecked(true);
 
-    connect(themeAction, &QAction::triggered, this, [this, theme]() {
-      onThemeSelected(theme);
-    });
+    connect(themeAction, &QAction::triggered, this,
+            [this, theme]() { onThemeSelected(theme); });
   }
 
   helpMenu = menuBar()->addMenu(tr("&Help"));
 
   helpMenu->addAction(aboutAct);
-
   helpMenu->addAction(aboutQtAct);
 }

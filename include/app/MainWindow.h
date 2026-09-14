@@ -10,6 +10,7 @@
 #include "FileWidget.h"
 #include "ChatWidget.h"
 #include "EditSession.h"
+#include "ThemeManager.h"
 #include "inference/InferenceService.h"
 
 class ModelDialog;
@@ -31,6 +32,8 @@ private:
   void createActions();
   void createMenus();
   QSet<QString> modifiedPaths() const;
+  void applyThemeToPalette(const ThemeTokens &tokens);
+  void propagateTheme(const ThemeTokens &tokens);
 
   TextWidget *textWidget;
   FileWidget *fileWidget;
@@ -39,6 +42,7 @@ private:
   EditSession *editSession;
   ChatWidget *chatWidget;
   ModelDialog *modelDialog = nullptr;
+  ThemeManager *themeManager;
 
   QMenu *fileMenu;
   QMenu *newMenu;

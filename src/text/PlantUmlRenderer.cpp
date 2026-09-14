@@ -1,28 +1,31 @@
 #include "../../include/text/PlantUmlRenderer.h"
 
-#include <QDebug>
+#include "SvgThemer.h"
+
 #include <QDir>
 #include <QFileInfo>
 #include <QProcess>
 #include <QStandardPaths>
 
 PlantUmlRenderer::PlantUmlRenderer(QObject *parent) : QObject(parent) {}
+
 PlantUmlRenderer::~PlantUmlRenderer() = default;
 
+void PlantUmlRenderer::setThemeTokens(const ThemeTokens &tokens) {
+  m_tokens = tokens;
+}
+
 bool PlantUmlRenderer::isPlantUmlAvailable() {
-  // Check if plantuml.jar exists in standard locations
   const QStringList searchPaths = {
-    QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation) +
-      "/plantuml/plantuml.jar",
-    "/usr/share/plantuml/plantuml.jar",
-    QDir::homePath() + "/.local/share/plantuml/plantuml.jar"
-  };
+      QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation) +
+          "/plantuml/plantuml.jar",
+      "/usr/share/plantuml/plantuml.jar",
+      QDir::homePath() + "/.local/share/plantuml/plantuml.jar"};
 
   for (const auto &path : searchPaths) {
     if (QFileInfo(path).exists()) return true;
   }
 
-  // Also check if 'plantuml' command is available
   QProcess p;
   p.start("plantuml", {"-version"});
   return p.waitForFinished(2000) && p.exitCode() == 0;
@@ -32,13 +35,11 @@ QString PlantUmlRenderer::runPlantUml(const QString &source,
                                       QString &errorMessage) {
   errorMessage.clear();
 
-  // Try JAR first, fall back to command
   QStringList jarPaths = {
-    QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation) +
-      "/plantuml/plantuml.jar",
-    "/usr/share/plantuml/plantuml.jar",
-    QDir::homePath() + "/.local/share/plantuml/plantuml.jar"
-  };
+      QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation) +
+          "/plantuml/plantuml.jar",
+      "/usr/share/plantuml/plantuml.jar",
+      QDir::homePath() + "/.local/share/plantuml/plantuml.jar"};
 
   QString jarPath;
   for (const auto &path : jarPaths) {
@@ -77,19 +78,18 @@ QString PlantUmlRenderer::runPlantUml(const QString &source,
     return {};
   }
 
-  return QString::fromUtf8(p.readAllStandardOutput());
+  return SvgThemer::applyTheme(QString::fromUtf8(p.readAllStandardOutput()),
+                               m_tokens);
 }
 
 void PlantUmlRenderer::renderToSvgAsync(const QString &plantUmlSource) {
   auto *p = new QProcess(this);
 
-  // Determine which invocation to use
   QStringList jarPaths = {
-    QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation) +
-      "/plantuml/plantuml.jar",
-    "/usr/share/plantuml/plantuml.jar",
-    QDir::homePath() + "/.local/share/plantuml/plantuml.jar"
-  };
+      QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation) +
+          "/plantuml/plantuml.jar",
+      "/usr/share/plantuml/plantuml.jar",
+      QDir::homePath() + "/.local/share/plantuml/plantuml.jar"};
 
   QString jarPath;
   for (const auto &path : jarPaths) {
@@ -116,19 +116,20 @@ void PlantUmlRenderer::renderToSvgAsync(const QString &plantUmlSource) {
           });
 
   connect(p, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
-          this,
-          [this, p](int code, QProcess::ExitStatus status) {
+          this, [this, p](int code, QProcess::ExitStatus status) {
             const QByteArray out = p->readAllStandardOutput();
             const QByteArray err = p->readAllStandardError();
             p->deleteLater();
             if (status != QProcess::NormalExit || code != 0) {
               const QString errMsg = QString::fromUtf8(err).trimmed();
               emit renderFailed(errMsg.isEmpty()
-                ? QString("PlantUML exited with code %1").arg(code)
-                : errMsg);
+                                    ? QString("PlantUML exited with code %1")
+                                          .arg(code)
+                                    : errMsg);
               return;
             }
-            emit svgReady(QString::fromUtf8(out));
+            emit svgReady(
+                SvgThemer::applyTheme(QString::fromUtf8(out), m_tokens));
           });
 
   p->start();

@@ -4,17 +4,19 @@
 #include <QObject>
 #include <QString>
 
-class GraphvizRenderer : public QObject {
+#include "ThemeAware.h"
+
+class GraphvizRenderer : public QObject, public ThemeAware {
   Q_OBJECT
 public:
   enum class OutputFormat { PNG, PDF };
+  Q_ENUM(OutputFormat)
 
   explicit GraphvizRenderer(QObject *parent = nullptr);
   ~GraphvizRenderer() override;
 
-  QString    renderToSvg(const QString &dotSource, QString &errorMessage);
-  QByteArray renderToImage(const QString &dotSource,
-                           OutputFormat format,
+  QString renderToSvg(const QString &dotSource, QString &errorMessage);
+  QByteArray renderToImage(const QString &dotSource, OutputFormat format,
                            QString &errorMessage);
 
   void renderToSvgAsync(const QString &dotSource);
@@ -22,9 +24,7 @@ public:
 
   static bool isGraphvizAvailable();
 
-  static QString optimizeGraphvizSvg(const QString &rawSvg,
-                                     const QString &bgColor = QString(),
-                                     const QString &textColor = QString());
+  void setThemeTokens(const ThemeTokens &tokens) override;
 
   signals:
     void svgReady(const QString &themedSvg);
@@ -33,7 +33,8 @@ public:
   void renderFailed(const QString &errorMessage);
 
 private:
-  QByteArray runDot(const QByteArray &input,
-                    const QString    &format,
-                    QString          &errorMessage);
+  QByteArray runDot(const QByteArray &input, const QString &format,
+                    QString &errorMessage);
+
+  ThemeTokens m_tokens;
 };

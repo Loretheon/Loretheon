@@ -6,7 +6,8 @@
 #include <QString>
 #include <QStringList>
 #include <QVector>
-#include <QSvgRenderer>
+
+#include "LunasvgRenderer.h"
 
 class DiagramDocument : public QObject {
   Q_OBJECT
@@ -30,7 +31,7 @@ public:
   bool isEmpty() const { return m_svg.isEmpty(); }
   QString svg() const { return m_svg; }
   QSize naturalSize() const { return m_naturalSize; }
-  QSvgRenderer *renderer() { return &m_renderer; }
+  LunasvgRenderer *renderer() { return &m_renderer; }
 
   QString idAt(const QPointF &svgPoint) const;
   QString nameForId(const QString &id) const;
@@ -54,6 +55,6 @@ private:
   QString m_svg;
   QString m_projectRoot;
   QSize   m_naturalSize;
-  QSvgRenderer m_renderer;
+  LunasvgRenderer m_renderer;
   QVector<NodeInfo> m_regions;
 };

@@ -1,7 +1,14 @@
 #include "TextWidget.h"
+
 #include "DiagramDocument.h"
 #include "DiagramToolbar.h"
 #include "DiagramView.h"
+#include "GraphvizRenderer.h"
+#include "MermaidRenderer.h"
+#include "PlantUmlRenderer.h"
+#include "TextBrowser.h"
+#include "TextEdit.h"
+#include "TextDocument.h"
 
 #include <QApplication>
 #include <QClipboard>
@@ -9,8 +16,9 @@
 #include <QDesktopServices>
 #include <QFileInfo>
 #include <QMenu>
-#include <QPalette>
 #include <QProcess>
+#include <QStackedWidget>
+#include <QTextDocument>
 #include <QUrl>
 #include <QVBoxLayout>
 
@@ -42,26 +50,27 @@ TextWidget::TextWidget(QWidget *parent)
   textBrowser->setDocument(previewDocument);
   svgView->setDocument(diagramDoc);
 
-  connect(diagramToolbar, &DiagramToolbar::zoomInRequested,    svgView, &DiagramView::zoomIn);
-  connect(diagramToolbar, &DiagramToolbar::zoomOutRequested,   svgView, &DiagramView::zoomOut);
-  connect(diagramToolbar, &DiagramToolbar::zoomResetRequested, svgView, &DiagramView::zoomReset);
-  connect(diagramToolbar, &DiagramToolbar::fitRequested,       svgView, &DiagramView::zoomFit);
-  connect(diagramToolbar, &DiagramToolbar::zoomToRequested,    svgView, &DiagramView::setZoom);
-  connect(svgView, &DiagramView::zoomChanged, diagramToolbar, &DiagramToolbar::setZoom);
+  connect(diagramToolbar, &DiagramToolbar::zoomInRequested, svgView,
+          &DiagramView::zoomIn);
+  connect(diagramToolbar, &DiagramToolbar::zoomOutRequested, svgView,
+          &DiagramView::zoomOut);
+  connect(diagramToolbar, &DiagramToolbar::zoomResetRequested, svgView,
+          &DiagramView::zoomReset);
+  connect(diagramToolbar, &DiagramToolbar::fitRequested, svgView,
+          &DiagramView::zoomFit);
+  connect(diagramToolbar, &DiagramToolbar::zoomToRequested, svgView,
+          &DiagramView::setZoom);
+  connect(svgView, &DiagramView::zoomChanged, diagramToolbar,
+          &DiagramToolbar::setZoom);
 
   connect(graphvizRenderer, &GraphvizRenderer::svgReady, this,
-          [this](const QString &raw) {
-            if (raw.isEmpty()) {
+          [this](const QString &svg) {
+            if (svg.isEmpty()) {
               diagramDoc->clear();
               diagramToolbar->setActionsEnabled(false);
               return;
             }
-            const QPalette pal = palette();
-            const QString styled = GraphvizRenderer::optimizeGraphvizSvg(
-                raw,
-                pal.color(QPalette::Window).name(),
-                pal.color(QPalette::WindowText).name());
-            diagramDoc->setSvg(styled);
+            diagramDoc->setSvg(svg);
             diagramToolbar->setActionsEnabled(true);
           });
 
@@ -74,18 +83,13 @@ TextWidget::TextWidget(QWidget *parent)
           });
 
   connect(plantUmlRenderer, &PlantUmlRenderer::svgReady, this,
-          [this](const QString &raw) {
-            if (raw.isEmpty()) {
+          [this](const QString &svg) {
+            if (svg.isEmpty()) {
               diagramDoc->clear();
               diagramToolbar->setActionsEnabled(false);
               return;
             }
-            const QPalette pal = palette();
-            const QString styled = GraphvizRenderer::optimizeGraphvizSvg(
-                raw,
-                pal.color(QPalette::Window).name(),
-                pal.color(QPalette::WindowText).name());
-            diagramDoc->setSvg(styled);
+            diagramDoc->setSvg(svg);
             diagramToolbar->setActionsEnabled(true);
           });
 
@@ -98,13 +102,13 @@ TextWidget::TextWidget(QWidget *parent)
           });
 
   connect(mermaidRenderer, &MermaidRenderer::svgReady, this,
-          [this](const QString &raw) {
-            if (raw.isEmpty()) {
+          [this](const QString &svg) {
+            if (svg.isEmpty()) {
               diagramDoc->clear();
               diagramToolbar->setActionsEnabled(false);
               return;
             }
-            diagramDoc->setSvg(raw);
+            diagramDoc->setSvg(svg);
             diagramToolbar->setActionsEnabled(true);
           });
 
@@ -130,10 +134,11 @@ TextWidget::TextWidget(QWidget *parent)
           });
 
   connect(svgView, &DiagramView::elementClicked, this,
-        &TextWidget::onElementClicked);
+          &TextWidget::onElementClicked);
 
   connect(svgView, &DiagramView::elementRightClicked, this,
-          [this](const QString &id, const QString &name, const QPoint &globalPos) {
+          [this](const QString &id, const QString &name,
+                 const QPoint &globalPos) {
             showNodeContextMenu(id, name, globalPos);
           });
 
@@ -141,8 +146,18 @@ TextWidget::TextWidget(QWidget *parent)
   diagramToolbar->setZoom(1.0);
 }
 
-void TextWidget::onElementClicked(const QString &id,
-                                  const QString &name,
+void TextWidget::setThemeTokens(const ThemeTokens &tokens) {
+  m_tokens = tokens;
+  applyThemeToRenderers();
+}
+
+void TextWidget::applyThemeToRenderers() {
+  if (graphvizRenderer) graphvizRenderer->setThemeTokens(m_tokens);
+  if (plantUmlRenderer) plantUmlRenderer->setThemeTokens(m_tokens);
+  if (mermaidRenderer) mermaidRenderer->setThemeTokens(m_tokens);
+}
+
+void TextWidget::onElementClicked(const QString &id, const QString &name,
                                   const QPoint &globalPos) {
   Q_UNUSED(name);
   Q_UNUSED(globalPos);
@@ -170,7 +185,10 @@ void TextWidget::onElementClicked(const QString &id,
   if (info.nodeKind == DiagramDocument::NodeKind::Reference) {
     const QString path = info.referencePath;
     const QString ext = QFileInfo(path).suffix().toLower();
-    static const QSet<QString> editorExts = {"md", "markdown", "txt", "dot", "gv", "puml", "plantuml", "mmd", "mermaid", "html", "htm"};
+    static const QSet<QString> editorExts = {
+        "md",   "markdown", "txt",  "dot", "gv",
+        "puml", "plantuml", "mmd",  "mermaid",
+        "html", "htm"};
     if (editorExts.contains(ext) || ext.isEmpty()) {
       emit openDocumentRequested(path);
     } else {
@@ -299,21 +317,19 @@ void TextWidget::findInEditor(const QString &text) {
   emit statusMessage(tr("Not found in editor: %1").arg(text));
 }
 
-void TextWidget::showNodeContextMenu(const QString &id,
-                                     const QString &name,
+void TextWidget::showNodeContextMenu(const QString &id, const QString &name,
                                      const QPoint &globalPos) {
   QMenu menu;
 
   if (!name.isEmpty()) {
-    menu.addAction(tr("Copy name"), [name] {
-      QApplication::clipboard()->setText(name);
-    });
-    if (activeDocument && (activeDocument->type() == DocumentMode::Dot ||
-                           activeDocument->type() == DocumentMode::PlantUml ||
-                           activeDocument->type() == DocumentMode::Mermaid)) {
-      menu.addAction(tr("Find in editor"), [this, name] {
-        findInEditor(name);
-      });
+    menu.addAction(tr("Copy name"),
+                   [name] { QApplication::clipboard()->setText(name); });
+    if (activeDocument &&
+        (activeDocument->type() == DocumentMode::Dot ||
+         activeDocument->type() == DocumentMode::PlantUml ||
+         activeDocument->type() == DocumentMode::Mermaid)) {
+      menu.addAction(tr("Find in editor"),
+                     [this, name] { findInEditor(name); });
     }
   }
 
@@ -336,12 +352,9 @@ void TextWidget::showNodeContextMenu(const QString &id,
   }
 
   menu.addSeparator();
-  menu.addAction(tr("Focus on this node"), [this, id] {
-    svgView->focusOnElement(id);
-  });
-  menu.addAction(tr("Reset zoom"), [this] {
-    svgView->zoomReset();
-  });
+  menu.addAction(tr("Focus on this node"),
+                 [this, id] { svgView->focusOnElement(id); });
+  menu.addAction(tr("Reset zoom"), [this] { svgView->zoomReset(); });
 
   menu.exec(globalPos);
 }

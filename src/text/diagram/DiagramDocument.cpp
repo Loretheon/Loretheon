@@ -69,7 +69,6 @@ void DiagramDocument::setProjectRoot(const QString &root) {
 
 void DiagramDocument::setSvg(const QString &themedSvg) {
   m_svg = themedSvg;
-  qDebug().noquote() << m_svg.mid(3950, 100);
   m_renderer.load(m_svg.toUtf8());
   rebuild();
   emit changed();
@@ -118,7 +117,7 @@ void DiagramDocument::classifyNode(NodeInfo &info, const QString &urlAttr) {
       info.nodeKind = NodeKind::External;
       info.referencePath = urlAttr;
       return;
-        }
+    }
     if (scheme == "file") {
       info.nodeKind = NodeKind::Reference;
       info.referencePath = u.toLocalFile();
@@ -144,6 +143,7 @@ void DiagramDocument::classifyNode(NodeInfo &info, const QString &urlAttr) {
   info.nodeKind = NodeKind::Reference;
   info.referencePath = resolved;
 }
+
 void DiagramDocument::rebuild() {
   m_regions.clear();
   m_naturalSize = m_renderer.defaultSize();
@@ -174,64 +174,59 @@ void DiagramDocument::rebuild() {
     }
 
     QRectF bounds;
-    if (m_renderer.elementExists(id)) {
-      bounds = m_renderer.boundsOnElement(id);
-    }
 
-    if (bounds.isNull()) {
-      for (const QString &tag : {"polygon", "path", "ellipse", "rect"}) {
-        const QDomNodeList kids = g.elementsByTagName(tag);
-        for (int k = 0; k < kids.count(); ++k) {
-          QDomElement el = kids.at(k).toElement();
-          if (el.isNull()) continue;
+    for (const QString &tag : {"polygon", "path", "ellipse", "rect"}) {
+      const QDomNodeList kids = g.elementsByTagName(tag);
+      for (int k = 0; k < kids.count(); ++k) {
+        QDomElement el = kids.at(k).toElement();
+        if (el.isNull()) continue;
 
-          if (tag == "rect") {
-            QRectF r(el.attribute("x").toDouble(),
-                     el.attribute("y").toDouble(),
-                     el.attribute("width").toDouble(),
-                     el.attribute("height").toDouble());
-            bounds = bounds.isNull() ? r : bounds.united(r);
-          } else if (tag == "ellipse") {
-            const double cx = el.attribute("cx").toDouble();
-            const double cy = el.attribute("cy").toDouble();
-            const double rx = el.attribute("rx").toDouble();
-            const double ry = el.attribute("ry").toDouble();
-            QRectF r(cx - rx, cy - ry, rx * 2, ry * 2);
-            bounds = bounds.isNull() ? r : bounds.united(r);
-          } else if (tag == "polygon") {
-            const QString pts = el.attribute("points");
-            const QStringList nums = pts.split(QRegularExpression("[\\s,]+"),
-                                               Qt::SkipEmptyParts);
-            if (nums.size() >= 2) {
-              double minX = nums[0].toDouble();
-              double maxX = minX;
-              double minY = nums[1].toDouble();
-              double maxY = minY;
-              for (int n = 2; n + 1 < nums.size(); n += 2) {
-                const double x = nums[n].toDouble();
-                const double y = nums[n + 1].toDouble();
-                minX = qMin(minX, x); maxX = qMax(maxX, x);
-                minY = qMin(minY, y); maxY = qMax(maxY, y);
-              }
-              QRectF r(minX, minY, maxX - minX, maxY - minY);
-              bounds = bounds.isNull() ? r : bounds.united(r);
+        if (tag == "rect") {
+          QRectF r(el.attribute("x").toDouble(),
+                   el.attribute("y").toDouble(),
+                   el.attribute("width").toDouble(),
+                   el.attribute("height").toDouble());
+          bounds = bounds.isNull() ? r : bounds.united(r);
+        } else if (tag == "ellipse") {
+          const double cx = el.attribute("cx").toDouble();
+          const double cy = el.attribute("cy").toDouble();
+          const double rx = el.attribute("rx").toDouble();
+          const double ry = el.attribute("ry").toDouble();
+          QRectF r(cx - rx, cy - ry, rx * 2, ry * 2);
+          bounds = bounds.isNull() ? r : bounds.united(r);
+        } else if (tag == "polygon") {
+          const QString pts = el.attribute("points");
+          const QStringList nums = pts.split(QRegularExpression("[\\s,]+"),
+                                             Qt::SkipEmptyParts);
+          if (nums.size() >= 2) {
+            double minX = nums[0].toDouble();
+            double maxX = minX;
+            double minY = nums[1].toDouble();
+            double maxY = minY;
+            for (int n = 2; n + 1 < nums.size(); n += 2) {
+              const double x = nums[n].toDouble();
+              const double y = nums[n + 1].toDouble();
+              minX = qMin(minX, x); maxX = qMax(maxX, x);
+              minY = qMin(minY, y); maxY = qMax(maxY, y);
             }
-          } else if (tag == "path") {
-            const QString d = el.attribute("d");
-            const QRegularExpression re("-?\\d+(?:\\.\\d+)?");
-            auto it = re.globalMatch(d);
-            QVector<double> nums;
-            while (it.hasNext()) nums.append(it.next().captured().toDouble());
-            if (nums.size() >= 2) {
-              double minX = nums[0], maxX = nums[0];
-              double minY = nums[1], maxY = nums[1];
-              for (int n = 2; n + 1 < nums.size(); n += 2) {
-                minX = qMin(minX, nums[n]); maxX = qMax(maxX, nums[n]);
-                minY = qMin(minY, nums[n + 1]); maxY = qMax(maxY, nums[n + 1]);
-              }
-              QRectF r(minX, minY, maxX - minX, maxY - minY);
-              bounds = bounds.isNull() ? r : bounds.united(r);
+            QRectF r(minX, minY, maxX - minX, maxY - minY);
+            bounds = bounds.isNull() ? r : bounds.united(r);
+          }
+        } else if (tag == "path") {
+          const QString d = el.attribute("d");
+          const QRegularExpression re("-?\\d+(?:\\.\\d+)?");
+          auto it = re.globalMatch(d);
+          QVector<double> nums;
+          while (it.hasNext()) nums.append(it.next().captured().toDouble());
+          if (nums.size() >= 2) {
+            double minX = nums[0], maxX = nums[0];
+            double minY = nums[1], maxY = nums[1];
+            for (int n = 2; n + 1 < nums.size(); n += 2) {
+              minX = qMin(minX, nums[n]); maxX = qMax(maxX, nums[n]);
+              minY = qMin(minY, nums[n + 1]); maxY = qMax(maxY, nums[n + 1]);
             }
+            QRectF r(minX, minY, maxX - minX, maxY - minY);
+            bounds = bounds.isNull() ? r : bounds.united(r);
           }
         }
       }

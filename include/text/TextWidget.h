@@ -1,32 +1,39 @@
 #ifndef TEXTWIDGET_H
 #define TEXTWIDGET_H
 
-#include <QStackedWidget>
 #include <QTabWidget>
+#include <QString>
+#include <QPoint>
 
 #include "DiagramDocument.h"
-#include "DiagramToolbar.h"
-#include "DiagramView.h"
-#include "GraphvizRenderer.h"
-#include "PlantUmlRenderer.h"
-#include "MermaidRenderer.h"
-#include "TextBrowser.h"
 #include "TextDocument.h"
-#include "TextEdit.h"
+#include "ThemeAware.h"
 
+class TextEdit;
+class TextBrowser;
+class QStackedWidget;
+class DiagramView;
+class DiagramToolbar;
+class GraphvizRenderer;
+class PlantUmlRenderer;
+class MermaidRenderer;
+class TextDocument;
 
-class TextWidget : public QTabWidget {
+class TextWidget : public QTabWidget, public ThemeAware {
   Q_OBJECT
 
 public:
   explicit TextWidget(QWidget *parent = nullptr);
 
-  void setProjectRoot(const QString &root);
-  void setActiveDocument(TextDocument *document);
   TextEdit *editor() const { return textEdit; }
+  void setActiveDocument(TextDocument *document);
+  void setProjectRoot(const QString &root);
+
+  void setThemeTokens(const ThemeTokens &tokens) override;
+
   signals:
-    void statusMessage(const QString &message, int timeout = 0);
-  void openDocumentRequested(const QString &path);
+    void openDocumentRequested(const QString &path);
+  void statusMessage(const QString &text, int timeoutMs = 4000);
 
 private slots:
   void syncPreview();
@@ -39,6 +46,7 @@ private:
   void findInEditor(const QString &text);
   void showNodeContextMenu(const QString &id, const QString &name,
                            const QPoint &globalPos);
+  void applyThemeToRenderers();
 
   TextEdit *textEdit;
   TextBrowser *textBrowser;
@@ -53,6 +61,7 @@ private:
   MermaidRenderer *mermaidRenderer;
 
   TextDocument *activeDocument = nullptr;
+  ThemeTokens m_tokens;
 };
 
 #endif // TEXTWIDGET_H
