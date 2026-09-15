@@ -15,23 +15,26 @@ class EditPlanner : public QObject {
   Q_OBJECT
 
 public:
+  enum class ScopeMode {
+    Scoped,    // Plan commands target named scopes (sections, nodes, etc.)
+    WholeFile, // Plan is a single command targeting the document root
+  };
+
+  Q_ENUM(ScopeMode)
+
   explicit EditPlanner(InferenceService *inferenceService,
                        QObject *parent = nullptr);
 
   void start(TextEdit *editor, const QString &userRequest);
 
+  void start(TextEdit *editor, const QString &userRequest, ScopeMode mode);
+
   void abort();
 
   signals:
-    // Emitted when the LLM has produced a structurally valid plan.
-    // The commands are parsed and scope-checked, but matches have not
-    // been resolved. The UI should display these for user review before
-    // EditSession::executePlan() is called.
     void planValidated(const QVector<EditCommand> &commands);
 
-
   void contextScopes(const QStringList &scopeIds);
-
 
   void failed(const QString &reason);
 
@@ -56,6 +59,8 @@ private:
   QString m_streamingResponse;
 
   PayloadLogger m_payloadLogger;
+
+  ScopeMode m_scopeMode{ScopeMode::Scoped};
 
   bool m_active{false};
 };

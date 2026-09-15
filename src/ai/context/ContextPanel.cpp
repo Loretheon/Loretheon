@@ -1,4 +1,4 @@
-#include "ContextPanel.h"
+#include "../../../include/ai/context/ContextPanel.h"
 
 #include <QBrush>
 #include <QCheckBox>

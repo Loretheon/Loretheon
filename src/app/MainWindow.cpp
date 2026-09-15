@@ -62,7 +62,6 @@ MainWindow::MainWindow() {
 
   themeManager = new ThemeManager(this);
 
-
   textWidget = new TextWidget(this);
   fileWidget = new FileWidget(widget);
   documentManager = new DocumentManager(this);
@@ -77,10 +76,20 @@ MainWindow::MainWindow() {
   editSession = new EditSession(textWidget->editor(), this);
   chatWidget = new ChatWidget(inferenceService, editSession, this);
 
+  textWidget->setPreviewSession(editSession);
 
   connect(chatWidget, &ChatWidget::contextScopesChanged, textWidget,
-        &TextWidget::setContextScopes);
+          &TextWidget::setContextScopes);
 
+  connect(chatWidget, &ChatWidget::previewActivationRequested, textWidget,
+          &TextWidget::activatePreview);
+
+  connect(chatWidget, &ChatWidget::contextScopesChanged, this,
+          [this](const QStringList &scopeIds) {
+            if (scopeIds.isEmpty()) {
+              textWidget->clearContextScopes();
+            }
+          });
 
   connect(fileWidget, &FileWidget::fileSelected, documentManager,
           &DocumentManager::openFile);
@@ -268,7 +277,6 @@ void MainWindow::applyThemeToPalette(const ThemeTokens &tokens) {
 
 void MainWindow::propagateTheme(const ThemeTokens &tokens) {
   if (textWidget) textWidget->setThemeTokens(tokens);
-
 }
 
 QSet<QString> MainWindow::modifiedPaths() const {
@@ -333,6 +341,7 @@ void MainWindow::createActions() {
                                         "Markdown Files (*.md);;"
                                         "PlantUML Files (*.puml *.plantuml);;"
                                         "Graphviz Files (*.dot *.gv);;"
+                                        "Mermaid Files (*.mmd *.mermaid);;"
                                         "All Files (*)"));
 
     if (!path.isEmpty()) {

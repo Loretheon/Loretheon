@@ -6,6 +6,8 @@
 
 #include "../../../include/ai/context/ContextPanel.h"
 #include "../../../include/ai/edit/EditSessionWidget.h"
+#include "../../../include/ai/history/HistoryModel.h"
+#include "../../../include/ai/history/HistoryPanel.h"
 #include "NotificationManager.h"
 
 #include "edit/EditPlanner.h"
@@ -17,6 +19,7 @@
 #include "TextDocument.h"
 
 #include <QCheckBox>
+#include <QComboBox>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QLineEdit>
@@ -86,6 +89,53 @@ QJsonArray commandsToPlanJson(const QVector<EditCommand> &commands) {
   return array;
 }
 
+QString firstNonEmptyLine(const DocumentNode &node, const QString &text,
+                          int maxChars = 120) {
+  const int start = qBound(0, node.start, text.size());
+  const int end = qBound(start, node.end, text.size());
+
+  if (end <= start) {
+    return {};
+  }
+
+  const QStringList lines = text.mid(start, end - start).split(QChar('\n'));
+
+  for (const QString &line : lines) {
+    const QString trimmed = line.trimmed();
+
+    if (!trimmed.isEmpty()) {
+      return trimmed.left(maxChars);
+    }
+  }
+
+  return {};
+}
+
+QString labelForNode(const DocumentNode &node, const QString &text) {
+  if (node.id == QStringLiteral("document")) {
+    return QStringLiteral("(document)");
+  }
+
+  if (node.type == QStringLiteral("section")) {
+    const int start = qBound(0, node.start, text.size());
+    const int end = qBound(start, node.end, text.size());
+
+    if (end > start) {
+      const QStringList lines = text.mid(start, end - start).split(QChar('\n'));
+
+      for (const QString &line : lines) {
+        const QString trimmed = line.trimmed();
+
+        if (trimmed.startsWith(QChar('#'))) {
+          return trimmed;
+        }
+      }
+    }
+  }
+
+  return firstNonEmptyLine(node, text);
+}
+
 } // namespace
 
 ChatWidget::ChatWidget(InferenceService *inferenceService,
@@ -96,15 +146,20 @@ ChatWidget::ChatWidget(InferenceService *inferenceService,
 
   m_contextModel = new ContextModel(this);
 
+  HistoryModel *historyModel =
+      m_editSession ? m_editSession->historyModel() : nullptr;
+
   ChatWidgetLayout layout;
-  layout.build(this, m_contextModel);
+  layout.build(this, m_contextModel, historyModel);
 
   m_transcript = layout.transcript;
   m_input = layout.input;
   m_sendButton = layout.sendButton;
   m_editModeCheckbox = layout.editModeCheckbox;
+  m_editModeCombo = layout.editModeCombo;
   m_editSessionWidget = layout.editSessionWidget;
   m_contextPanel = layout.contextPanel;
+  m_historyPanel = layout.historyPanel;
   m_layout = layout.rootLayout;
 
   setLayout(m_layout);
@@ -207,10 +262,9 @@ ChatWidget::ChatWidget(InferenceService *inferenceService,
 }
 
 void ChatWidget::setActiveEditor(TextEdit *editor) {
-  if (m_activeEditor == editor) {
-    return;
-  }
-
+  // Always disconnect the previous editor's document signal, even when the
+  // editor pointer is unchanged, because the underlying QTextDocument may
+  // have been replaced with a different one.
   if (m_activeEditor) {
     disconnect(m_activeEditor->document(), &QTextDocument::contentsChanged,
                this, &ChatWidget::onDocumentStructureChanged);
@@ -227,6 +281,13 @@ void ChatWidget::setActiveEditor(TextEdit *editor) {
             &ChatWidget::onDocumentStructureChanged);
 
     m_activeEditor->refreshPendingEdits();
+  }
+
+  // Force a full rebuild of the context model. Because ContextModel caches
+  // per scopeId, we clear it first so that a different document with the
+  // same scope IDs does not inherit stale sent hashes.
+  if (m_contextModel) {
+    m_contextModel->clear();
   }
 
   refreshContextModel();
@@ -315,14 +376,7 @@ void ChatWidget::refreshContextModel() {
 
   const DocumentStructure &structure = doc->structure();
 
-  bool hasSections = false;
-
-  for (const DocumentNode &child : structure.root().children) {
-    if (child.type == QStringLiteral("section")) {
-      hasSections = true;
-      break;
-    }
-  }
+  const QString documentText = doc->toPlainText();
 
   QVector<ContextModel::Entry> entries;
 
@@ -330,44 +384,17 @@ void ChatWidget::refreshContextModel() {
       [&](const DocumentNode &node, int depth) {
         const bool isRoot = node.id == QStringLiteral("document");
 
-        if (isRoot && hasSections) {
-        } else if (node.type == QStringLiteral("section") || isRoot) {
+        if (!isRoot && node.id.isEmpty()) {
+          // Anonymous node: skip, but still recurse into children.
+        } else {
           ContextModel::Entry entry;
 
           entry.scopeId = node.id;
           entry.depth = depth;
           entry.contentHash = node.contentHash;
+          entry.heading = labelForNode(node, documentText);
 
-          if (node.type == QStringLiteral("section")) {
-            const QString text = doc->toPlainText();
-
-            int cursor = qBound(0, node.start, text.size());
-            const int scopeEnd = qBound(cursor, node.end, text.size());
-
-            while (cursor < scopeEnd) {
-              int lineEnd = text.indexOf(QChar('\n'), cursor);
-
-              if (lineEnd < 0 || lineEnd > scopeEnd) {
-                lineEnd = scopeEnd;
-              }
-
-              const QString line =
-                  text.mid(cursor, lineEnd - cursor).trimmed();
-
-              if (line.startsWith(QChar('#'))) {
-                entry.heading = line;
-                break;
-              }
-
-              cursor = lineEnd + 1;
-            }
-          } else {
-            entry.heading = QStringLiteral("(document)");
-          }
-
-          if (!entry.scopeId.isEmpty()) {
-            entries.append(entry);
-          }
+          entries.append(entry);
         }
 
         for (const DocumentNode &child : node.children) {
@@ -408,7 +435,7 @@ void ChatWidget::refreshContextModel() {
     }
   }
 
-  if (doc->toPlainText().isEmpty()) {
+  if (documentText.isEmpty()) {
     for (const ContextModel::Entry &entry : m_contextModel->entries()) {
       if (entry.scopeId == QStringLiteral("document")) {
         m_contextModel->setIncluded(QStringLiteral("document"), true);
@@ -428,6 +455,20 @@ void ChatWidget::submitTranscribedText(const QString &text) {
   sendPrompt(text);
 }
 
+void ChatWidget::triggerWholeFileRewrite() {
+  const QString prompt = m_input->text().trimmed();
+
+  if (prompt.isEmpty()) {
+    appendStatusMessage(
+        tr("Type a rewrite instruction in the input box first."));
+    return;
+  }
+
+  m_input->clear();
+
+  sendPromptWithMode(prompt, 1);
+}
+
 void ChatWidget::onSendClicked() {
   const QString prompt = m_input->text().trimmed();
 
@@ -437,12 +478,22 @@ void ChatWidget::onSendClicked() {
 
   m_input->clear();
 
-  sendPrompt(prompt);
+  int scopeMode = 0;
+
+  if (m_editModeCombo) {
+    scopeMode = m_editModeCombo->currentIndex();
+  }
+
+  sendPromptWithMode(prompt, scopeMode);
 }
 
 void ChatWidget::sendPrompt(const QString &prompt) {
+  sendPromptWithMode(prompt, 0);
+}
+
+void ChatWidget::sendPromptWithMode(const QString &prompt, int scopeMode) {
   if (m_editFlow) {
-    m_editFlow->sendPrompt(prompt);
+    m_editFlow->sendPromptWithMode(prompt, scopeMode);
   }
 }
 
@@ -531,9 +582,6 @@ void ChatWidget::onPlanValidated(const QVector<EditCommand> &commands) {
     return;
   }
 
-  // Mark only the scopes the plan actually references as sent, not the full
-  // included set. Scopes we sent but the model did not act on remain eligible
-  // for re-sending next turn.
   if (m_contextModel) {
     QStringList referenced;
 
@@ -570,6 +618,8 @@ void ChatWidget::onPlanApprovalRequested(
 void ChatWidget::onPlanCancelled() {
   appendStatusMessage(tr("Plan cancelled."));
 
+  emit previewActivationRequested(false);
+
   if (m_editSession) {
     m_editSession->abort();
   }
@@ -583,6 +633,8 @@ void ChatWidget::onPlanReady(const QVector<EditCommand> &commands) {
   if (m_editFlow) {
     m_editFlow->onPlanReady(commands);
   }
+
+  emit previewActivationRequested(true);
 }
 
 void ChatWidget::onPlanFailed(const QString &reason) {
@@ -619,6 +671,10 @@ void ChatWidget::onApplyAcceptedPendingEdits() {
   if (m_editSession) {
     m_editSession->applyAcceptedPendingEdits();
   }
+
+  emit previewActivationRequested(false);
+
+  emit contextScopesChanged({});
 }
 
 void ChatWidget::onEditCandidatesReady(
@@ -641,6 +697,8 @@ void ChatWidget::onEditFailed(const QString &reason) {
 }
 
 void ChatWidget::onEditAborted() {
+  emit previewActivationRequested(false);
+
   if (m_editFlow) {
     m_editFlow->onEditAborted();
   }

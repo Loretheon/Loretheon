@@ -30,8 +30,13 @@ find_program(MERMAID_CLI
         NAMES mmdc
         REQUIRED)
 
+find_program(GRAPHVIZ_DOT
+        NAMES dot
+        REQUIRED)
+
 message(STATUS "TREE_SITTER_CLI=${TREE_SITTER_CLI}")
 message(STATUS "MERMAID_CLI=${MERMAID_CLI}")
+message(STATUS "GRAPHVIZ_DOT=${GRAPHVIZ_DOT}")
 
 get_filename_component(EPISTEME_NODE_BIN_RESOLVED
         "${MERMAID_CLI}"
@@ -58,6 +63,13 @@ set(EPISTEME_EXT_CMAKE_ARGS
 )
 
 function(episteme_external name dir)
+    cmake_parse_arguments(EE "" "" "BYPRODUCTS;EXTRA_CMAKE_ARGS" ${ARGN})
+
+    set(_build_byproducts "")
+    foreach(_byproduct ${EE_BYPRODUCTS})
+        list(APPEND _build_byproducts "${EPISTEME_EXTERNAL_PREFIX}/${_byproduct}")
+    endforeach()
+
     ExternalProject_Add(ext_${name}
             SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/${dir}"
             BINARY_DIR "${EPISTEME_EXTERNAL_BUILD_DIR}/${name}"
@@ -65,28 +77,112 @@ function(episteme_external name dir)
             TMP_DIR "${EPISTEME_EXTERNAL_BUILD_DIR}/tmp/${name}"
             LOG_DIR "${EPISTEME_EXTERNAL_BUILD_DIR}/logs/${name}"
             INSTALL_DIR "${EPISTEME_EXTERNAL_PREFIX}"
-            CMAKE_ARGS ${EPISTEME_EXT_CMAKE_ARGS} ${ARGN}
+            CMAKE_ARGS ${EPISTEME_EXT_CMAKE_ARGS} ${EE_EXTRA_CMAKE_ARGS}
+            BUILD_BYPRODUCTS ${_build_byproducts}
             UPDATE_DISCONNECTED ON
             BUILD_ALWAYS OFF
             EXCLUDE_FROM_ALL ON
     )
 endfunction()
 
+function(episteme_import_static target ep_target relative_path)
+    set(_abs "${EPISTEME_EXTERNAL_PREFIX}/${relative_path}")
+
+    if(NOT TARGET ${target})
+        add_library(${target} STATIC IMPORTED GLOBAL)
+        set_target_properties(${target} PROPERTIES IMPORTED_LOCATION "${_abs}")
+        add_dependencies(${target} ${ep_target})
+    endif()
+endfunction()
+
+function(episteme_ts_grammar name subdir header_subdir)
+    set(_src_dir "${CMAKE_CURRENT_SOURCE_DIR}/external/${subdir}")
+    set(_gen_parser "${_src_dir}/src/parser.c")
+    set(_gen_scanner "${_src_dir}/src/scanner.c")
+    set(_header "${_src_dir}/${header_subdir}/tree-sitter-${name}.h")
+
+    if(NOT EXISTS "${_gen_parser}")
+        add_custom_command(
+                OUTPUT "${_gen_parser}"
+                COMMAND "${TREE_SITTER_CLI}" generate
+                WORKING_DIRECTORY "${_src_dir}"
+                DEPENDS "${_src_dir}/grammar.js"
+                COMMENT "Generating tree-sitter-${name} parser"
+                VERBATIM
+        )
+    endif()
+
+    set(_sources "${_gen_parser}")
+
+    if(EXISTS "${_gen_scanner}")
+        list(APPEND _sources "${_gen_scanner}")
+    endif()
+
+    add_library(tree-sitter-${name} STATIC ${_sources})
+
+    target_include_directories(tree-sitter-${name}
+            PRIVATE "${_src_dir}/src")
+
+    set_target_properties(tree-sitter-${name} PROPERTIES
+            C_STANDARD 11
+            POSITION_INDEPENDENT_CODE ON
+            DEFINE_SYMBOL "")
+
+    if(EXISTS "${_header}")
+        set(_header_dest
+                "${EPISTEME_EXTERNAL_PREFIX}/include/tree_sitter/tree-sitter-${name}.h")
+
+        add_custom_command(
+                TARGET tree-sitter-${name} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E make_directory
+                "${EPISTEME_EXTERNAL_PREFIX}/include/tree_sitter"
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${_header}" "${_header_dest}"
+                COMMENT "Installing tree-sitter-${name} header"
+                VERBATIM
+        )
+    endif()
+endfunction()
+
 episteme_external(edlib edlib
+        BYPRODUCTS
+        lib/libedlib.a
+        EXTRA_CMAKE_ARGS
         -DEDLIB_BUILD_EXAMPLES=OFF
         -DEDLIB_BUILD_UTILITIES=OFF
         -DEDLIB_ENABLE_INSTALL=ON)
 
 episteme_external(tree-sitter tree-sitter
+        BYPRODUCTS
+        lib/libtree-sitter.a
+        EXTRA_CMAKE_ARGS
         -DBUILD_SHARED_LIBS=OFF)
 
 episteme_external(tree-sitter-markdown tree-sitter-markdown
+        BYPRODUCTS
+        lib/libtree-sitter-markdown.a
+        lib/libtree-sitter-markdown-inline.a
+        EXTRA_CMAKE_ARGS
         -DBUILD_SHARED_LIBS=OFF
         -DTREE_SITTER_CLI=${TREE_SITTER_CLI})
 
 episteme_external(lunasvg lunasvg
+        BYPRODUCTS
+        lib/liblunasvg.a
+        lib/libplutovg.a
+        EXTRA_CMAKE_ARGS
         -DBUILD_SHARED_LIBS=OFF
         -DLUNASVG_BUILD_EXAMPLES=OFF)
+
+episteme_import_static(ep_edlib                 ext_edlib                 lib/libedlib.a)
+episteme_import_static(ep_tree_sitter           ext_tree-sitter           lib/libtree-sitter.a)
+episteme_import_static(ep_tree_sitter_markdown  ext_tree-sitter-markdown  lib/libtree-sitter-markdown.a)
+episteme_import_static(ep_tree_sitter_md_inline ext_tree-sitter-markdown  lib/libtree-sitter-markdown-inline.a)
+episteme_import_static(ep_lunasvg                ext_lunasvg               lib/liblunasvg.a)
+episteme_import_static(ep_plutovg                ext_lunasvg               lib/libplutovg.a)
+
+episteme_ts_grammar(dot      tree-sitter-dot      bindings/c)
+episteme_ts_grammar(mermaid  tree-sitter-mermaid  bindings/c)
 
 add_subdirectory(
         external/QF-ML
@@ -105,6 +201,10 @@ add_executable(Episteme
         include/text/TextEdit.h
         src/text/TextWidget.cpp
         include/text/TextWidget.h
+        src/text/preview/PreviewPane.cpp
+        include/text/preview/PreviewPane.h
+        src/text/preview/PreviewController.cpp
+        include/text/preview/PreviewController.h
         src/file/model/FileSystemModel.cpp
         include/file/model/FileSystemModel.h
         src/file/FileSystemView.cpp
@@ -136,14 +236,24 @@ add_executable(Episteme
         src/ai/edit/EditSession.cpp
         include/ai/edit/EditSession.h
         include/ai/edit/EditMatch.h
+        src/ai/history/HistoryModel.cpp
+        include/ai/history/HistoryModel.h
+        src/ai/history/HistoryPanel.cpp
+        include/ai/history/HistoryPanel.h
         src/text/structure/DocumentStructure.cpp
         include/text/structure/DocumentStructure.h
         src/text/structure/MarkdownStructureParser.cpp
         include/text/structure/MarkdownStructureParser.h
-        src/text/structure/DocumentNode.cpp
-        include/text/structure/DocumentNode.h
         src/text/structure/PlainTextStructureParser.cpp
         include/text/structure/PlainTextStructureParser.h
+        src/text/structure/DotStructureParser.cpp
+        include/text/structure/DotStructureParser.h
+        src/text/structure/MermaidStructureParser.cpp
+        include/text/structure/MermaidStructureParser.h
+        src/text/structure/PlantUmlStructureParser.cpp
+        include/text/structure/PlantUmlStructureParser.h
+        src/text/structure/DocumentNode.cpp
+        include/text/structure/DocumentNode.h
         src/ai/edit/EditSessionWidget.cpp
         include/ai/edit/EditSessionWidget.h
         src/ai/edit/PendingEdit.cpp
@@ -195,11 +305,10 @@ add_executable(Episteme
         include/app/theme/ThemeAware.h
         src/app/theme/ThemeManager.cpp
         include/app/theme/ThemeManager.h
-        include/ai/context/ContextModel.cpp
+        src/ai/context/ContextModel.cpp
         include/ai/context/ContextModel.h
-        include/ai/context/ContextPanel.cpp
+        src/ai/context/ContextPanel.cpp
         include/ai/context/ContextPanel.h
-
 )
 
 add_dependencies(Episteme
@@ -211,6 +320,7 @@ add_dependencies(Episteme
 
 target_compile_definitions(Episteme PRIVATE
         EPISTEME_MERMAID_CLI="${MERMAID_CLI}"
+        EPISTEME_GRAPHVIZ_DOT="${GRAPHVIZ_DOT}"
 )
 
 target_include_directories(Episteme PRIVATE
@@ -220,28 +330,27 @@ target_include_directories(Episteme PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include/text/formats
         ${CMAKE_CURRENT_SOURCE_DIR}/include/text/model
         ${CMAKE_CURRENT_SOURCE_DIR}/include/text/diagram
+        ${CMAKE_CURRENT_SOURCE_DIR}/include/text/preview
         ${CMAKE_CURRENT_SOURCE_DIR}/include/text/structure
         ${CMAKE_CURRENT_SOURCE_DIR}/include/text/svg
         ${CMAKE_CURRENT_SOURCE_DIR}/include/file
         ${CMAKE_CURRENT_SOURCE_DIR}/include/file/model
         ${CMAKE_CURRENT_SOURCE_DIR}/include/ai
         ${CMAKE_CURRENT_SOURCE_DIR}/include/ai/context
+        ${CMAKE_CURRENT_SOURCE_DIR}/include/ai/history
         ${CMAKE_CURRENT_SOURCE_DIR}/include/ai/chat
         ${CMAKE_CURRENT_SOURCE_DIR}/include/ai/edit
         ${CMAKE_CURRENT_SOURCE_DIR}/external/QF-ML/include
         ${CMAKE_CURRENT_SOURCE_DIR}/external/edlib/edlib/include
         ${CMAKE_CURRENT_SOURCE_DIR}/external/tree-sitter/lib/include
         ${CMAKE_CURRENT_SOURCE_DIR}/external/tree-sitter-markdown/tree-sitter-markdown/bindings/c
+        ${CMAKE_CURRENT_SOURCE_DIR}/external/tree-sitter-markdown/tree-sitter-markdown-inline/bindings/c
         ${CMAKE_CURRENT_SOURCE_DIR}/external/lunasvg/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/external/lunasvg/plutovg/include
         ${EPISTEME_EXTERNAL_PREFIX}/include
-)
-
-target_link_directories(Episteme PRIVATE
-        ${EPISTEME_EXTERNAL_PREFIX}/lib
-        ${EPISTEME_EXTERNAL_BUILD_DIR}/edlib
-        ${EPISTEME_EXTERNAL_BUILD_DIR}/tree-sitter
-        ${EPISTEME_EXTERNAL_BUILD_DIR}/tree-sitter-markdown
-        ${EPISTEME_EXTERNAL_BUILD_DIR}/lunasvg
+        ${EPISTEME_EXTERNAL_PREFIX}/include/tree_sitter
+        ${EPISTEME_EXTERNAL_PREFIX}/include/lunasvg
+        ${EPISTEME_EXTERNAL_PREFIX}/include/plutovg
 )
 
 set_target_properties(Episteme PROPERTIES
@@ -262,9 +371,12 @@ target_link_libraries(Episteme PRIVATE
         Qt6::SvgWidgets
         Qt6::Xml
         qf-inference
-        edlib
-        tree-sitter
-        tree-sitter-markdown
-        ${EPISTEME_EXTERNAL_PREFIX}/lib/liblunasvg.a
-        ${EPISTEME_EXTERNAL_PREFIX}/lib/libplutovg.a
+        ep_edlib
+        ep_tree_sitter
+        ep_tree_sitter_markdown
+        ep_tree_sitter_md_inline
+        tree-sitter-dot
+        tree-sitter-mermaid
+        ep_lunasvg
+        ep_plutovg
 )

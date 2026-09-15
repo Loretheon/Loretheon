@@ -18,6 +18,9 @@ class GraphvizRenderer;
 class PlantUmlRenderer;
 class MermaidRenderer;
 class TextDocument;
+class PreviewPane;
+class PreviewController;
+class EditSession;
 
 class TextWidget : public QTabWidget, public ThemeAware {
   Q_OBJECT
@@ -26,18 +29,22 @@ public:
   explicit TextWidget(QWidget *parent = nullptr);
 
   TextEdit *editor() const { return textEdit; }
+
   void setActiveDocument(TextDocument *document);
   void setProjectRoot(const QString &root);
 
+  void setPreviewSession(EditSession *session);
+
   void setThemeTokens(const ThemeTokens &tokens) override;
 
-
 public slots:
-void setContextScopes(const QStringList &scopeIds);
+  void setContextScopes(const QStringList &scopeIds);
 
-  
-  signals:
-    void openDocumentRequested(const QString &path);
+  void activatePreview(bool active);
+  void clearContextScopes();
+
+signals:
+  void openDocumentRequested(const QString &path);
   void statusMessage(const QString &text, int timeoutMs = 4000);
 
 private slots:
@@ -54,6 +61,10 @@ private:
   void applyThemeToRenderers();
 
   TextEdit *textEdit;
+  PreviewPane *previewPane = nullptr;
+  PreviewController *previewController = nullptr;
+  QStackedWidget *editorStack = nullptr;
+
   TextBrowser *textBrowser;
   QStackedWidget *viewStack;
   QWidget *diagramPage;

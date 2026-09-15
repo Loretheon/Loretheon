@@ -17,6 +17,7 @@
 class NotificationManager;
 
 class QCheckBox;
+class QComboBox;
 class QLineEdit;
 class QPushButton;
 class QTextEdit;
@@ -24,6 +25,7 @@ class QVBoxLayout;
 
 class ChatWidgetEditFlow;
 class ContextPanel;
+class HistoryPanel;
 
 class EditPlanner;
 class EditSession;
@@ -48,8 +50,12 @@ public:
 
   ContextModel *contextModel() const { return m_contextModel; }
 
+  void triggerWholeFileRewrite();
+
 signals:
   void contextScopesChanged(const QStringList &scopeIds);
+
+  void previewActivationRequested(bool active);
 
 private slots:
   void onPlanValidatedFromSession(const QVector<EditCommand> &commands);
@@ -112,6 +118,8 @@ private:
 
   void sendPrompt(const QString &prompt);
 
+  void sendPromptWithMode(const QString &prompt, int scopeMode);
+
   void appendUserMessage(const QString &text);
 
   void appendAssistantChunk(const QString &text);
@@ -124,8 +132,6 @@ private:
 
   void refreshContextModel();
 
-  // Expands a set of scope IDs so that "document" implies every scope it
-  // currently contains. Used when marking scopes as sent.
   QStringList expandSentScopes(const QStringList &scopeIds) const;
 
 private:
@@ -151,9 +157,13 @@ private:
 
   QCheckBox *m_editModeCheckbox = nullptr;
 
+  QComboBox *m_editModeCombo = nullptr;
+
   EditSessionWidget *m_editSessionWidget = nullptr;
 
   ContextPanel *m_contextPanel = nullptr;
+
+  HistoryPanel *m_historyPanel = nullptr;
 
   ContextModel *m_contextModel = nullptr;
 

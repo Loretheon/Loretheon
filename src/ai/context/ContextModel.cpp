@@ -1,4 +1,4 @@
-#include "ContextModel.h"
+#include "../../../include/ai/context/ContextModel.h"
 
 #include <algorithm>
 

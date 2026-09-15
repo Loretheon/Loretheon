@@ -10,6 +10,11 @@
 #include "TextEdit.h"
 #include "TextDocument.h"
 
+#include "preview/PreviewController.h"
+#include "preview/PreviewPane.h"
+
+#include "../ai/edit/EditSession.h"
+
 #include <QApplication>
 #include <QClipboard>
 #include <QDebug>
@@ -25,6 +30,8 @@
 TextWidget::TextWidget(QWidget *parent)
     : QTabWidget(parent),
       textEdit(new TextEdit(this)),
+      previewPane(new PreviewPane(this)),
+      editorStack(new QStackedWidget(this)),
       textBrowser(new TextBrowser(this)),
       viewStack(new QStackedWidget(this)),
       diagramPage(new QWidget(this)),
@@ -35,7 +42,10 @@ TextWidget::TextWidget(QWidget *parent)
       graphvizRenderer(new GraphvizRenderer(this)),
       plantUmlRenderer(new PlantUmlRenderer(this)),
       mermaidRenderer(new MermaidRenderer(this)) {
-  addTab(textEdit, tr("Edit"));
+  editorStack->addWidget(textEdit);
+  editorStack->addWidget(previewPane);
+
+  addTab(editorStack, tr("Edit"));
 
   viewStack->addWidget(textBrowser);
   viewStack->addWidget(diagramPage);
@@ -49,6 +59,8 @@ TextWidget::TextWidget(QWidget *parent)
 
   textBrowser->setDocument(previewDocument);
   svgView->setDocument(diagramDoc);
+
+  previewController = new PreviewController(textEdit, nullptr, previewPane, this);
 
   connect(diagramToolbar, &DiagramToolbar::zoomInRequested, svgView,
           &DiagramView::zoomIn);
@@ -146,13 +158,34 @@ TextWidget::TextWidget(QWidget *parent)
   diagramToolbar->setZoom(1.0);
 }
 
+void TextWidget::setPreviewSession(EditSession *session) {
+  if (previewController) {
+    previewController->setSession(session);
+  }
+}
+
+void TextWidget::activatePreview(bool active) {
+  if (!previewController || !editorStack) {
+    return;
+  }
+
+  previewController->setPreviewActive(active);
+
+  editorStack->setCurrentWidget(active ? static_cast<QWidget *>(previewPane)
+                                        : static_cast<QWidget *>(textEdit));
+}
+
+void TextWidget::clearContextScopes() {
+  if (textEdit) {
+    textEdit->clearHighlightedScopes();
+  }
+}
 
 void TextWidget::setContextScopes(const QStringList &scopeIds) {
   if (textEdit) {
     textEdit->setHighlightedScopes(scopeIds);
   }
 }
-
 
 void TextWidget::setThemeTokens(const ThemeTokens &tokens) {
   m_tokens = tokens;
@@ -226,6 +259,10 @@ void TextWidget::setActiveDocument(TextDocument *document) {
 
   textEdit->setDocument(activeDocument);
   textEdit->setDocumentMode(activeDocument->type());
+
+  if (previewController) {
+    previewController->setEditor(textEdit);
+  }
 
   connect(activeDocument, &QTextDocument::contentsChanged, this,
           &TextWidget::syncPreview);
@@ -301,7 +338,7 @@ void TextWidget::clearPreview() {
 void TextWidget::findInEditor(const QString &text) {
   if (text.isEmpty() || !textEdit) return;
 
-  setCurrentWidget(textEdit);
+  setCurrentWidget(editorStack);
 
   QTextCursor c = textEdit->textCursor();
   c.movePosition(QTextCursor::Start);

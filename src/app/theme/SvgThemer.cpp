@@ -357,8 +357,6 @@ bool applyTranslatePreserving(
 
 void recenterTextVertically(QDomDocument &doc) {
   const double kLineHeightFactor = 1.1;
-  // Approximate (ascent - descent) / 2 as a fraction of font size so that
-  // the visual center of a line of text sits at the requested y.
   const double kBaselineComp = 0.35;
 
   const QDomNodeList texts = doc.elementsByTagName("text");
@@ -375,12 +373,18 @@ void recenterTextVertically(QDomDocument &doc) {
 
     const double fontSize = fontSizeFor(textEl);
     const double lineHeight = kLineHeightFactor * fontSize;
-    const double baselineComp = kBaselineComp * fontSize;
 
-    QDomElement labelGroup = nearestLabelGroup(textEl);
+    // Original text y in Graphviz's coordinate space (pre-transform).
+    // If the <text> has no y, we cannot recenter without breaking layout,
+    // so skip it entirely.
+    if (!textEl.hasAttribute("y")) {
+      continue;
+    }
 
-    // Only consider tspans that are direct children of this <text> element
-    // to avoid grabbing nested tspans belonging to other text blocks.
+    bool ok = false;
+    const double textY = textEl.attribute("y").toDouble(&ok);
+    if (!ok) continue;
+
     QList<QDomElement> rows;
     for (QDomNode c = textEl.firstChild(); !c.isNull(); c = c.nextSibling()) {
       const QDomElement sp = c.toElement();
@@ -392,46 +396,40 @@ void recenterTextVertically(QDomDocument &doc) {
           if (r == sp) { dup = true; break; }
         }
         if (!dup) rows.append(sp);
-      }
+          }
     }
 
     if (rows.isEmpty()) {
-      textEl.setAttribute("y", QString::number(baselineComp, 'f', 3));
-      textEl.removeAttribute("dy");
-      textEl.setAttribute("text-anchor", "middle");
-      textEl.setAttribute("dominant-baseline", "central");
-      if (!labelGroup.isNull()) {
-        // Preserve existing translate, don't clobber.
-        // No-op here: label group keeps its current positioning.
-        Q_UNUSED(labelGroup);
-      }
+      // Single-row label. Graphviz already placed the baseline correctly.
+      // Leave y alone.
       continue;
     }
 
+    // Multi-row. Stack rows around the original text y, staying in
+    // Graphviz's coordinate space so the outer <g> transform applies
+    // correctly.
     const int n = rows.size();
     const double centerOffset = (n - 1) / 2.0;
 
+    // In Graphviz's pre-transform space, y grows *up*, so moving a row
+    // visually downward means subtracting from y.
     for (int i = 0; i < n; ++i) {
-      const double yUser = (i - centerOffset) * lineHeight + baselineComp;
+      const double yUser = textY - (i - centerOffset) * lineHeight;
 
       QDomElement row = rows[i];
       row.removeAttribute("dy");
       row.setAttribute("y", QString::number(yUser, 'f', 3));
-      row.setAttribute("x", "0");
+      row.setAttribute("x", textEl.attribute("x", "0"));
       row.setAttribute("text-anchor", "middle");
     }
 
+    // Clear the outer y so the tspans' y values are used.
     textEl.removeAttribute("y");
     textEl.removeAttribute("dy");
     textEl.setAttribute("text-anchor", "middle");
-    textEl.setAttribute("dominant-baseline", "central");
-
-    // Do NOT reset labelGroup's transform to translate(0,0); that
-    // destroys the layout-provided anchor position.
-    Q_UNUSED(labelGroup);
   }
 }
-} // namespace
+}
 
 QString SvgThemer::applyTheme(const QString &svg, const ThemeTokens &tokens) {
   if (svg.isEmpty()) return svg;

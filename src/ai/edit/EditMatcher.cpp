@@ -75,6 +75,8 @@ EditMatcher::Result EditMatcher::find(const TextDocument &document,
     return {};
   }
 
+  // ReplaceScope is handled before the general guard, because its find
+  // string is intentionally empty and the guard below would reject it.
   if (command.operation == EditCommand::Operation::ReplaceScope) {
     return findWholeScopeBody(document, command);
   }
@@ -107,7 +109,7 @@ EditMatcher::findWholeScopeBody(const TextDocument &document,
                                 const EditCommand &command) const {
   Result result;
 
-  if (command.findString.isEmpty() == false) {
+  if (!command.findString.isEmpty()) {
     return result;
   }
 
@@ -129,15 +131,19 @@ EditMatcher::findWholeScopeBody(const TextDocument &document,
 
   // Determine the body range. For Markdown sections, the body starts after
   // the heading line. For other node types, the whole node is the body.
+  //
+  // The root scope "document" always has a body equal to the whole file,
+  // with no heading to skip.
   int bodyStart = scope->start;
   int bodyEnd = scope->end;
 
-  if (scope->type == QStringLiteral("section")) {
+  const bool isRootScope = scope->id == QStringLiteral("document");
+
+  if (!isRootScope && scope->type == QStringLiteral("section")) {
     int headingStart = -1;
     int headingEnd = -1;
 
     if (structure.headingRange(command.scopeId, headingStart, headingEnd)) {
-      // Body starts on the next line after the heading line.
       int afterHeading = headingEnd;
 
       while (afterHeading < bodyEnd &&

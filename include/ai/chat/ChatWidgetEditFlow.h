@@ -17,6 +17,8 @@ public slots:
 
   void sendPrompt(const QString &prompt);
 
+  void sendPromptWithMode(const QString &prompt, int scopeMode);
+
   void requestNextEditCommand();
 
   void onPlanValidated(const QVector<EditCommand> &commands);
@@ -50,4 +52,6 @@ private:
 
 private:
   ChatWidget *m_widget = nullptr;
+
+  int m_scopeMode = 0;  // 0 = Scoped, 1 = WholeFile
 };

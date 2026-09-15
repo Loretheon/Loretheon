@@ -28,6 +28,44 @@ bool matchesDocumentText(const QString &documentText, const EditMatch &match) {
          match.matchedText;
 }
 
+// Ensures that a replacement inserted at `position` leaves a clean boundary
+// with the character that now follows it. Used for ReplaceScope and Replace
+// where the following character is a non-whitespace start of the next block
+// (e.g. a Markdown heading).
+QString normaliseTrailingBoundary(const QString &replacement,
+                                  const QString &followingText) {
+  QString result = replacement;
+
+  // Strip trailing newlines from the replacement; we will re-add exactly the
+  // amount needed for a clean boundary.
+  while (result.endsWith(QChar('\n'))) {
+    result.chop(1);
+  }
+
+  if (result.isEmpty()) {
+    return result;
+  }
+
+  if (followingText.isEmpty()) {
+    return result + QStringLiteral("\n");
+  }
+
+  const QChar next = followingText.at(0);
+
+  // If the following character is a newline already, we do not need to add
+  // anything. If it is a heading marker or any other non-whitespace, insert a
+  // blank line. If it is whitespace but not a newline, just add a newline.
+  if (next == QChar('\n')) {
+    return result + QStringLiteral("\n");
+  }
+
+  if (next.isSpace()) {
+    return result + QStringLiteral("\n");
+  }
+
+  return result + QStringLiteral("\n\n");
+}
+
 } // namespace
 
 EditApplier::EditApplier(QObject *parent) : QObject(parent) {}
@@ -249,6 +287,32 @@ bool EditApplier::finishStreaming() {
     return false;
   }
 
+  // Post-process the boundary for ReplaceScope: ensure the streamed content
+  // is separated from whatever follows by a blank line.
+  if (m_streamingCommand.operation ==
+      EditCommand::Operation::ReplaceScope) {
+    const QString docText = m_streamingDocument->toPlainText();
+    const int afterEnd = m_streamingStart + m_streamingLength;
+
+    if (afterEnd < docText.size()) {
+      const QChar next = docText.at(afterEnd);
+
+      if (!next.isSpace()) {
+        m_streamingCursor.insertText(QStringLiteral("\n\n"));
+        m_streamingLength += 2;
+      } else if (next == QChar('\n')) {
+        // Already a newline; nothing to do unless it is the only one.
+        const bool onlyOne =
+            afterEnd + 1 >= docText.size() ||
+            docText.at(afterEnd + 1) != QChar('\n');
+        if (onlyOne) {
+          m_streamingCursor.insertText(QStringLiteral("\n"));
+          m_streamingLength += 1;
+        }
+      }
+    }
+  }
+
   const bool usedFuzzyMatch = m_streamingMatch.editDistance > 0;
 
   const int editDistance = m_streamingMatch.editDistance;
@@ -320,9 +384,17 @@ bool EditApplier::applyOne(QTextDocument &document, const EditCommand &command,
 
   cursor.removeSelectedText();
 
-  if (command.operation == EditCommand::Operation::Replace ||
-      command.operation == EditCommand::Operation::ReplaceScope) {
+  if (command.operation == EditCommand::Operation::Replace) {
     cursor.insertText(command.newString);
+  } else if (command.operation == EditCommand::Operation::ReplaceScope) {
+    const QString following = match.end < documentText.size()
+                                  ? documentText.mid(match.end)
+                                  : QString();
+
+    const QString normalised =
+        normaliseTrailingBoundary(command.newString, following);
+
+    cursor.insertText(normalised);
   }
 
   return true;

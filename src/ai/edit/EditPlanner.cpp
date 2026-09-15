@@ -48,6 +48,25 @@ QString findSectionHeading(const DocumentNode &node,
   return {};
 }
 
+QString firstNonEmptyLine(const DocumentNode &node,
+                          const QString &documentText, int maxChars = 120) {
+  const int start = qBound(0, node.start, documentText.size());
+  const int end = qBound(start, node.end, documentText.size());
+
+  const QStringList lines =
+      documentText.mid(start, end - start).split(QChar('\n'));
+
+  for (const QString &line : lines) {
+    const QString trimmed = line.trimmed();
+
+    if (!trimmed.isEmpty()) {
+      return trimmed.left(maxChars);
+    }
+  }
+
+  return {};
+}
+
 QString headingTitle(const QString &heading) {
   const int firstNonHash =
       heading.indexOf(QRegularExpression(QStringLiteral("\\S")));
@@ -57,15 +76,28 @@ QString headingTitle(const QString &heading) {
 
 void collectSections(const DocumentNode &node, const QString &documentText,
                      QVector<SectionInfo> &sections) {
-  if (node.type == QStringLiteral("section") && !node.id.isEmpty()) {
+  const bool isRoot = node.id == QStringLiteral("document");
+
+  if (!isRoot && !node.id.isEmpty()) {
     const int start = qBound(0, node.start, documentText.size());
     const int end = qBound(start, node.end, documentText.size());
 
-    const QString heading = findSectionHeading(node, documentText);
+    QString heading;
+
+    if (node.type == QStringLiteral("section")) {
+      heading = findSectionHeading(node, documentText);
+    }
+
+    if (heading.isEmpty()) {
+      heading = firstNonEmptyLine(node, documentText);
+    }
 
     if (!heading.isEmpty()) {
       sections.append(
           SectionInfo{heading, headingTitle(heading), node.id, start, end});
+    } else {
+      sections.append(
+          SectionInfo{QString(), node.id, node.id, start, end});
     }
   }
 
@@ -357,6 +389,11 @@ EditPlanner::EditPlanner(InferenceService *inferenceService, QObject *parent)
 }
 
 void EditPlanner::start(TextEdit *editor, const QString &userRequest) {
+  start(editor, userRequest, ScopeMode::Scoped);
+}
+
+void EditPlanner::start(TextEdit *editor, const QString &userRequest,
+                        ScopeMode mode) {
   if (!m_inferenceService) {
     emit failed(QStringLiteral("Inference service is unavailable."));
     return;
@@ -381,6 +418,7 @@ void EditPlanner::start(TextEdit *editor, const QString &userRequest) {
   m_editor = editor;
   m_userRequest = userRequest.trimmed();
   m_streamingResponse.clear();
+  m_scopeMode = mode;
 
   document->rebuildStructure();
 
@@ -410,86 +448,135 @@ void EditPlanner::start(TextEdit *editor, const QString &userRequest) {
           ? QString()
           : QStringLiteral("\nCurrent selection:\n%1\n").arg(selectedText);
 
-  const QString prompt =
-      QStringLiteral(
-          "You are planning edits to a document.\n"
-          "\n"
-          "Return exactly one JSON array.\n"
-          "Do not return markdown fences.\n"
-          "Do not return explanatory text.\n"
-          "\n"
-          "The application has already determined the user's target "
-          "section(s) and requested operation.\n"
-          "You MUST follow those decisions exactly.\n"
-          "\n"
-          "Resolved target(s):\n"
-          "%1\n"
-          "\n"
-          "Resolved operation:\n"
-          "%2\n"
-          "\n"
-          "Rules:\n"
-          "- One user intention produces exactly one edit.\n"
-          "- Do not split one intention into multiple edits.\n"
-          "- Do not use delete+insert to implement replace.\n"
-          "- Do not duplicate or recreate existing subsections.\n"
-          "- Preserve existing headings unless the user explicitly "
-          "requests structural changes.\n"
-          "- Do not target a parent or child section when the requested "
-          "section itself exists.\n"
-          "\n"
-          "Each edit MUST contain exactly:\n"
-          "operation, scope, position, find, all, instruction.\n"
-          "\n"
-          "operation must be one of: insert, replace, delete, replace_scope.\n"
-          "\n"
-          "For insert:\n"
-          "- find MUST be empty.\n"
-          "- position MUST be before or after.\n"
-          "\n"
-          "For replace/delete:\n"
-          "- find MUST be a short, distinctive piece of existing text "
-          "inside the selected scope.\n"
-          "- position MUST be before or after.\n"
-          "\n"
-          "For replace_scope:\n"
-          "- Use this when the user asks to rewrite or replace the ENTIRE "
-          "body of a section or scope.\n"
-          "- find MUST be empty.\n"
-          "- position MUST be inside.\n"
-          "- all MUST be false.\n"
-          "- Do NOT use replace_scope when only part of the content "
-          "changes; use replace with a find string instead.\n"
-          "\n"
-          "all MUST be false unless the user explicitly requests all, "
-          "every, or each occurrence.\n"
-          "\n"
-          "instruction must describe exactly what this single edit "
-          "should accomplish, including all requested details.\n"
-          "\n"
-          "Scope hierarchy:\n"
-          "%3\n"
-          "\n"
-          "Document structure:\n"
-          "%4\n"
-          "\n"
-          "User request:\n"
-          "%5\n"
-          "%6\n"
-          "Document:\n"
-          "%7")
-          .arg(targetLines.join('\n'), operationName(requestedOp),
-               hierarchyMap(sections),
-               document->structure().sectionIndexForModel(), m_userRequest,
-               selectionContext, documentText);
+  QString prompt;
+
+  if (m_scopeMode == ScopeMode::WholeFile) {
+    prompt =
+        QStringLiteral(
+            "You are planning a whole-file rewrite.\n"
+            "\n"
+            "Return exactly one JSON array containing exactly one edit.\n"
+            "Do not return markdown fences.\n"
+            "Do not return explanatory text.\n"
+            "\n"
+            "The single edit MUST be:\n"
+            "- operation: replace_scope\n"
+            "- scope: \"document\"\n"
+            "- position: inside\n"
+            "- find: \"\"\n"
+            "- all: false\n"
+            "- instruction: a description of what the new file should "
+            "contain, in full detail.\n"
+            "\n"
+            "The application will generate the new file body from your "
+            "instruction. Your instruction must therefore specify everything "
+            "needed to reproduce the intended output: structure, headings, "
+            "code blocks, formatting, and any content that must be preserved "
+            "or changed.\n"
+            "\n"
+            "Do not propose any other operation. Do not propose more than "
+            "one edit. Do not use replace, insert, or delete.\n"
+            "\n"
+            "User request:\n"
+            "%1\n"
+            "%2\n"
+            "Current file:\n"
+            "%3")
+            .arg(m_userRequest, selectionContext, documentText);
+  } else {
+    prompt =
+        QStringLiteral(
+            "You are planning edits to a document.\n"
+            "\n"
+            "Return exactly one JSON array.\n"
+            "Do not return markdown fences.\n"
+            "Do not return explanatory text.\n"
+            "\n"
+            "The application has already determined the user's target "
+            "section(s) and requested operation.\n"
+            "You MUST follow those decisions exactly.\n"
+            "\n"
+            "Resolved target(s):\n"
+            "%1\n"
+            "\n"
+            "Resolved operation:\n"
+            "%2\n"
+            "\n"
+            "Rules:\n"
+            "- One user intention produces exactly one edit.\n"
+            "- Do not split one intention into multiple edits.\n"
+            "- Do not use delete+insert to implement replace.\n"
+            "- Do not duplicate or recreate existing subsections.\n"
+            "- Preserve existing headings unless the user explicitly "
+            "requests structural changes.\n"
+            "- Do not target a parent or child section when the requested "
+            "section itself exists.\n"
+            "\n"
+            "Each edit MUST contain exactly:\n"
+            "operation, scope, position, find, all, instruction.\n"
+            "\n"
+            "operation must be one of: insert, replace, delete, replace_scope.\n"
+            "\n"
+            "For insert:\n"
+            "- find MUST be empty.\n"
+            "- position MUST be before or after.\n"
+            "\n"
+            "For replace:\n"
+            "- find MUST be the exact substring the user wants replaced. "
+            "It must be a verbatim substring of the scope's current text.\n"
+            "- find MUST be as short as possible while still being unique "
+            "within the scope.\n"
+            "- instruction MUST describe only what the replacement of that "
+            "substring should look like. It must not describe a change to "
+            "the surrounding sentence or paragraph.\n"
+            "- position MUST be before or after.\n"
+            "\n"
+            "For delete:\n"
+            "- find MUST be the exact substring to delete.\n"
+            "- position MUST be before or after.\n"
+            "\n"
+            "For replace_scope:\n"
+            "- Use this only when the user asks to rewrite or replace the "
+            "ENTIRE body of a section or scope.\n"
+            "- find MUST be empty.\n"
+            "- position MUST be inside.\n"
+            "- all MUST be false.\n"
+            "- Do NOT use replace_scope when only part of the content "
+            "changes; use replace with a find string instead.\n"
+            "\n"
+            "all MUST be false unless the user explicitly requests all, "
+            "every, or each occurrence.\n"
+            "\n"
+            "instruction must describe exactly what this single edit "
+            "should accomplish, including all requested details.\n"
+            "\n"
+            "Scope hierarchy:\n"
+            "%3\n"
+            "\n"
+            "Document structure:\n"
+            "%4\n"
+            "\n"
+            "User request:\n"
+            "%5\n"
+            "%6\n"
+            "Document:\n"
+            "%7")
+            .arg(targetLines.join('\n'), operationName(requestedOp),
+                 hierarchyMap(sections),
+                 document->structure().sectionIndexForModel(), m_userRequest,
+                 selectionContext, documentText);
+  }
 
   m_payloadLogger.log(
       QStringLiteral("EDIT_PLAN_REQUEST"),
-      QStringLiteral("User Request: \"%1\"\n"
-                     "Resolved Operation: %2\n"
-                     "Resolved Targets (%3): %4\n"
-                     "Doc Size: %5 chars | Prompt Size: %6 chars")
-          .arg(m_userRequest, operationName(requestedOp),
+      QStringLiteral("Mode: %1\n"
+                     "User Request: \"%2\"\n"
+                     "Resolved Operation: %3\n"
+                     "Resolved Targets (%4): %5\n"
+                     "Doc Size: %6 chars | Prompt Size: %7 chars")
+          .arg(m_scopeMode == ScopeMode::WholeFile ? QStringLiteral("whole")
+                                                    : QStringLiteral("scoped"),
+               m_userRequest, operationName(requestedOp),
                QString::number(targets.size()),
                targetLines.isEmpty() ? QStringLiteral("None")
                                      : targetLines.join(QStringLiteral(", ")),
@@ -506,8 +593,14 @@ void EditPlanner::start(TextEdit *editor, const QString &userRequest) {
 
   QStringList contextScopeIds;
 
-  for (const SectionInfo *section : targets) {
-    contextScopeIds.append(section->scopeId);
+  if (m_scopeMode == ScopeMode::WholeFile) {
+    if (!document->structure().root().id.isEmpty()) {
+      contextScopeIds.append(document->structure().root().id);
+    }
+  } else {
+    for (const SectionInfo *section : targets) {
+      contextScopeIds.append(section->scopeId);
+    }
   }
 
   emit contextScopes(contextScopeIds);
@@ -571,7 +664,6 @@ bool EditPlanner::takeCompleteJsonValue(QString &buffer, QString &jsonText) {
   int start = 0;
 
   if (buffer.at(0) != QChar('{') && buffer.at(0) != QChar('[')) {
-
     const int objectStart = buffer.indexOf(QChar('{'));
 
     const int arrayStart = buffer.indexOf(QChar('['));
@@ -797,9 +889,44 @@ void EditPlanner::processStream() {
 
     command.instruction = instructionValue.toString().trimmed();
 
-    const SectionInfo *section = findSection(sections, command.scopeId);
+    if (m_scopeMode == ScopeMode::WholeFile) {
+      if (command.operation != EditCommand::Operation::ReplaceScope) {
+        emit failed(QStringLiteral(
+            "Whole-file mode requires operation 'replace_scope'."));
+        return;
+      }
 
-    if (!section && command.scopeId.isEmpty()) {
+      if (command.scopeId != QStringLiteral("document")) {
+        emit failed(QStringLiteral(
+            "Whole-file mode requires scope 'document'."));
+        return;
+      }
+
+      if (command.position != EditCommand::Position::Inside) {
+        emit failed(QStringLiteral(
+            "Whole-file mode requires position 'inside'."));
+        return;
+      }
+
+      if (!command.findString.isEmpty()) {
+        emit failed(QStringLiteral(
+            "Whole-file mode requires an empty find string."));
+        return;
+      }
+
+      if (command.replaceAll) {
+        emit failed(QStringLiteral(
+            "Whole-file mode requires all=false."));
+        return;
+      }
+    }
+
+    const bool isDocumentRoot = command.scopeId == QStringLiteral("document");
+
+    const SectionInfo *section =
+        isDocumentRoot ? nullptr : findSection(sections, command.scopeId);
+
+    if (!isDocumentRoot && !section && command.scopeId.isEmpty()) {
       if (command.operation != EditCommand::Operation::Insert) {
         emit failed(QStringLiteral("Edit plan item %1 uses an empty scope but "
                                    "is not an insertion.")
@@ -813,7 +940,7 @@ void EditPlanner::processStream() {
                         .arg(i + 1));
         return;
       }
-    } else if (!section) {
+    } else if (!isDocumentRoot && !section) {
       emit failed(
           QStringLiteral("Edit plan item %1 contains an invalid scope ID: %2")
               .arg(i + 1)
@@ -821,17 +948,17 @@ void EditPlanner::processStream() {
       return;
     }
 
-    // For ReplaceScope, the expected operation may be reported as Replace
-    // by the naive keyword detector; accept either.
-    if (expectedOperation != RequestedOperation::Unknown &&
-        operationName(expectedOperation) != operationName(command) &&
-        !(expectedOperation == RequestedOperation::Replace &&
-          command.operation == EditCommand::Operation::ReplaceScope)) {
-      emit failed(
-          QStringLiteral("The edit planner generated '%1', but "
-                         "the user's request requires '%2'.")
-              .arg(operationName(command), operationName(expectedOperation)));
-      return;
+    if (m_scopeMode == ScopeMode::Scoped) {
+      if (expectedOperation != RequestedOperation::Unknown &&
+          operationName(expectedOperation) != operationName(command) &&
+          !(expectedOperation == RequestedOperation::Replace &&
+            command.operation == EditCommand::Operation::ReplaceScope)) {
+        emit failed(
+            QStringLiteral("The edit planner generated '%1', but "
+                           "the user's request requires '%2'.")
+                .arg(operationName(command), operationName(expectedOperation)));
+        return;
+      }
     }
 
     if (command.replaceAll && !explicitlyRequestsAll(m_userRequest)) {
@@ -842,7 +969,7 @@ void EditPlanner::processStream() {
       return;
     }
 
-    if (!targets.isEmpty()) {
+    if (m_scopeMode == ScopeMode::Scoped && !targets.isEmpty()) {
       bool validTarget = false;
 
       for (const SectionInfo *target : targets) {
@@ -906,7 +1033,8 @@ void EditPlanner::processStream() {
         return;
       }
 
-      if (!section || !findExistsInScope(command, *section, documentText)) {
+      if (!isDocumentRoot &&
+          (!section || !findExistsInScope(command, *section, documentText))) {
         emit failed(QStringLiteral("Edit plan item %1 uses find text that does "
                                    "not exist in the selected scope.")
                         .arg(i + 1));
@@ -930,7 +1058,13 @@ void EditPlanner::processStream() {
     edits.append(command);
   }
 
-  if (!targets.isEmpty()) {
+  if (m_scopeMode == ScopeMode::WholeFile) {
+    if (edits.size() != 1) {
+      emit failed(QStringLiteral(
+          "Whole-file mode requires exactly one edit."));
+      return;
+    }
+  } else if (!targets.isEmpty()) {
     if (edits.size() != targets.size()) {
       emit failed(
           QStringLiteral(
@@ -990,8 +1124,6 @@ void EditPlanner::processStream() {
     return;
   }
 
-  // Emit the union of scopes actually referenced by the plan. This is what
-  // the editor will highlight and what the context model will mark sent.
   QStringList referencedScopes;
   QSet<QString> seenReferenced;
 

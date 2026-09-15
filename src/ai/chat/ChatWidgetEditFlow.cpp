@@ -13,16 +13,86 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QRegularExpression>
 
 #include "../../../include/ai/chat/ChatWidgetSerialization.h"
 #include "../../../include/ai/edit/EditSessionWidget.h"
 
 #include <QCheckBox>
 
+namespace {
+
+// Strips markdown code fences, leading/trailing horizontal rules, and
+// stray whitespace from a generated replacement. LLMs frequently wrap
+// short outputs in ```...``` or in ---...--- and those wrappers corrupt
+// the target file.
+QString sanitizeGeneratedText(const QString &raw, bool isShortFragment) {
+  QString text = raw;
+
+  // Remove triple-backtick fences (with or without language tag).
+  static const QRegularExpression fenceRe(
+      QStringLiteral("^\\s*```[a-zA-Z0-9_-]*\\s*\\n?"),
+      QRegularExpression::MultilineOption);
+
+  static const QRegularExpression fenceEndRe(
+      QStringLiteral("\\n?\\s*```\\s*$"),
+      QRegularExpression::MultilineOption);
+
+  text.remove(fenceRe);
+  text.remove(fenceEndRe);
+
+  if (isShortFragment) {
+    // For find-substring replacements the output must not contain any
+    // newlines. Collapse whitespace and trim.
+    text = text.trimmed();
+
+    // Strip a wrapping --- ... --- block (common LLM habit).
+    static const QRegularExpression dashWrap(
+        QStringLiteral("^\\s*---+\\s*(.*?)\\s*---+\\s*$"),
+        QRegularExpression::DotMatchesEverythingOption);
+
+    const auto m = dashWrap.match(text);
+    if (m.hasMatch()) {
+      text = m.captured(1).trimmed();
+    }
+
+    // Strip surrounding quotes if the whole fragment is quoted.
+    if (text.size() >= 2 && text.startsWith(QChar('"')) &&
+        text.endsWith(QChar('"'))) {
+      text = text.mid(1, text.size() - 2);
+    }
+
+    // If the sanitized fragment still contains a newline, take the first
+    // non-empty line as the replacement. The find span is inside a single
+    // line for scoped replacements in practice.
+    if (text.contains(QChar('\n'))) {
+      const QStringList lines = text.split(QChar('\n'));
+      for (const QString &line : lines) {
+        const QString trimmed = line.trimmed();
+        if (!trimmed.isEmpty()) {
+          text = trimmed;
+          break;
+        }
+      }
+    }
+  }
+
+  return text;
+}
+
+} // namespace
+
 ChatWidgetEditFlow::ChatWidgetEditFlow(ChatWidget *widget)
     : QObject(widget), m_widget(widget) {}
 
 void ChatWidgetEditFlow::sendPrompt(const QString &prompt) {
+  sendPromptWithMode(prompt, 0);
+}
+
+void ChatWidgetEditFlow::sendPromptWithMode(const QString &prompt,
+                                            int scopeMode) {
+  m_scopeMode = scopeMode;
+
   if (!m_widget->m_inferenceService) {
     m_widget->appendStatusMessage(
         QObject::tr("Inference service is unavailable."));
@@ -94,8 +164,12 @@ void ChatWidgetEditFlow::requestNextEditCommand() {
 
   m_widget->appendStatusMessage(QObject::tr("Planning edits…"));
 
+  EditPlanner::ScopeMode mode =
+      m_scopeMode == 1 ? EditPlanner::ScopeMode::WholeFile
+                       : EditPlanner::ScopeMode::Scoped;
+
   m_widget->m_editPlanner->start(m_widget->m_activeEditor,
-                                 m_widget->m_currentEditRequest);
+                                 m_widget->m_currentEditRequest, mode);
 }
 
 void ChatWidgetEditFlow::onPlanValidated(
@@ -145,7 +219,6 @@ void ChatWidgetEditFlow::onPlanApprovalRequested(
   m_widget->m_editPhase = ChatWidget::EditPhase::Content;
 
   if (!m_widget->m_editSession->executePlan(editedCommands)) {
-    // executePlan emits failed(); nothing else to do here.
     resetState();
   }
 }
@@ -223,25 +296,111 @@ void ChatWidgetEditFlow::requestEditContent() {
     return;
   }
 
-  const QString instruction = m_widget->m_currentEditInstruction.trimmed();
+  const int index = m_widget->m_currentEditNumber - 1;
+
+  if (index < 0 || index >= m_widget->m_plannedEdits.size()) {
+    return;
+  }
+
+  const EditCommand command = m_widget->m_plannedEdits.at(index);
+
+  const QString instruction = command.instruction.trimmed();
 
   const QString description = m_widget->m_currentCommandDescription.trimmed();
+
+  const QString findString = command.findString;
+
+  const bool isScopedReplacement =
+      command.operation == EditCommand::Operation::Replace;
+
+  const bool isScopeBodyReplacement =
+      command.operation == EditCommand::Operation::ReplaceScope;
+
+  QString systemPrompt;
+  QString userPrompt;
+
+  if (isScopedReplacement) {
+    systemPrompt =
+        QStringLiteral(
+            "You are a text-substitution engine. The application will replace "
+            "exactly one occurrence of a target substring in a document with "
+            "your output.\n"
+            "\n"
+            "Rules:\n"
+            "- Output ONLY the replacement for the target substring.\n"
+            "- Output must be a single line. No newlines.\n"
+            "- Do NOT include the target substring in your output.\n"
+            "- Do NOT repeat any word from the surrounding sentence.\n"
+            "- Do NOT wrap your output in backticks, quotes, ---, or any "
+            "other delimiter.\n"
+            "- Do NOT explain your output.\n"
+            "- If the instruction is 'replace X with Y', output exactly Y.\n"
+            "- If the instruction is 'rename X to Y', output exactly Y.\n"
+            "- If the instruction is 'change the label to Y', output exactly "
+            "Y.\n"
+            "\n"
+            "Examples:\n"
+            "  Target: \"User\"  Instruction: replace with \"Customer\"  "
+            "Output: Customer\n"
+            "  Target: \"example\"  Instruction: change to \"illustration\"  "
+            "Output: illustration\n"
+            "  Target: \"Parse\"  Instruction: rename to \"Transform\"  "
+            "Output: Transform\n");
+  } else if (isScopeBodyReplacement) {
+    systemPrompt =
+        QStringLiteral(
+            "You are a text generator. The application will replace the "
+            "entire body of a section or scope with your output.\n"
+            "\n"
+            "Rules:\n"
+            "- Output ONLY the new body content for the scope.\n"
+            "- Do NOT include the scope's heading or title line.\n"
+            "- Do NOT wrap your output in backticks or fences.\n"
+            "- Do NOT explain your output.\n"
+            "- End your output with exactly one trailing newline.\n");
+  } else {
+    systemPrompt =
+        QStringLiteral(
+            "You are an automated text generator. Output only the requested "
+            "content. No commentary. No markdown fences. No explanation.");
+  }
+
+  if (isScopedReplacement) {
+    userPrompt =
+        QStringLiteral(
+            "Target substring (your output replaces exactly this text):\n"
+            "%1\n"
+            "\n"
+            "Instruction:\n%2\n"
+            "\n"
+            "Output the replacement now. Nothing else.")
+            .arg(findString, instruction);
+  } else if (isScopeBodyReplacement) {
+    userPrompt =
+        QStringLiteral(
+            "Target scope:\n%1\n"
+            "\n"
+            "Instruction:\n%2\n"
+            "\n"
+            "Output the new body now.")
+            .arg(description, instruction);
+  } else {
+    userPrompt =
+        QStringLiteral("Generate replacement content.\n\n"
+                       "Instruction:\n%1\n\n"
+                       "Target:\n%2")
+            .arg(instruction, description);
+  }
 
   QJsonArray messages;
 
   messages.append(QJsonObject{
       {QStringLiteral("role"), QStringLiteral("system")},
-      {QStringLiteral("content"),
-       QStringLiteral("You are an automated document text generator. "
-                      "Output only Markdown text.")}});
+      {QStringLiteral("content"), systemPrompt}});
 
-  messages.append(
-      QJsonObject{{QStringLiteral("role"), QStringLiteral("user")},
-                  {QStringLiteral("content"),
-                   QStringLiteral("Generate replacement content.\n\n"
-                                  "Instruction:\n%1\n\n"
-                                  "Target:\n%2")
-                       .arg(instruction, description)}});
+  messages.append(QJsonObject{
+      {QStringLiteral("role"), QStringLiteral("user")},
+      {QStringLiteral("content"), userPrompt}});
 
   m_widget->m_editPhase = ChatWidget::EditPhase::Content;
 
@@ -252,8 +411,6 @@ void ChatWidgetEditFlow::requestEditContent() {
 }
 
 void ChatWidgetEditFlow::onPlanReady(const QVector<EditCommand> &commands) {
-  // executePlan() has already resolved matches; this callback starts the
-  // per-edit streaming phase.
   m_widget->m_plannedEdits =
       QList<EditCommand>(commands.begin(), commands.end());
 
@@ -338,9 +495,6 @@ void ChatWidgetEditFlow::onEditAborted() {
 }
 
 void ChatWidgetEditFlow::onReviewReady() {
-  // Called by EditSession when a single edit (typically a delete) has
-  // finished streaming and moved to review. Advance the plan cursor so the
-  // next edit can begin.
   if (m_widget->m_currentEditNumber > 0) {
     ++m_widget->m_nextPlannedEditIndex;
     executeNextPlannedEdit();
@@ -375,6 +529,10 @@ QString ChatWidgetEditFlow::describeCommand(const EditCommand &command) const {
 
   case EditCommand::Operation::Replace:
     operation = QStringLiteral("Replace");
+    break;
+
+  case EditCommand::Operation::ReplaceScope:
+    operation = QStringLiteral("Replace Scope");
     break;
 
   case EditCommand::Operation::Delete:

@@ -29,8 +29,6 @@ public:
 
   void rebuildStructure() const;
 
-  // Convenience accessor for the token layer. Returns the cached content
-  // hash for a scope, or an empty string if the scope is unknown.
   QString scopeContentHash(const QString &scopeId) const;
 
 private:
@@ -43,8 +41,13 @@ private:
   mutable int m_structureRevision = -1;
 
   mutable TSParser *m_markdownParser = nullptr;
-
   mutable TSTree *m_markdownTree = nullptr;
+
+  mutable TSParser *m_dotParser = nullptr;
+  mutable TSTree *m_dotTree = nullptr;
+
+  mutable TSParser *m_mermaidParser = nullptr;
+  mutable TSTree *m_mermaidTree = nullptr;
 };
 
 #endif // EPISTEME_TEXTDOCUMENT_H
