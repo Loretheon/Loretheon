@@ -309,6 +309,14 @@ add_executable(Episteme
         include/ai/context/ContextModel.h
         src/ai/context/ContextPanel.cpp
         include/ai/context/ContextPanel.h
+        src/overseer/OverseerSession.cpp
+        include/overseer/OverseerSession.h
+        src/overseer/OverseerStorage.cpp
+        include/overseer/OverseerStorage.h
+        src/overseer/OverseerWidget.cpp
+        include/overseer/OverseerWidget.h
+        src/overseer/OverseerDock.cpp
+        include/overseer/OverseerDock.h
 )
 
 add_dependencies(Episteme
@@ -325,6 +333,7 @@ target_compile_definitions(Episteme PRIVATE
 
 target_include_directories(Episteme PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include/app
+        ${CMAKE_CURRENT_SOURCE_DIR}/include/overseer
         ${CMAKE_CURRENT_SOURCE_DIR}/include/app/theme
         ${CMAKE_CURRENT_SOURCE_DIR}/include/text
         ${CMAKE_CURRENT_SOURCE_DIR}/include/text/formats

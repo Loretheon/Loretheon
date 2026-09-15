@@ -14,6 +14,7 @@
 #include "inference/InferenceService.h"
 
 class ModelDialog;
+class OverseerDock;
 
 class MainWindow : public QMainWindow {
   Q_OBJECT
@@ -27,6 +28,7 @@ private slots:
   void manageModels();
   void loadTheme(const QString &themeName);
   void onThemeSelected(const QString &theme);
+  void toggleOverseer(bool visible);
 
 private:
   void createActions();
@@ -43,11 +45,13 @@ private:
   ChatWidget *chatWidget;
   ModelDialog *modelDialog = nullptr;
   ThemeManager *themeManager;
+  OverseerDock *overseerDock = nullptr;
 
   QMenu *fileMenu;
   QMenu *newMenu;
   QMenu *toolsMenu;
   QMenu *themeMenu;
+  QMenu *viewMenu;
   QMenu *helpMenu;
 
   QAction *newTextAct;
@@ -57,6 +61,7 @@ private:
   QAction *saveAct;
   QAction *exitAct;
   QAction *manageModelsAct;
+  QAction *toggleOverseerAct;
   QAction *aboutAct;
   QAction *aboutQtAct;
 

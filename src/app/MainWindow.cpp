@@ -2,6 +2,7 @@
 
 #include "TextEdit.h"
 #include "app/QfPaths.h"
+#include "OverseerDock.h"
 #include "inference/InferenceService.h"
 #include "ui/ModelDialog.h"
 
@@ -77,6 +78,11 @@ MainWindow::MainWindow() {
   chatWidget = new ChatWidget(inferenceService, editSession, this);
 
   textWidget->setPreviewSession(editSession);
+
+  overseerDock = new OverseerDock(inferenceService, this);
+  overseerDock->hide();
+
+  addDockWidget(Qt::RightDockWidgetArea, overseerDock);
 
   connect(chatWidget, &ChatWidget::contextScopesChanged, textWidget,
           &TextWidget::setContextScopes);
@@ -221,6 +227,14 @@ void MainWindow::manageModels() {
   modelDialog->show();
   modelDialog->raise();
   modelDialog->activateWindow();
+}
+
+void MainWindow::toggleOverseer(bool visible) {
+  if (!overseerDock) {
+    return;
+  }
+
+  overseerDock->setVisible(visible);
 }
 
 void MainWindow::loadTheme(const QString &themeName) {
@@ -392,6 +406,23 @@ void MainWindow::createActions() {
   connect(manageModelsAct, &QAction::triggered, this,
           &MainWindow::manageModels);
 
+  toggleOverseerAct = new QAction(tr("Show &Overseer"), this);
+  toggleOverseerAct->setCheckable(true);
+  toggleOverseerAct->setChecked(false);
+  toggleOverseerAct->setStatusTip(
+      tr("Toggle the Overseer persistent assistant panel"));
+
+  connect(toggleOverseerAct, &QAction::toggled, this,
+          &MainWindow::toggleOverseer);
+
+  connect(overseerDock, &QDockWidget::visibilityChanged, this,
+          [this](bool visible) {
+            if (toggleOverseerAct) {
+              QSignalBlocker blocker(toggleOverseerAct);
+              toggleOverseerAct->setChecked(visible);
+            }
+          });
+
   aboutAct = new QAction(getSafeIcon("help-about", ":/icons/help-about.png"),
                          tr("&About"), this);
   aboutAct->setStatusTip(tr("Show the application's About box"));
@@ -419,6 +450,9 @@ void MainWindow::createMenus() {
   fileMenu->addSeparator();
 
   fileMenu->addAction(exitAct);
+
+  viewMenu = menuBar()->addMenu(tr("&View"));
+  viewMenu->addAction(toggleOverseerAct);
 
   toolsMenu = menuBar()->addMenu(tr("&Tools"));
 
