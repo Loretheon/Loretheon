@@ -130,17 +130,21 @@ MainWindow::MainWindow() {
           &DocumentManager::openFile);
 
   connect(fileWidget, &FileWidget::addToOverseerRequested, this,
-          [this](const QString &path) {
-            if (!overseerDock) {
-              return;
-            }
+        [this](const QStringList &paths) {
+          if (paths.isEmpty()) {
+            return;
+          }
 
-            overseerDock->setVisible(true);
+          if (!overseerDock) {
+            return;
+          }
 
-            if (auto *panel = overseerDock->overseerWidget()) {
-              panel->addOverviewReference(path);
-            }
-          });
+          overseerDock->setVisible(true);
+
+          if (auto *panel = overseerDock->overseerWidget()) {
+            panel->addOverviewReferences(paths);
+          }
+        });
 
   connect(fileWidget, &FileWidget::newNoteRequested, documentManager,
           &DocumentManager::newMarkdownFileIn);

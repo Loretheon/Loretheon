@@ -128,41 +128,8 @@ FileWidget::FileWidget(QWidget *parent) : QWidget(parent) {
   connect(fileSystemView, &FileSystemView::convertToDotRequested, this,
           &FileWidget::convertToDotRequested);
 
-  // Context menu on the file view: adds an "Add to Overseer session"
-  // action for the file under the cursor. The action is only shown for
-  // files (not directories) and only when the model has a valid path.
-  fileSystemView->setContextMenuPolicy(Qt::CustomContextMenu);
-
-  connect(fileSystemView, &QTreeView::customContextMenuRequested, this,
-          [this](const QPoint &pos) {
-            const QModelIndex index = fileSystemView->indexAt(pos);
-
-            if (!index.isValid()) {
-              return;
-            }
-
-            const QString path = fileSystemModel->filePath(index);
-
-            if (path.isEmpty()) {
-              return;
-            }
-
-            const bool isDir = fileSystemModel->isDir(index);
-
-            QMenu menu;
-
-            if (!isDir) {
-              QAction *addToOverseer =
-                  menu.addAction(tr("Add to Overseer session"));
-
-              connect(addToOverseer, &QAction::triggered, this,
-                      [this, path]() { emit addToOverseerRequested(path); });
-            }
-
-            if (!menu.isEmpty()) {
-              menu.exec(fileSystemView->mapToGlobal(pos));
-            }
-          });
+  connect(fileSystemView, &FileSystemView::addToOverseerRequested, this,
+          &FileWidget::addToOverseerRequested);
 
   auto saveExpanded = [this]() {
     DirectoryExplorerSettings::instance().setExpandedPaths(

@@ -3,6 +3,7 @@
 
 #include <QSet>
 #include <QString>
+#include <QStringList>
 #include <QWidget>
 
 #include "FileSystemModel.h"
@@ -22,7 +23,7 @@ public slots:
   void setModifiedPaths(const QSet<QString> &paths);
 
   signals:
-  void fileSelected(const QString &path);
+    void fileSelected(const QString &path);
   void renameRequested(const QString &oldPath, const QString &newPath);
   void newNoteRequested(const QString &parentPath);
   void newFolderRequested(const QString &parentPath);
@@ -32,9 +33,9 @@ public slots:
   void convertToDotRequested(const QString &path);
   void convertToPlantUmlRequested(const QString &path);
 
-  // Emitted from the file view's context menu when the user picks
-  // "Add to Overseer session". The path is absolute.
-  void addToOverseerRequested(const QString &path);
+  // Emitted when the user picks "Add to Overseer session" from the tree's
+  // context menu. Contains all selected files (absolute paths).
+  void addToOverseerRequested(const QStringList &paths);
 
 protected:
   void resizeEvent(QResizeEvent *event) override;

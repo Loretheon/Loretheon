@@ -323,7 +323,7 @@ add_executable(Episteme
         include/overseer/OverseerToolRegistry.h
         src/overseer/OverseerTools.cpp
         include/overseer/OverseerTools.h
-        include/overseer/OverseerOverviewEditor.cpp
+        src/overseer/OverseerOverviewEditor.cpp
         include/overseer/OverseerOverviewEditor.h
         include/text/DocumentArea.cpp
         include/text/DocumentArea.h

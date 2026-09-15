@@ -147,6 +147,7 @@ OverseerWidget::OverseerWidget(InferenceService *inferenceService,
 
   m_memoryEditor = new QPlainTextEdit(memoryPage);
   m_memoryEditor->setObjectName(QStringLiteral("overseerMemoryEditor"));
+  m_memoryEditor->setAcceptDrops(false);
   memoryLayout->addWidget(m_memoryEditor, 1);
 
   m_saveMemoryButton = new QPushButton(tr("Save Memory"), memoryPage);
@@ -165,7 +166,10 @@ OverseerWidget::OverseerWidget(InferenceService *inferenceService,
 
   auto *overviewButtons = new QHBoxLayout;
   m_refreshOverviewButton = new QPushButton(tr("Reload"), overviewPage);
-  m_addOverviewButton = new QPushButton(tr("Add Reference"), overviewPage);
+  m_addOverviewButton = new QPushButton(tr("Add File…"), overviewPage);
+  m_addOverviewButton->setToolTip(
+      tr("Add a file that is not reachable from the tree "
+         "(for example, a file outside the notes root)."));
   overviewButtons->addWidget(m_refreshOverviewButton);
   overviewButtons->addWidget(m_addOverviewButton);
   overviewLayout->addLayout(overviewButtons);
@@ -742,19 +746,23 @@ void OverseerWidget::onAddOverviewReferenceClicked() {
 }
 
 void OverseerWidget::addOverviewReference(const QString &path) {
-  if (!m_currentSession || path.isEmpty()) {
+  if (path.isEmpty()) {
     return;
   }
 
-  appendOverviewPaths({path});
+  addOverviewReferences({path});
 }
 
-void OverseerWidget::onOverviewFilesDropped(const QStringList &paths) {
+void OverseerWidget::addOverviewReferences(const QStringList &paths) {
   if (!m_currentSession || paths.isEmpty()) {
     return;
   }
 
   appendOverviewPaths(paths);
+}
+
+void OverseerWidget::onOverviewFilesDropped(const QStringList &paths) {
+  addOverviewReferences(paths);
 }
 
 void OverseerWidget::appendOverviewPaths(const QStringList &paths) {

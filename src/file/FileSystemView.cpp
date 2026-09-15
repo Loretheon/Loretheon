@@ -7,14 +7,34 @@
 #include <QClipboard>
 #include <QContextMenuEvent>
 #include <QDesktopServices>
+#include <QDrag>
 #include <QFileInfo>
 #include <QLineEdit>
 #include <QMenu>
+#include <QMimeData>
 #include <QUrl>
+
+namespace {
+
+constexpr const char *kNotesPathMimeType =
+    "application/x-episteme-notes-path";
+
+} // namespace
+
+const char *FileSystemView::notesPathMimeType() {
+  return kNotesPathMimeType;
+}
 
 FileSystemView::FileSystemView(QWidget *parent) : QTreeView(parent) {
   setEditTriggers(QAbstractItemView::EditKeyPressed |
                   QAbstractItemView::SelectedClicked);
+
+  setSelectionMode(QAbstractItemView::ExtendedSelection);
+  setDragEnabled(true);
+  setAcceptDrops(false);
+  setDropIndicatorShown(false);
+  setDragDropMode(QAbstractItemView::DragOnly);
+  setDefaultDropAction(Qt::CopyAction);
 }
 
 void FileSystemView::currentChanged(const QModelIndex &current,
@@ -60,6 +80,76 @@ void FileSystemView::saveColumnVisibility() {
   for (int col = 0; col < 6; ++col)
     visibility << !isColumnHidden(col);
   DirectoryExplorerSettings::instance().setColumnVisibility(visibility);
+}
+
+QStringList FileSystemView::selectedFilePaths() const {
+  QStringList paths;
+
+  auto *fsModel = qobject_cast<FileSystemModel *>(model());
+
+  if (!fsModel) {
+    return paths;
+  }
+
+  const QModelIndexList selected = selectionModel()->selectedRows(0);
+
+  auto appendIfFile = [&](const QModelIndex &index) {
+    if (!index.isValid()) {
+      return;
+    }
+
+    if (fsModel->isDir(index)) {
+      return;
+    }
+
+    const QString path = fsModel->filePath(index);
+
+    if (path.isEmpty()) {
+      return;
+    }
+
+    if (!QFileInfo::exists(path)) {
+      return;
+    }
+
+    if (!paths.contains(path)) {
+      paths.append(path);
+    }
+  };
+
+  if (!selected.isEmpty()) {
+    for (const QModelIndex &index : selected) {
+      appendIfFile(index);
+    }
+  }
+
+  // If nothing selected, fall back to whatever is under the cursor.
+  if (paths.isEmpty()) {
+    appendIfFile(currentIndex());
+  }
+
+  return paths;
+}
+
+void FileSystemView::startDrag(Qt::DropActions supportedActions) {
+  Q_UNUSED(supportedActions);
+
+  const QStringList paths = selectedFilePaths();
+
+  if (paths.isEmpty()) {
+    return;
+  }
+
+  auto *mime = new QMimeData;
+  mime->setData(kNotesPathMimeType,
+                paths.join(QChar('\n')).toUtf8());
+
+  // Also set text/plain so dropping into other apps gets something readable.
+  mime->setText(paths.join(QChar('\n')));
+
+  auto *drag = new QDrag(this);
+  drag->setMimeData(mime);
+  drag->exec(Qt::CopyAction, Qt::CopyAction);
 }
 
 void FileSystemView::contextMenuEvent(QContextMenuEvent *event) {
@@ -119,6 +209,14 @@ void FileSystemView::contextMenuEvent(QContextMenuEvent *event) {
 
   menu.addSeparator();
 
+  QAction *addToOverseerAction = nullptr;
+
+  if (!isDir) {
+    addToOverseerAction = menu.addAction(tr("Add to Overseer session"));
+  }
+
+  menu.addSeparator();
+
   QAction *copyPathAction = menu.addAction(tr("Copy Path"));
   QAction *revealAction = menu.addAction(tr("Show in File Manager"));
 
@@ -142,6 +240,11 @@ void FileSystemView::contextMenuEvent(QContextMenuEvent *event) {
     emit convertToDotRequested(path);
   } else if (chosen == convertToPlantUmlAction) {
     emit convertToPlantUmlRequested(path);
+  } else if (chosen == addToOverseerAction) {
+    const QStringList paths = selectedFilePaths();
+    if (!paths.isEmpty()) {
+      emit addToOverseerRequested(paths);
+    }
   } else if (chosen == copyPathAction) {
     QApplication::clipboard()->setText(path);
   } else if (chosen == revealAction) {

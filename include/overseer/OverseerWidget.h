@@ -6,6 +6,7 @@
 
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QStringList>
 #include <QWidget>
 
 class OverseerOverviewEditor;
@@ -36,6 +37,7 @@ public:
 
 public slots:
   void addOverviewReference(const QString &path);
+  void addOverviewReferences(const QStringList &paths);
 
 private slots:
   void onNewSessionRequested();
