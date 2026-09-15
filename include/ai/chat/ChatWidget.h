@@ -198,6 +198,11 @@ private:
   bool m_editAbortRequested = false;
 
   bool m_planReadyToStream = false;
+
+  // True between sendChatRequest() and llmFinished/llmError. Guards the
+  // delta handlers so that chat streams destined for other widgets (e.g.
+  // Overseer) are not appended to this transcript.
+  bool m_expectingLlmResponse = false;
 };
 
 #endif // CHATWIDGET_H

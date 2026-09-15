@@ -317,6 +317,16 @@ add_executable(Episteme
         include/overseer/OverseerWidget.h
         src/overseer/OverseerDock.cpp
         include/overseer/OverseerDock.h
+        src/overseer/OverseerTool.cpp
+        include/overseer/OverseerTool.h
+        src/overseer/OverseerToolRegistry.cpp
+        include/overseer/OverseerToolRegistry.h
+        src/overseer/OverseerTools.cpp
+        include/overseer/OverseerTools.h
+        include/overseer/OverseerOverviewEditor.cpp
+        include/overseer/OverseerOverviewEditor.h
+        include/text/DocumentArea.cpp
+        include/text/DocumentArea.h
 )
 
 add_dependencies(Episteme

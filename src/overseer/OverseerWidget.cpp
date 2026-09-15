@@ -1,16 +1,25 @@
-#include "../../include/overseer/OverseerWidget.h"
+#include "OverseerWidget.h"
 
-#include "../../include/overseer/OverseerSession.h"
-#include "../../include/overseer/OverseerStorage.h"
+#include "OverseerOverviewEditor.h"
+#include "OverseerSession.h"
+#include "OverseerStorage.h"
+#include "OverseerTools.h"
+#include "Settings.h"
 
+#include "TextBrowser.h"
 #include "inference/InferenceService.h"
 
 #include <QComboBox>
+#include <QDateTime>
+#include <QDebug>
+#include <QDir>
 #include <QFileDialog>
+#include <QFontDatabase>
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QInputDialog>
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
@@ -18,15 +27,56 @@
 #include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QSpinBox>
 #include <QSplitter>
 #include <QTabWidget>
+#include <QTextCursor>
+#include <QTextDocument>
 #include <QTextEdit>
 #include <QVBoxLayout>
+
+namespace {
+
+QString humanReadableToolAction(const QString &toolName,
+                                const QJsonObject &arguments,
+                                const OverseerTool::Result &result) {
+  const QString path = arguments.value(QStringLiteral("path")).toString();
+
+  const QString verb = result.ok ? QStringLiteral("✓")
+                                  : QStringLiteral("✗");
+
+  if (toolName == QStringLiteral("write_file")) {
+    return QStringLiteral("%1 Writing %2").arg(verb, path);
+  }
+
+  if (toolName == QStringLiteral("read_file") ||
+      toolName == QStringLiteral("read_notes_file")) {
+    return QStringLiteral("%1 Reading %2").arg(verb, path);
+  }
+
+  if (toolName == QStringLiteral("list_directory")) {
+    const QString target = path.isEmpty() ? QStringLiteral("the output folder")
+                                          : path;
+    return QStringLiteral("%1 Listing %2").arg(verb, target);
+  }
+
+  if (toolName == QStringLiteral("create_directory")) {
+    return QStringLiteral("%1 Creating %2").arg(verb, path);
+  }
+
+  return QStringLiteral("%1 %2").arg(verb, toolName);
+}
+
+} // namespace
 
 OverseerWidget::OverseerWidget(InferenceService *inferenceService,
                                QWidget *parent)
     : QWidget(parent), m_inferenceService(inferenceService) {
   OverseerStorage::ensureRoot();
+
+  OverseerTools::installAll(m_tools);
+
+  m_toolCallDepthLimit = Settings::getOverseerToolCallDepthLimit();
 
   // --- Left: session list -------------------------------------------------
 
@@ -48,6 +98,18 @@ OverseerWidget::OverseerWidget(InferenceService *inferenceService,
   m_newSessionButton = new QPushButton(tr("New Session"), leftPanel);
   leftLayout->addWidget(m_newSessionButton);
 
+  auto *depthRow = new QHBoxLayout;
+  auto *depthLabel = new QLabel(tr("Tool depth:"), leftPanel);
+  m_toolCallDepthSpin = new QSpinBox(leftPanel);
+  m_toolCallDepthSpin->setRange(1, 64);
+  m_toolCallDepthSpin->setValue(m_toolCallDepthLimit);
+  m_toolCallDepthSpin->setToolTip(
+      tr("Maximum number of tool-call round trips per turn."));
+  depthRow->addWidget(depthLabel);
+  depthRow->addWidget(m_toolCallDepthSpin);
+  depthRow->addStretch();
+  leftLayout->addLayout(depthRow);
+
   // --- Center: transcript and input --------------------------------------
 
   auto *centerPanel = new QWidget(this);
@@ -61,10 +123,9 @@ OverseerWidget::OverseerWidget(InferenceService *inferenceService,
   m_sessionHeader->setFont(headerFont);
   centerLayout->addWidget(m_sessionHeader);
 
-  m_transcript = new QTextEdit(centerPanel);
-  m_transcript->setReadOnly(true);
-  m_transcript->setAcceptRichText(false);
-  m_transcript->setLineWrapMode(QTextEdit::WidgetWidth);
+  m_transcript = new TextBrowser(centerPanel);
+  m_transcript->setOpenExternalLinks(true);
+  m_transcript->setObjectName(QStringLiteral("overseerTranscript"));
   centerLayout->addWidget(m_transcript, 1);
 
   auto *inputRow = new QHBoxLayout;
@@ -75,7 +136,7 @@ OverseerWidget::OverseerWidget(InferenceService *inferenceService,
   inputRow->addWidget(m_sendButton);
   centerLayout->addLayout(inputRow);
 
-  // --- Right: memory and overview ----------------------------------------
+  // --- Right: memory, overview, tools log --------------------------------
 
   m_sideTabs = new QTabWidget(this);
 
@@ -98,7 +159,7 @@ OverseerWidget::OverseerWidget(InferenceService *inferenceService,
   overviewLayout->setContentsMargins(6, 6, 6, 6);
   overviewLayout->setSpacing(6);
 
-  m_overviewEditor = new QPlainTextEdit(overviewPage);
+  m_overviewEditor = new OverseerOverviewEditor(overviewPage);
   m_overviewEditor->setObjectName(QStringLiteral("overseerOverviewEditor"));
   overviewLayout->addWidget(m_overviewEditor, 1);
 
@@ -110,6 +171,15 @@ OverseerWidget::OverseerWidget(InferenceService *inferenceService,
   overviewLayout->addLayout(overviewButtons);
 
   m_sideTabs->addTab(overviewPage, tr("Overview"));
+
+  m_toolLog = new QTextEdit(m_sideTabs);
+  m_toolLog->setReadOnly(true);
+  m_toolLog->setAcceptRichText(false);
+  m_toolLog->setLineWrapMode(QTextEdit::NoWrap);
+  m_toolLog->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+  m_toolLog->setObjectName(QStringLiteral("overseerToolLog"));
+
+  m_sideTabs->addTab(m_toolLog, tr("Tools"));
 
   // --- Splitter ----------------------------------------------------------
 
@@ -149,45 +219,57 @@ OverseerWidget::OverseerWidget(InferenceService *inferenceService,
   connect(m_addOverviewButton, &QPushButton::clicked, this,
           &OverseerWidget::onAddOverviewReferenceClicked);
 
+  connect(m_overviewEditor, &OverseerOverviewEditor::filesDropped, this,
+          &OverseerWidget::onOverviewFilesDropped);
+
+  connect(m_toolCallDepthSpin,
+          QOverload<int>::of(&QSpinBox::valueChanged), this,
+          &OverseerWidget::onToolCallDepthChanged);
+
   if (m_inferenceService) {
     connect(m_inferenceService, &InferenceService::llmDelta, this,
             [this](const QString &text) {
-              if (!m_currentSession) {
+              if (!m_expectingLlmResponse || !m_currentSession) {
                 return;
               }
-              QTextCursor cursor = m_transcript->textCursor();
-              cursor.movePosition(QTextCursor::End);
-              cursor.insertText(text);
-              m_transcript->setTextCursor(cursor);
-              m_transcript->ensureCursorVisible();
-              m_assistantMessageOpen = true;
+              appendAssistantChunk(text);
             });
 
     connect(m_inferenceService, &InferenceService::llmFinished, this, [this] {
-      if (!m_currentSession) {
+      if (!m_expectingLlmResponse || !m_currentSession) {
         return;
       }
-      m_assistantMessageOpen = false;
+      m_expectingLlmResponse = false;
+      finishAssistantBlock();
+      m_turnMessages = QJsonArray();
+      m_toolCallDepth = 0;
     });
+
+    connect(m_inferenceService, &InferenceService::llmToolCalls, this,
+            &OverseerWidget::onLlmToolCalls);
 
     connect(m_inferenceService, &InferenceService::llmError, this,
             [this](const QString &error) {
-              if (!m_currentSession) {
+              if (!m_expectingLlmResponse || !m_currentSession) {
                 return;
               }
+              m_expectingLlmResponse = false;
+              finishAssistantBlock();
               appendTranscriptEntry(tr("error"), error);
+              m_turnMessages = QJsonArray();
+              m_toolCallDepth = 0;
             });
   }
 
   rebuildSessionList();
   loadMemoryIntoEditor();
+
+  m_input->setEnabled(false);
+  m_sendButton->setEnabled(false);
 }
 
 void OverseerWidget::setThemeTokens(const ThemeTokens &tokens) {
   Q_UNUSED(tokens);
-  // Styling is driven by the application-wide stylesheet. This hook is
-  // present so that per-widget tweaks can be added later without changing
-  // the class hierarchy.
 }
 
 void OverseerWidget::rebuildSessionList() {
@@ -273,12 +355,8 @@ void OverseerWidget::openSession(OverseerSession *session) {
 
   m_sessionHeader->setText(tr("Session: %1").arg(session->name()));
 
-  m_transcript->setPlainText(session->transcript());
-
-  QTextCursor cursor = m_transcript->textCursor();
-  cursor.movePosition(QTextCursor::End);
-  m_transcript->setTextCursor(cursor);
-  m_transcript->ensureCursorVisible();
+  m_lastRenderedText.clear();
+  renderTranscript();
 
   loadOverviewIntoEditor();
 
@@ -299,6 +377,10 @@ void OverseerWidget::closeSession() {
   m_sessionHeader->setText(tr("No session"));
   m_transcript->clear();
   m_overviewEditor->clear();
+
+  m_lastRenderedText.clear();
+  m_turnMessages = QJsonArray();
+  m_toolCallDepth = 0;
 
   m_input->setEnabled(false);
   m_sendButton->setEnabled(false);
@@ -325,6 +407,38 @@ void OverseerWidget::loadOverviewIntoEditor() {
   m_overviewEditor->setPlainText(m_currentSession->overview());
 }
 
+void OverseerWidget::renderTranscript() {
+  if (!m_currentSession) {
+    m_transcript->clear();
+    m_lastRenderedText.clear();
+    return;
+  }
+
+  QString text = m_currentSession->transcript();
+
+  if (!m_assistantRawText.isEmpty()) {
+    if (!text.isEmpty() && !text.endsWith(QChar('\n'))) {
+      text += QChar('\n');
+    }
+    text += QStringLiteral("## assistant\n");
+    text += m_assistantRawText;
+    text += QChar('\n');
+  }
+
+  if (text == m_lastRenderedText) {
+    return;
+  }
+
+  m_lastRenderedText = text;
+
+  m_transcript->setMarkdown(text);
+
+  QTextCursor cursor = m_transcript->textCursor();
+  cursor.movePosition(QTextCursor::End);
+  m_transcript->setTextCursor(cursor);
+  m_transcript->ensureCursorVisible();
+}
+
 void OverseerWidget::appendTranscriptEntry(const QString &role,
                                            const QString &text) {
   if (!m_currentSession) {
@@ -333,17 +447,30 @@ void OverseerWidget::appendTranscriptEntry(const QString &role,
 
   m_currentSession->appendTranscriptMessage(role, text);
 
-  QTextCursor cursor = m_transcript->textCursor();
-  cursor.movePosition(QTextCursor::End);
+  renderTranscript();
+}
 
-  if (!m_transcript->toPlainText().isEmpty() && !cursor.atBlockStart()) {
-    cursor.insertBlock();
+void OverseerWidget::appendAssistantChunk(const QString &text) {
+  m_assistantRawText += text;
+  renderTranscript();
+}
+
+void OverseerWidget::finishAssistantBlock() {
+  if (!m_currentSession) {
+    m_assistantRawText.clear();
+    return;
   }
 
-  cursor.insertText(QStringLiteral("## %1\n%2\n").arg(role, text));
+  const QString body = m_assistantRawText;
+  m_assistantRawText.clear();
 
-  m_transcript->setTextCursor(cursor);
-  m_transcript->ensureCursorVisible();
+  if (!body.isEmpty()) {
+    m_currentSession->appendTranscriptMessage(QStringLiteral("assistant"),
+                                              body);
+  }
+
+  m_lastRenderedText.clear();
+  renderTranscript();
 }
 
 QString OverseerWidget::buildSystemPrompt() const {
@@ -356,15 +483,204 @@ QString OverseerWidget::buildSystemPrompt() const {
   prompt += QStringLiteral(
       "You are Overseer, a persistent assistant that works across multiple "
       "sessions. You have access to a global Memory file and a per-session "
-      "Overview of files the user has referenced. You can read files listed "
-      "in Overview and you can write files into your session's output "
-      "directory only. You cannot modify files outside that directory.\n\n");
+      "Overview of files the user has referenced.\n"
+      "\n"
+      "You have tools that let you list, read, and write files inside the "
+      "current session's output folder. Any file you create must go through "
+      "those tools; you cannot write anywhere else.\n"
+      "\n"
+      "You also have read_notes_file, which can read any file under the "
+      "user's notes root. Use it for referenced files. It is read-only.\n"
+      "\n"
+      "When your task is complete, reply with a short summary of what you "
+      "did. Do not call more tools after that.\n\n");
 
   prompt += QStringLiteral("## Global Memory\n\n%1\n\n").arg(memory);
 
   prompt += QStringLiteral("## Session Overview\n\n%1\n\n").arg(overview);
 
   return prompt;
+}
+
+OverseerTool::Context OverseerWidget::currentToolContext() const {
+  OverseerTool::Context context;
+
+  if (m_currentSession) {
+    context.sessionFolder = m_currentSession->folderPath();
+    context.outputFolder = m_currentSession->outputPath();
+  }
+
+  context.notesRoot = Settings::getRootDirectory();
+
+  return context;
+}
+
+void OverseerWidget::dispatchChatRequest() {
+  if (!m_inferenceService || !m_currentSession) {
+    return;
+  }
+
+  m_expectingLlmResponse = true;
+
+  m_inferenceService->sendChatRequest(m_turnMessages, QString(), 0.7, 120000,
+                                      QString(), QJsonObject(),
+                                      m_tools.schemas());
+}
+
+void OverseerWidget::logToolHumanReadable(
+    const QString &toolName, const QJsonObject &arguments,
+    const OverseerTool::Result &result) {
+  const QString sentence = humanReadableToolAction(toolName, arguments, result);
+
+  appendTranscriptEntry(QStringLiteral("tool"), sentence);
+}
+
+void OverseerWidget::logToolDetailed(const QString &toolName,
+                                     const QJsonObject &arguments,
+                                     const OverseerTool::Result &result,
+                                     qint64 durationMs) {
+  if (!m_toolLog) {
+    return;
+  }
+
+  const QString timestamp =
+      QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss.zzz"));
+
+  const QByteArray prettyArgs = QJsonDocument(arguments).toJson(
+      QJsonDocument::Indented);
+
+  QString entry;
+  entry += QStringLiteral("[%1] %2 (%3 ms)\n")
+               .arg(timestamp, toolName)
+               .arg(durationMs);
+
+  entry += QStringLiteral("  arguments:\n");
+
+  const QStringList argLines = QString::fromUtf8(prettyArgs).split(
+      QChar('\n'), Qt::SkipEmptyParts);
+
+  for (const QString &line : argLines) {
+    entry += QStringLiteral("    %1\n").arg(line);
+  }
+
+  entry += result.ok ? QStringLiteral("  result:\n")
+                     : QStringLiteral("  error:\n");
+
+  const QString body = result.ok ? result.output : result.error;
+
+  const QStringList bodyLines = body.split(QChar('\n'));
+
+  for (const QString &line : bodyLines) {
+    entry += QStringLiteral("    %1\n").arg(line);
+  }
+
+  entry += QChar('\n');
+
+  m_toolLog->moveCursor(QTextCursor::End);
+  m_toolLog->insertPlainText(entry);
+  m_toolLog->ensureCursorVisible();
+}
+
+void OverseerWidget::executeToolCalls(const QJsonArray &toolCalls) {
+  const OverseerTool::Context context = currentToolContext();
+
+  for (const QJsonValue &value : toolCalls) {
+    if (!value.isObject()) {
+      continue;
+    }
+
+    const QJsonObject call = value.toObject();
+
+    const QString callId = call.value(QStringLiteral("id")).toString();
+
+    const QJsonObject function =
+        call.value(QStringLiteral("function")).toObject();
+
+    const QString name =
+        function.value(QStringLiteral("name")).toString();
+
+    const QString rawArguments =
+        function.value(QStringLiteral("arguments")).toString();
+
+    QJsonObject arguments;
+
+    if (!rawArguments.isEmpty()) {
+      QJsonParseError parseError;
+
+      const QJsonDocument document =
+          QJsonDocument::fromJson(rawArguments.toUtf8(), &parseError);
+
+      if (parseError.error == QJsonParseError::NoError &&
+          document.isObject()) {
+        arguments = document.object();
+      }
+    }
+
+    const qint64 started = QDateTime::currentMSecsSinceEpoch();
+
+    const OverseerTool::Result result =
+        m_tools.execute(name, arguments, context);
+
+    const qint64 durationMs =
+        QDateTime::currentMSecsSinceEpoch() - started;
+
+    logToolHumanReadable(name, arguments, result);
+
+    logToolDetailed(name, arguments, result, durationMs);
+
+    QJsonObject assistantFunction;
+    assistantFunction.insert(QStringLiteral("name"), name);
+    assistantFunction.insert(QStringLiteral("arguments"), rawArguments);
+
+    QJsonObject assistantCall;
+    assistantCall.insert(QStringLiteral("id"), callId);
+    assistantCall.insert(QStringLiteral("type"), QStringLiteral("function"));
+    assistantCall.insert(QStringLiteral("function"), assistantFunction);
+
+    QJsonObject assistantMessage;
+    assistantMessage.insert(QStringLiteral("role"), QStringLiteral("assistant"));
+    assistantMessage.insert(QStringLiteral("tool_calls"),
+                            QJsonArray{assistantCall});
+
+    m_turnMessages.append(assistantMessage);
+
+    const QString content = result.ok ? result.output : result.error;
+
+    QJsonObject toolMessage;
+    toolMessage.insert(QStringLiteral("role"), QStringLiteral("tool"));
+    toolMessage.insert(QStringLiteral("tool_call_id"), callId);
+    toolMessage.insert(QStringLiteral("content"), content);
+
+    m_turnMessages.append(toolMessage);
+  }
+}
+
+void OverseerWidget::onLlmToolCalls(const QJsonArray &toolCalls) {
+  if (!m_expectingLlmResponse || !m_currentSession) {
+    return;
+  }
+
+  m_expectingLlmResponse = false;
+
+  if (!m_assistantRawText.isEmpty()) {
+    finishAssistantBlock();
+  }
+
+  if (m_toolCallDepth >= m_toolCallDepthLimit) {
+    appendTranscriptEntry(
+        tr("error"),
+        tr("Tool call depth limit reached (%1). Stopping.")
+            .arg(m_toolCallDepthLimit));
+    m_turnMessages = QJsonArray();
+    m_toolCallDepth = 0;
+    return;
+  }
+
+  ++m_toolCallDepth;
+
+  executeToolCalls(toolCalls);
+
+  dispatchChatRequest();
 }
 
 void OverseerWidget::onSendClicked() {
@@ -382,17 +698,21 @@ void OverseerWidget::onSendClicked() {
 
   appendTranscriptEntry(tr("user"), prompt);
 
-  QJsonArray messages;
+  m_assistantRawText.clear();
 
-  messages.append(QJsonObject{
+  m_toolCallDepth = 0;
+
+  m_turnMessages = QJsonArray();
+
+  m_turnMessages.append(QJsonObject{
       {QStringLiteral("role"), QStringLiteral("system")},
       {QStringLiteral("content"), buildSystemPrompt()}});
 
-  messages.append(QJsonObject{
+  m_turnMessages.append(QJsonObject{
       {QStringLiteral("role"), QStringLiteral("user")},
       {QStringLiteral("content"), prompt}});
 
-  m_inferenceService->sendChatRequest(messages, QString(), 0.7, 120000);
+  dispatchChatRequest();
 }
 
 void OverseerWidget::onSaveMemoryClicked() {
@@ -418,14 +738,56 @@ void OverseerWidget::onAddOverviewReferenceClicked() {
     return;
   }
 
+  addOverviewReference(path);
+}
+
+void OverseerWidget::addOverviewReference(const QString &path) {
+  if (!m_currentSession || path.isEmpty()) {
+    return;
+  }
+
+  appendOverviewPaths({path});
+}
+
+void OverseerWidget::onOverviewFilesDropped(const QStringList &paths) {
+  if (!m_currentSession || paths.isEmpty()) {
+    return;
+  }
+
+  appendOverviewPaths(paths);
+}
+
+void OverseerWidget::appendOverviewPaths(const QStringList &paths) {
+  if (!m_currentSession || paths.isEmpty()) {
+    return;
+  }
+
   QString current = m_overviewEditor->toPlainText();
 
-  if (!current.endsWith(QChar('\n'))) {
+  if (!current.isEmpty() && !current.endsWith(QChar('\n'))) {
     current += QChar('\n');
   }
 
-  current += QStringLiteral("- %1\n").arg(path);
+  for (const QString &path : paths) {
+    if (path.isEmpty()) {
+      continue;
+    }
+
+    const QString line = QStringLiteral("- %1\n").arg(path);
+
+    if (current.contains(line)) {
+      continue;
+    }
+
+    current += line;
+  }
 
   m_overviewEditor->setPlainText(current);
   m_currentSession->writeOverview(current);
+}
+
+void OverseerWidget::onToolCallDepthChanged(int value) {
+  m_toolCallDepthLimit = qBound(1, value, 64);
+
+  Settings::setOverseerToolCallDepthLimit(m_toolCallDepthLimit);
 }

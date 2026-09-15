@@ -32,6 +32,10 @@ public slots:
   void convertToDotRequested(const QString &path);
   void convertToPlantUmlRequested(const QString &path);
 
+  // Emitted from the file view's context menu when the user picks
+  // "Add to Overseer session". The path is absolute.
+  void addToOverseerRequested(const QString &path);
+
 protected:
   void resizeEvent(QResizeEvent *event) override;
 

@@ -6,13 +6,15 @@
 #include <QString>
 
 #include "DocumentManager.h"
-#include "TextWidget.h"
-#include "FileWidget.h"
-#include "ChatWidget.h"
-#include "EditSession.h"
 #include "ThemeManager.h"
 #include "inference/InferenceService.h"
 
+class DocumentArea;
+class TextEdit;
+class TextDocument;
+class FileWidget;
+class ChatWidget;
+class EditSession;
 class ModelDialog;
 class OverseerDock;
 
@@ -37,33 +39,35 @@ private:
   void applyThemeToPalette(const ThemeTokens &tokens);
   void propagateTheme(const ThemeTokens &tokens);
 
-  TextWidget *textWidget;
-  FileWidget *fileWidget;
-  DocumentManager *documentManager;
-  InferenceService *inferenceService;
-  EditSession *editSession;
-  ChatWidget *chatWidget;
+  void bindCurrentEditor(TextEdit *editor);
+
+  DocumentArea *documentArea = nullptr;
+  FileWidget *fileWidget = nullptr;
+  DocumentManager *documentManager = nullptr;
+  InferenceService *inferenceService = nullptr;
+  EditSession *editSession = nullptr;
+  ChatWidget *chatWidget = nullptr;
   ModelDialog *modelDialog = nullptr;
-  ThemeManager *themeManager;
+  ThemeManager *themeManager = nullptr;
   OverseerDock *overseerDock = nullptr;
 
-  QMenu *fileMenu;
-  QMenu *newMenu;
-  QMenu *toolsMenu;
-  QMenu *themeMenu;
-  QMenu *viewMenu;
-  QMenu *helpMenu;
+  QMenu *fileMenu = nullptr;
+  QMenu *newMenu = nullptr;
+  QMenu *toolsMenu = nullptr;
+  QMenu *themeMenu = nullptr;
+  QMenu *viewMenu = nullptr;
+  QMenu *helpMenu = nullptr;
 
-  QAction *newTextAct;
-  QAction *newMarkdownAct;
-  QAction *newPlantUmlAct;
-  QAction *openAct;
-  QAction *saveAct;
-  QAction *exitAct;
-  QAction *manageModelsAct;
-  QAction *toggleOverseerAct;
-  QAction *aboutAct;
-  QAction *aboutQtAct;
+  QAction *newTextAct = nullptr;
+  QAction *newMarkdownAct = nullptr;
+  QAction *newPlantUmlAct = nullptr;
+  QAction *openAct = nullptr;
+  QAction *saveAct = nullptr;
+  QAction *exitAct = nullptr;
+  QAction *manageModelsAct = nullptr;
+  QAction *toggleOverseerAct = nullptr;
+  QAction *aboutAct = nullptr;
+  QAction *aboutQtAct = nullptr;
 
   QString currentTheme;
 };

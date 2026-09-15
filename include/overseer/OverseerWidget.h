@@ -1,10 +1,16 @@
 #pragma once
 
+#include "OverseerTool.h"
+#include "OverseerToolRegistry.h"
 #include "ThemeAware.h"
 
+#include <QJsonArray>
+#include <QJsonObject>
 #include <QWidget>
 
+class OverseerOverviewEditor;
 class OverseerSession;
+class TextBrowser;
 
 class InferenceService;
 
@@ -14,6 +20,7 @@ class QLineEdit;
 class QListWidget;
 class QPlainTextEdit;
 class QPushButton;
+class QSpinBox;
 class QSplitter;
 class QTabWidget;
 class QTextEdit;
@@ -27,6 +34,9 @@ public:
 
   void setThemeTokens(const ThemeTokens &tokens) override;
 
+public slots:
+  void addOverviewReference(const QString &path);
+
 private slots:
   void onNewSessionRequested();
   void onSessionSelected();
@@ -35,6 +45,10 @@ private slots:
   void onRefreshOverviewClicked();
   void onAddOverviewReferenceClicked();
   void onSessionChangedExternally();
+  void onToolCallDepthChanged(int value);
+  void onOverviewFilesDropped(const QStringList &paths);
+
+  void onLlmToolCalls(const QJsonArray &toolCalls);
 
 private:
   void rebuildSessionList();
@@ -45,24 +59,49 @@ private:
   void loadOverviewIntoEditor();
 
   void appendTranscriptEntry(const QString &role, const QString &text);
+  void appendAssistantChunk(const QString &text);
+  void finishAssistantBlock();
+
+  void renderTranscript();
 
   QString buildSystemPrompt() const;
+
+  void dispatchChatRequest();
+
+  void executeToolCalls(const QJsonArray &toolCalls);
+
+  OverseerTool::Context currentToolContext() const;
+
+  void logToolHumanReadable(const QString &toolName,
+                            const QJsonObject &arguments,
+                            const OverseerTool::Result &result);
+
+  void logToolDetailed(const QString &toolName,
+                       const QJsonObject &arguments,
+                       const OverseerTool::Result &result,
+                       qint64 durationMs);
+
+  void appendOverviewPaths(const QStringList &paths);
 
   InferenceService *m_inferenceService = nullptr;
 
   QListWidget *m_sessionList = nullptr;
   QPushButton *m_newSessionButton = nullptr;
 
-  QTextEdit *m_transcript = nullptr;
+  TextBrowser *m_transcript = nullptr;
   QLineEdit *m_input = nullptr;
   QPushButton *m_sendButton = nullptr;
 
   QPlainTextEdit *m_memoryEditor = nullptr;
   QPushButton *m_saveMemoryButton = nullptr;
 
-  QPlainTextEdit *m_overviewEditor = nullptr;
+  OverseerOverviewEditor *m_overviewEditor = nullptr;
   QPushButton *m_refreshOverviewButton = nullptr;
   QPushButton *m_addOverviewButton = nullptr;
+
+  QTextEdit *m_toolLog = nullptr;
+
+  QSpinBox *m_toolCallDepthSpin = nullptr;
 
   QTabWidget *m_sideTabs = nullptr;
   QSplitter *m_mainSplitter = nullptr;
@@ -71,5 +110,15 @@ private:
 
   QLabel *m_sessionHeader = nullptr;
 
-  bool m_assistantMessageOpen = false;
+  OverseerToolRegistry m_tools;
+
+  QJsonArray m_turnMessages;
+
+  bool m_expectingLlmResponse = false;
+
+  int m_toolCallDepth = 0;
+  int m_toolCallDepthLimit = 16;
+
+  QString m_assistantRawText;
+  QString m_lastRenderedText;
 };

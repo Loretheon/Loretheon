@@ -1,10 +1,19 @@
 #include "MainWindow.h"
 
+#include "ChatWidget.h"
+#include "OverseerDock.h"
+#include "OverseerWidget.h"
 #include "TextEdit.h"
 #include "app/QfPaths.h"
 #include "OverseerDock.h"
+#include "OverseerWidget.h"
 #include "inference/InferenceService.h"
 #include "ui/ModelDialog.h"
+
+#include "DocumentArea.h"
+#include "EditSession.h"
+#include "FileWidget.h"
+#include "TextWidget.h"
 
 #include <QAction>
 #include <QActionGroup>
@@ -63,7 +72,6 @@ MainWindow::MainWindow() {
 
   themeManager = new ThemeManager(this);
 
-  textWidget = new TextWidget(this);
   fileWidget = new FileWidget(widget);
   documentManager = new DocumentManager(this);
   inferenceService = new InferenceService(this);
@@ -74,31 +82,65 @@ MainWindow::MainWindow() {
       LlamaManager::Backend::Vulkan, QFPaths::sttModelsDir(),
       InferenceService::SttModel::Nemotron35, llmConfig);
 
-  editSession = new EditSession(textWidget->editor(), this);
+  documentArea = new DocumentArea(documentManager, widget);
+
+  editSession = new EditSession(nullptr, this);
   chatWidget = new ChatWidget(inferenceService, editSession, this);
 
-  textWidget->setPreviewSession(editSession);
+  documentArea->setEditSession(editSession);
 
   overseerDock = new OverseerDock(inferenceService, this);
   overseerDock->hide();
 
   addDockWidget(Qt::RightDockWidgetArea, overseerDock);
 
-  connect(chatWidget, &ChatWidget::contextScopesChanged, textWidget,
-          &TextWidget::setContextScopes);
-
-  connect(chatWidget, &ChatWidget::previewActivationRequested, textWidget,
-          &TextWidget::activatePreview);
-
-  connect(chatWidget, &ChatWidget::contextScopesChanged, this,
+  connect(chatWidget, &ChatWidget::contextScopesChanged, documentArea,
           [this](const QStringList &scopeIds) {
-            if (scopeIds.isEmpty()) {
-              textWidget->clearContextScopes();
+            auto *editor = documentArea->currentEditor();
+            if (!editor) {
+              return;
             }
+            if (scopeIds.isEmpty()) {
+              editor->clearHighlightedScopes();
+            } else {
+              editor->setHighlightedScopes(scopeIds);
+            }
+          });
+
+  connect(chatWidget, &ChatWidget::previewActivationRequested, documentArea,
+          [this](bool active) {
+            auto *textWidget = documentArea->currentTextWidget();
+            if (textWidget) {
+              textWidget->activatePreview(active);
+            }
+          });
+
+  connect(documentArea, &DocumentArea::currentEditorChanged, this,
+          &MainWindow::bindCurrentEditor);
+
+  connect(documentArea, &DocumentArea::openDocumentRequested, documentManager,
+          &DocumentManager::openFile);
+
+  connect(documentArea, &DocumentArea::statusMessage, this,
+          [this](const QString &text, int timeoutMs) {
+            statusBar()->showMessage(text, timeoutMs);
           });
 
   connect(fileWidget, &FileWidget::fileSelected, documentManager,
           &DocumentManager::openFile);
+
+  connect(fileWidget, &FileWidget::addToOverseerRequested, this,
+          [this](const QString &path) {
+            if (!overseerDock) {
+              return;
+            }
+
+            overseerDock->setVisible(true);
+
+            if (auto *panel = overseerDock->overseerWidget()) {
+              panel->addOverviewReference(path);
+            }
+          });
 
   connect(fileWidget, &FileWidget::newNoteRequested, documentManager,
           &DocumentManager::newMarkdownFileIn);
@@ -130,35 +172,19 @@ MainWindow::MainWindow() {
   connect(fileWidget, &FileWidget::renameRequested, documentManager,
           &DocumentManager::renameFile);
 
-  connect(documentManager, &DocumentManager::documentChanged, textWidget,
-          &TextWidget::setActiveDocument);
-
-  connect(documentManager, &DocumentManager::documentChanged, fileWidget,
+  connect(documentManager, &DocumentManager::currentDocumentChanged, fileWidget,
           [this](TextDocument *document) {
             fileWidget->setActivePath(document ? document->filePath()
                                                : QString());
             fileWidget->setModifiedPaths(modifiedPaths());
           });
 
-  connect(documentManager, &DocumentManager::documentChanged, chatWidget,
-          [this](TextDocument *) {
-            chatWidget->setActiveEditor(textWidget->editor());
-          });
-
-  connect(
-      documentManager, &DocumentManager::documentChanged, this,
-      [this](TextDocument *) { editSession->setEditor(textWidget->editor()); });
-
-  connect(textWidget, &TextWidget::openDocumentRequested, documentManager,
-          &DocumentManager::openFile);
-
-  connect(textWidget, &TextWidget::statusMessage, this,
-          [this](const QString &text, int timeoutMs) {
-            statusBar()->showMessage(text, timeoutMs);
-          });
-
-  connect(documentManager, &DocumentManager::documentChanged, this,
+  connect(documentManager, &DocumentManager::currentDocumentChanged, this,
           [this](TextDocument *document) {
+            auto *textWidget = documentArea->currentTextWidget();
+            if (!textWidget) {
+              return;
+            }
             const QString root =
                 document && !document->filePath().isEmpty()
                     ? QFileInfo(document->filePath()).absolutePath()
@@ -166,9 +192,16 @@ MainWindow::MainWindow() {
             textWidget->setProjectRoot(root);
           });
 
-  connect(textWidget->editor()->document(), &QTextDocument::modificationChanged,
-          this,
-          [this](bool) { fileWidget->setModifiedPaths(modifiedPaths()); });
+  connect(documentManager, &DocumentManager::currentDocumentChanged, this,
+          [this](TextDocument *) {
+            auto *editor = documentArea->currentEditor();
+            if (editor && editSession) {
+              editSession->setEditor(editor);
+            }
+            if (chatWidget && documentArea->currentEditor()) {
+              chatWidget->setActiveEditor(documentArea->currentEditor());
+            }
+          });
 
   connect(themeManager, &ThemeManager::themeChanged, this,
           [this](const QString &name, const ThemeTokens &tokens) {
@@ -183,7 +216,7 @@ MainWindow::MainWindow() {
 
   QSplitter *rightSplitter = new QSplitter(Qt::Vertical, mainSplitter);
 
-  rightSplitter->addWidget(textWidget);
+  rightSplitter->addWidget(documentArea);
   rightSplitter->addWidget(chatWidget);
 
   mainSplitter->setSizes({240, 960});
@@ -210,6 +243,20 @@ MainWindow::MainWindow() {
   QScreen *screen = QGuiApplication::primaryScreen();
 
   if (screen) setGeometry(screen->availableGeometry());
+}
+
+void MainWindow::bindCurrentEditor(TextEdit *editor) {
+  if (!editor) {
+    return;
+  }
+
+  if (editSession) {
+    editSession->setEditor(editor);
+  }
+
+  if (chatWidget) {
+    chatWidget->setActiveEditor(editor);
+  }
 }
 
 void MainWindow::about() {
@@ -290,7 +337,9 @@ void MainWindow::applyThemeToPalette(const ThemeTokens &tokens) {
 }
 
 void MainWindow::propagateTheme(const ThemeTokens &tokens) {
-  if (textWidget) textWidget->setThemeTokens(tokens);
+  if (documentArea) {
+    documentArea->setThemeTokens(tokens);
+  }
 }
 
 QSet<QString> MainWindow::modifiedPaths() const {
@@ -298,9 +347,11 @@ QSet<QString> MainWindow::modifiedPaths() const {
 
   if (!documentManager) return paths;
 
-  TextDocument *current = documentManager->currentDocument();
-  if (current && current->isModified() && !current->filePath().isEmpty())
-    paths.insert(current->filePath());
+  for (TextDocument *document : documentManager->openDocuments()) {
+    if (document->isModified() && !document->filePath().isEmpty()) {
+      paths.insert(document->filePath());
+    }
+  }
 
   return paths;
 }
@@ -372,7 +423,7 @@ void MainWindow::createActions() {
   connect(saveAct, &QAction::triggered, documentManager,
           &DocumentManager::save);
 
-  connect(documentManager, &DocumentManager::documentChanged, this,
+  connect(documentManager, &DocumentManager::currentDocumentChanged, this,
           [this](TextDocument *) {
             fileWidget->setModifiedPaths(modifiedPaths());
           });

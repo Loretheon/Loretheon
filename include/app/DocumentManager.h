@@ -8,13 +8,22 @@
 #include "TextDocument.h"
 
 class QDir;
+
 class DocumentManager : public QObject {
   Q_OBJECT
 
 public:
   explicit DocumentManager(QObject *parent = nullptr);
 
+  // The document belonging to the currently focused tab. Null if no tabs.
   TextDocument *currentDocument() const;
+
+  // All documents that currently have an open tab (in tab order).
+  QList<TextDocument *> openDocuments() const { return openDocumentsList; }
+
+  // Called by DocumentArea when the user switches tabs. Fires
+  // currentDocumentChanged if the pointer actually changed.
+  void setCurrentDocument(TextDocument *document);
 
 public slots:
   void newTextFile();
@@ -26,6 +35,7 @@ public slots:
   void newFolderIn(const QString &parentPath);
   bool openFile(const QString &path);
   bool save();
+  bool saveDocument(TextDocument *document);
   bool renameFile(const QString &oldPath, const QString &newPath);
   bool deleteFile(const QString &path);
   bool convertToMarkdown(const QString &path);
@@ -33,8 +43,22 @@ public slots:
   bool convertToDot(const QString &path);
   bool convertToPlantUml(const QString &path);
   void closeCurrent();
+  void closeDocument(TextDocument *document);
+
 signals:
+  // Fired when a document becomes the focused one.
+  void currentDocumentChanged(TextDocument *document);
+
+  // Fired when a new document is created and a tab should be added.
+  void documentOpened(TextDocument *document);
+
+  // Fired when a document is closed and its tab should be removed.
+  void documentClosed(TextDocument *document);
+
+  // Kept for compatibility with existing wiring; fires on any change to
+  // the focused document's metadata (path, type, modified flag).
   void documentChanged(TextDocument *document);
+
   void documentCreated(const QString &path);
   void fileRenamed(const QString &oldPath, const QString &newPath);
   void fileDeleted(const QString &path);
@@ -49,13 +73,25 @@ private:
   QString uniquePathIn(const QDir &dir, const QString &baseName,
                        const QString &extension) const;
   QString uniqueFolderPathIn(const QDir &dir, const QString &baseName) const;
-  void createDocument(DocumentMode type, const QString &extension);
-  void createDocumentIn(DocumentMode type, const QString &extension,
-                        const QString &parentPath);
+
+  // Creates a document, opens a tab for it, and makes it current.
+  TextDocument *createDocument(DocumentMode type, const QString &extension);
+  TextDocument *createDocumentIn(DocumentMode type, const QString &extension,
+                                 const QString &parentPath);
+
+  TextDocument *openDocumentFromPath(const QString &path);
+
   bool convertFile(const QString &path, const QString &targetExtension,
                    DocumentMode targetType);
 
-  QList<TextDocument *> documents;
+  void registerOpenDocument(TextDocument *document);
+  void unregisterOpenDocument(TextDocument *document);
+
+  // Every TextDocument ever created and still alive. Owned by this manager.
+  QList<TextDocument *> allDocuments;
+
+  // Subset of allDocuments that have an open tab, in tab order.
+  QList<TextDocument *> openDocumentsList;
 
   TextDocument *current = nullptr;
 };

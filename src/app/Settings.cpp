@@ -1,8 +1,13 @@
 #include "../../include/app/Settings.h"
 
-#include <qdir.h>
-#include <qsettings.h>
-#include <qstandardpaths.h>
+#include <QDir>
+#include <QSettings>
+#include <QStandardPaths>
+
+namespace {
+constexpr auto OverseerToolCallDepthKey = "overseer/toolCallDepthLimit";
+constexpr int DefaultToolCallDepth = 16;
+} // namespace
 
 QString Settings::getRootDirectory() {
   QSettings settings;
@@ -16,4 +21,18 @@ QString Settings::getRootDirectory() {
 void Settings::setRootDirectory(const QString &newRoot) {
   QSettings settings;
   settings.setValue("root", newRoot);
+}
+
+int Settings::getOverseerToolCallDepthLimit() {
+  QSettings settings;
+  const int value = settings.value(OverseerToolCallDepthKey,
+                                    DefaultToolCallDepth)
+                        .toInt();
+
+  return qBound(1, value, 64);
+}
+
+void Settings::setOverseerToolCallDepthLimit(int limit) {
+  QSettings settings;
+  settings.setValue(OverseerToolCallDepthKey, qBound(1, limit, 64));
 }

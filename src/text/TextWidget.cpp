@@ -20,15 +20,18 @@
 #include <QDebug>
 #include <QDesktopServices>
 #include <QFileInfo>
+#include <QHBoxLayout>
 #include <QMenu>
 #include <QProcess>
+#include <QShowEvent>
 #include <QStackedWidget>
 #include <QTextDocument>
+#include <QToolButton>
 #include <QUrl>
 #include <QVBoxLayout>
 
 TextWidget::TextWidget(QWidget *parent)
-    : QTabWidget(parent),
+    : QWidget(parent),
       textEdit(new TextEdit(this)),
       previewPane(new PreviewPane(this)),
       editorStack(new QStackedWidget(this)),
@@ -45,11 +48,13 @@ TextWidget::TextWidget(QWidget *parent)
   editorStack->addWidget(textEdit);
   editorStack->addWidget(previewPane);
 
-  addTab(editorStack, tr("Edit"));
-
   viewStack->addWidget(textBrowser);
   viewStack->addWidget(diagramPage);
-  addTab(viewStack, tr("View"));
+
+  outerStack = new QStackedWidget(this);
+  outerStack->addWidget(editorStack);
+  outerStack->addWidget(viewStack);
+  outerStack->setCurrentIndex(0);
 
   auto *pageLay = new QVBoxLayout(diagramPage);
   pageLay->setContentsMargins(0, 0, 0, 0);
@@ -60,7 +65,32 @@ TextWidget::TextWidget(QWidget *parent)
   textBrowser->setDocument(previewDocument);
   svgView->setDocument(diagramDoc);
 
-  previewController = new PreviewController(textEdit, nullptr, previewPane, this);
+  previewController =
+      new PreviewController(textEdit, nullptr, previewPane, this);
+
+  editViewToggle = new QToolButton(this);
+  editViewToggle->setText(tr("View"));
+  editViewToggle->setCheckable(true);
+  editViewToggle->setAutoRaise(true);
+  editViewToggle->setToolTip(tr("Toggle between Edit and View"));
+
+  connect(editViewToggle, &QToolButton::toggled, this,
+          [this](bool viewMode) {
+            outerStack->setCurrentIndex(viewMode ? 1 : 0);
+            editViewToggle->setText(viewMode ? tr("Edit") : tr("View"));
+          });
+
+  auto *topBar = new QWidget(this);
+  auto *topLay = new QHBoxLayout(topBar);
+  topLay->setContentsMargins(4, 2, 4, 2);
+  topLay->addStretch(1);
+  topLay->addWidget(editViewToggle);
+
+  auto *mainLay = new QVBoxLayout(this);
+  mainLay->setContentsMargins(0, 0, 0, 0);
+  mainLay->setSpacing(0);
+  mainLay->addWidget(topBar);
+  mainLay->addWidget(outerStack, 1);
 
   connect(diagramToolbar, &DiagramToolbar::zoomInRequested, svgView,
           &DiagramView::zoomIn);
@@ -158,6 +188,14 @@ TextWidget::TextWidget(QWidget *parent)
   diagramToolbar->setZoom(1.0);
 }
 
+void TextWidget::showEvent(QShowEvent *event) {
+  QWidget::showEvent(event);
+
+  if (activeDocument) {
+    syncPreview();
+  }
+}
+
 void TextWidget::setPreviewSession(EditSession *session) {
   if (previewController) {
     previewController->setSession(session);
@@ -165,14 +203,17 @@ void TextWidget::setPreviewSession(EditSession *session) {
 }
 
 void TextWidget::activatePreview(bool active) {
-  if (!previewController || !editorStack) {
+  if (!previewController) {
     return;
   }
-
   previewController->setPreviewActive(active);
+}
 
-  editorStack->setCurrentWidget(active ? static_cast<QWidget *>(previewPane)
-                                        : static_cast<QWidget *>(textEdit));
+void TextWidget::toggleEditView() {
+  if (!editViewToggle) {
+    return;
+  }
+  editViewToggle->setChecked(!editViewToggle->isChecked());
 }
 
 void TextWidget::clearContextScopes() {
@@ -338,7 +379,9 @@ void TextWidget::clearPreview() {
 void TextWidget::findInEditor(const QString &text) {
   if (text.isEmpty() || !textEdit) return;
 
-  setCurrentWidget(editorStack);
+  if (editViewToggle) {
+    editViewToggle->setChecked(false);
+  }
 
   QTextCursor c = textEdit->textCursor();
   c.movePosition(QTextCursor::Start);

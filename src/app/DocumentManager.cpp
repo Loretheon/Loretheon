@@ -16,18 +16,9 @@ constexpr QLatin1StringView DotExtension("dot");
 constexpr QLatin1StringView PlantUmlExtension("puml");
 constexpr QLatin1StringView MermaidExtension("mmd");
 constexpr QLatin1StringView UntitledBaseName("Untitled");
+
 QString normalizedExtension(const QString &extension) {
   return extension.trimmed().toLower();
-}
-
-QString documentTypeName(DocumentMode type) {
-  if (type == DocumentMode::Markdown) {
-    return QStringLiteral("Markdown");
-  }
-  if (type == DocumentMode::Mermaid) {
-    return QStringLiteral("Mermaid");
-  }
-  return QStringLiteral("PlainText");
 }
 
 bool writeTextFile(const QString &path, const QString &text) {
@@ -91,6 +82,22 @@ DocumentManager::DocumentManager(QObject *parent)
 
 TextDocument *DocumentManager::currentDocument() const { return current; }
 
+void DocumentManager::setCurrentDocument(TextDocument *document) {
+  if (current == document) {
+    return;
+  }
+
+  // Only accept documents that are actually open.
+  if (document && !openDocumentsList.contains(document)) {
+    return;
+  }
+
+  current = document;
+
+  emit currentDocumentChanged(current);
+  emit documentChanged(current);
+}
+
 DocumentMode DocumentManager::typeForExtension(const QString &extension) {
   const auto normalized = normalizedExtension(extension);
 
@@ -105,6 +112,9 @@ DocumentMode DocumentManager::typeForExtension(const QString &extension) {
   }
   if (normalized == MermaidExtension || normalized == "mermaid") {
     return DocumentMode::Mermaid;
+  }
+  if (normalized == "html" || normalized == "htm") {
+    return DocumentMode::Html;
   }
   return DocumentMode::PlainText;
 }
@@ -140,13 +150,53 @@ QString DocumentManager::uniqueFolderPathIn(const QDir &dir,
   return path;
 }
 
-void DocumentManager::createDocument(DocumentMode type,
-                                     const QString &extension) {
+void DocumentManager::registerOpenDocument(TextDocument *document) {
+  if (!document || openDocumentsList.contains(document)) {
+    return;
+  }
+
+  openDocumentsList.append(document);
+
+  emit documentOpened(document);
+}
+
+void DocumentManager::unregisterOpenDocument(TextDocument *document) {
+  if (!document) {
+    return;
+  }
+
+  const bool wasCurrent = (current == document);
+  const int index = openDocumentsList.indexOf(document);
+
+  if (index >= 0) {
+    openDocumentsList.removeAt(index);
+  }
+
+  // Pick a neighbour to become current if we removed the current one.
+  if (wasCurrent) {
+    if (openDocumentsList.isEmpty()) {
+      current = nullptr;
+    } else {
+      const int nextIndex = qBound(0, index, openDocumentsList.size() - 1);
+      current = openDocumentsList.at(nextIndex);
+    }
+  }
+
+  emit documentClosed(document);
+
+  if (wasCurrent) {
+    emit currentDocumentChanged(current);
+    emit documentChanged(current);
+  }
+}
+
+TextDocument *DocumentManager::createDocument(DocumentMode type,
+                                              const QString &extension) {
   const QString path =
       uniqueDefaultPath(QString::fromLatin1(UntitledBaseName), extension);
 
   if (!writeTextFile(path, {})) {
-    return;
+    return nullptr;
   }
 
   auto *document = new TextDocument(this);
@@ -155,27 +205,31 @@ void DocumentManager::createDocument(DocumentMode type,
   document->setFilePath(path);
   document->setModified(false);
 
-  documents.append(document);
-  current = document;
+  allDocuments.append(document);
 
+  registerOpenDocument(document);
+
+  current = document;
+  emit currentDocumentChanged(current);
   emit documentChanged(current);
   emit documentCreated(path);
+
+  return document;
 }
 
-void DocumentManager::createDocumentIn(DocumentMode type,
-                                       const QString &extension,
-                                       const QString &parentPath) {
+TextDocument *DocumentManager::createDocumentIn(DocumentMode type,
+                                                const QString &extension,
+                                                const QString &parentPath) {
   QDir dir(parentPath);
   if (parentPath.isEmpty() || !dir.exists()) {
-    createDocument(type, extension);
-    return;
+    return createDocument(type, extension);
   }
 
   const QString path =
       uniquePathIn(dir, QString::fromLatin1(UntitledBaseName), extension);
 
   if (!writeTextFile(path, {})) {
-    return;
+    return nullptr;
   }
 
   auto *document = new TextDocument(this);
@@ -184,11 +238,16 @@ void DocumentManager::createDocumentIn(DocumentMode type,
   document->setFilePath(path);
   document->setModified(false);
 
-  documents.append(document);
-  current = document;
+  allDocuments.append(document);
 
+  registerOpenDocument(document);
+
+  current = document;
+  emit currentDocumentChanged(current);
   emit documentChanged(current);
   emit documentCreated(path);
+
+  return document;
 }
 
 void DocumentManager::newTextFile() {
@@ -237,11 +296,22 @@ void DocumentManager::newFolderIn(const QString &parentPath) {
   emit folderCreated(path);
 }
 
-bool DocumentManager::openFile(const QString &path) {
+TextDocument *DocumentManager::openDocumentFromPath(const QString &path) {
+  // If the path is already open, just focus it.
+  const QString absolute = QFileInfo(path).absoluteFilePath();
+
+  for (TextDocument *document : std::as_const(openDocumentsList)) {
+    if (document->filePath() == absolute ||
+        document->filePath() == path) {
+      setCurrentDocument(document);
+      return document;
+    }
+  }
+
   QString text;
 
   if (!readTextFile(path, text)) {
-    return false;
+    return nullptr;
   }
 
   auto *document = new TextDocument(this);
@@ -251,31 +321,46 @@ bool DocumentManager::openFile(const QString &path) {
   document->setFilePath(path);
   document->setModified(false);
 
-  documents.append(document);
-  current = document;
+  allDocuments.append(document);
 
+  registerOpenDocument(document);
+
+  current = document;
+  emit currentDocumentChanged(current);
   emit documentChanged(current);
-  return true;
+
+  return document;
 }
 
-bool DocumentManager::save() {
-  if (!current) {
-    qWarning() << "[DOCUMENT] No current document to save.";
+bool DocumentManager::openFile(const QString &path) {
+  return openDocumentFromPath(path) != nullptr;
+}
+
+bool DocumentManager::save() { return saveDocument(current); }
+
+bool DocumentManager::saveDocument(TextDocument *document) {
+  if (!document) {
+    qWarning() << "[DOCUMENT] No document to save.";
     return false;
   }
 
-  const QString path = current->filePath();
+  const QString path = document->filePath();
 
   if (path.isEmpty()) {
-    qWarning() << "[DOCUMENT] Current document has no file path.";
+    qWarning() << "[DOCUMENT] Document has no file path.";
     return false;
   }
 
-  if (!writeTextFile(path, current->toPlainText())) {
+  if (!writeTextFile(path, document->toPlainText())) {
     return false;
   }
 
-  current->setModified(false);
+  document->setModified(false);
+
+  if (document == current) {
+    emit documentChanged(current);
+  }
+
   return true;
 }
 
@@ -285,7 +370,7 @@ bool DocumentManager::renameFile(const QString &oldPath,
     return true;
   }
 
-  for (TextDocument *document : std::as_const(documents)) {
+  for (TextDocument *document : std::as_const(allDocuments)) {
     if (document->filePath() != oldPath) {
       continue;
     }
@@ -310,19 +395,25 @@ bool DocumentManager::deleteFile(const QString &path) {
     return false;
   }
 
-  for (int i = documents.size() - 1; i >= 0; --i) {
-    if (documents.at(i)->filePath() != path) {
-      continue;
-    }
+  // Close any open tabs whose path matches or is under the deleted path.
+  QList<TextDocument *> toClose;
 
-    TextDocument *document = documents.takeAt(i);
-    const bool wasCurrent = (document == current);
+  for (TextDocument *document : std::as_const(openDocumentsList)) {
+    const QString documentPath = document->filePath();
+
+    if (documentPath == path ||
+        (!info.isDir() &&
+         QFileInfo(documentPath).absoluteFilePath() ==
+             info.absoluteFilePath()) ||
+        (info.isDir() && documentPath.startsWith(path + QDir::separator()))) {
+      toClose.append(document);
+    }
+  }
+
+  for (TextDocument *document : std::as_const(toClose)) {
+    unregisterOpenDocument(document);
+    allDocuments.removeOne(document);
     delete document;
-
-    if (wasCurrent) {
-      current = documents.isEmpty() ? nullptr : documents.last();
-      emit documentChanged(current);
-    }
   }
 
   bool removed = false;
@@ -349,8 +440,7 @@ bool DocumentManager::convertFile(const QString &path,
 
   const QDir dir = info.dir();
   const QString baseName = info.completeBaseName();
-  const QString targetPath =
-      uniquePathIn(dir, baseName, targetExtension);
+  const QString targetPath = uniquePathIn(dir, baseName, targetExtension);
 
   QString text;
   if (!readTextFile(path, text)) {
@@ -367,7 +457,7 @@ bool DocumentManager::convertFile(const QString &path,
                << path;
   }
 
-  for (TextDocument *document : std::as_const(documents)) {
+  for (TextDocument *document : std::as_const(allDocuments)) {
     if (document->filePath() != path) {
       continue;
     }
@@ -406,18 +496,14 @@ bool DocumentManager::convertToPlantUml(const QString &path) {
                      DocumentMode::PlantUml);
 }
 
-void DocumentManager::closeCurrent() {
-  if (!current) {
+void DocumentManager::closeCurrent() { closeDocument(current); }
+
+void DocumentManager::closeDocument(TextDocument *document) {
+  if (!document) {
     return;
   }
 
-  TextDocument *document = current;
-
-  documents.removeOne(document);
-
-  current = documents.isEmpty() ? nullptr : documents.last();
-
+  unregisterOpenDocument(document);
+  allDocuments.removeOne(document);
   delete document;
-
-  emit documentChanged(current);
 }

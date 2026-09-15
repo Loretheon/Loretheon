@@ -28,3 +28,5 @@
 	path = external/tree-sitter-plantuml
 	url = https://github.com/lyndsysimon/tree-sitter-plantuml.git
 	ignore = dirty
+[submodule "external/QF-ML/"]
+	branch = tools

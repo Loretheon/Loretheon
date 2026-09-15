@@ -262,9 +262,6 @@ ChatWidget::ChatWidget(InferenceService *inferenceService,
 }
 
 void ChatWidget::setActiveEditor(TextEdit *editor) {
-  // Always disconnect the previous editor's document signal, even when the
-  // editor pointer is unchanged, because the underlying QTextDocument may
-  // have been replaced with a different one.
   if (m_activeEditor) {
     disconnect(m_activeEditor->document(), &QTextDocument::contentsChanged,
                this, &ChatWidget::onDocumentStructureChanged);
@@ -283,9 +280,6 @@ void ChatWidget::setActiveEditor(TextEdit *editor) {
     m_activeEditor->refreshPendingEdits();
   }
 
-  // Force a full rebuild of the context model. Because ContextModel caches
-  // per scopeId, we clear it first so that a different document with the
-  // same scope IDs does not inherit stale sent hashes.
   if (m_contextModel) {
     m_contextModel->clear();
   }
@@ -385,7 +379,6 @@ void ChatWidget::refreshContextModel() {
         const bool isRoot = node.id == QStringLiteral("document");
 
         if (!isRoot && node.id.isEmpty()) {
-          // Anonymous node: skip, but still recurse into children.
         } else {
           ContextModel::Entry entry;
 
@@ -492,6 +485,8 @@ void ChatWidget::sendPrompt(const QString &prompt) {
 }
 
 void ChatWidget::sendPromptWithMode(const QString &prompt, int scopeMode) {
+  m_expectingLlmResponse = true;
+
   if (m_editFlow) {
     m_editFlow->sendPromptWithMode(prompt, scopeMode);
   }
@@ -519,6 +514,10 @@ void ChatWidget::renderLastAssistantMessage() {
 }
 
 void ChatWidget::onLlmDelta(const QString &delta) {
+  if (!m_expectingLlmResponse) {
+    return;
+  }
+
   if (m_editPhase == EditPhase::Content && m_editSession &&
       m_editSession->state() == EditSession::State::Streaming) {
     m_editSession->appendStreaming(delta);
@@ -529,6 +528,12 @@ void ChatWidget::onLlmDelta(const QString &delta) {
 }
 
 void ChatWidget::onLlmFinished() {
+  if (!m_expectingLlmResponse) {
+    return;
+  }
+
+  m_expectingLlmResponse = false;
+
   if (m_editPhase == EditPhase::Content && m_editSession &&
       m_editSession->state() == EditSession::State::Streaming) {
     m_editSession->finishStreaming();
@@ -539,6 +544,12 @@ void ChatWidget::onLlmFinished() {
 }
 
 void ChatWidget::onLlmError(const QString &error) {
+  if (!m_expectingLlmResponse) {
+    return;
+  }
+
+  m_expectingLlmResponse = false;
+
   appendStatusMessage(tr("Error: %1").arg(error));
 }
 
