@@ -2,24 +2,19 @@
 
 #include <QWidget>
 
-class QPropertyAnimation;
-class QGraphicsOpacityEffect;
 class QLabel;
 class QTimer;
+class QGraphicsOpacityEffect;
+class QPropertyAnimation;
 
 // A non-interactive notification card shown briefly when a new memory
 // proposal arrives. It carries no buttons and accepts no clicks; all
 // interaction happens in the "User actions needed" tab.
 //
 // Lifecycle:
-//   - On construction, animates in (slide from the right + fade) over
-//     SlideInMs milliseconds.
-//   - Sits for m_lifetimeMs milliseconds.
-//   - Fades out over FadeOutMs and emits finished(), after which the
-//     owner should delete it.
-//
-// Calling dismiss() at any time skips the remaining lifetime and starts
-// the fade-out immediately.
+//   - On construction, sits in place and fades out after lifetimeMs.
+//   - Calling dismiss() skips the remaining lifetime and begins fade-out.
+//   - Emits finished() when fade-out completes; owner should delete it.
 class MemoryProposalToast : public QWidget {
   Q_OBJECT
 
@@ -29,7 +24,6 @@ public:
                                int lifetimeMs = 8000,
                                QWidget *parent = nullptr);
 
-  // Abort the remaining lifetime and begin the fade-out.
   void dismiss();
 
   signals:
@@ -37,7 +31,6 @@ public:
 
 protected:
   void paintEvent(QPaintEvent *event) override;
-  // Swallow all mouse events so the toast is purely visual.
   void mousePressEvent(QMouseEvent *event) override;
   void mouseReleaseEvent(QMouseEvent *event) override;
 

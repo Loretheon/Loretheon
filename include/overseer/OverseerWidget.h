@@ -4,6 +4,8 @@
 #include "OverseerToolRegistry.h"
 #include "ThemeAware.h"
 
+#include "inference/InferenceService.h"
+
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QStringList>
@@ -14,8 +16,6 @@ class OverseerOverviewEditor;
 class OverseerSession;
 class TextBrowser;
 class ToastStack;
-
-class InferenceService;
 
 class QComboBox;
 class QLabel;
@@ -54,8 +54,8 @@ private slots:
   void onSessionChangedExternally();
   void onToolCallDepthChanged(int value);
   void onOverviewFilesDropped(const QStringList &paths);
-
-  void onLlmToolCalls(const QJsonArray &toolCalls);
+  void onMissingReferencesChanged(const QStringList &missing);
+  void onRemoveMissingReferencesClicked();
 
 private:
   struct MemoryProposal {
@@ -82,6 +82,9 @@ private:
 
   void dispatchChatRequest();
 
+  // Handles a tool-call batch that belongs to m_activeToken.
+  void handleToolCalls(const QJsonArray &toolCalls);
+
   void executeToolCalls(const QJsonArray &toolCalls);
 
   OverseerTool::Context currentToolContext() const;
@@ -107,6 +110,9 @@ private:
 
   void rebuildUserActionsTab();
   void updateUserActionsTabTitle();
+
+  QPushButton *m_removeMissingButton = nullptr;
+  QLabel *m_missingReferencesLabel = nullptr;
 
   InferenceService *m_inferenceService = nullptr;
 
@@ -148,7 +154,9 @@ private:
 
   QJsonArray m_turnMessages;
 
-  bool m_expectingLlmResponse = false;
+  // Token of the currently active assistant request. Every llm* signal is
+  // filtered against it. Null when idle.
+  InferenceService::RequestToken m_activeToken;
 
   int m_toolCallDepth = 0;
   int m_toolCallDepthLimit = 16;

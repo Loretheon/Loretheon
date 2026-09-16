@@ -3,6 +3,8 @@
 #include "EditCommand.h"
 #include "EditMatch.h"
 
+#include "inference/InferenceService.h"
+
 #include <QObject>
 
 class ChatWidget;

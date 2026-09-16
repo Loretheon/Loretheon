@@ -1,5 +1,6 @@
 #include "OverseerWidget.h"
 
+#include "EditNoteReviewDialog.h"
 #include "MemoryProposalCard.h"
 #include "OverseerOverviewEditor.h"
 #include "OverseerSession.h"
@@ -71,6 +72,10 @@ QString humanReadableToolAction(const QString &toolName,
 
   if (toolName == QStringLiteral("propose_memory_fact")) {
     return QStringLiteral("%1 propose_memory_fact").arg(verb);
+  }
+
+  if (toolName == QStringLiteral("edit_note")) {
+    return QStringLiteral("%1 Opening %2 for edit").arg(verb, path);
   }
 
   return QStringLiteral("%1 %2").arg(verb, toolName);
@@ -182,7 +187,20 @@ OverseerWidget::OverseerWidget(InferenceService *inferenceService,
          "(for example, a file outside the notes root)."));
   overviewButtons->addWidget(m_refreshOverviewButton);
   overviewButtons->addWidget(m_addOverviewButton);
+  overviewButtons->addStretch();
   overviewLayout->addLayout(overviewButtons);
+
+  m_missingReferencesLabel = new QLabel(overviewPage);
+  m_missingReferencesLabel->setWordWrap(true);
+  m_missingReferencesLabel->setVisible(false);
+
+  m_removeMissingButton = new QPushButton(tr("Remove missing"), overviewPage);
+  m_removeMissingButton->setVisible(false);
+
+  auto *missingRow = new QHBoxLayout;
+  missingRow->addWidget(m_missingReferencesLabel, 1);
+  missingRow->addWidget(m_removeMissingButton);
+  overviewLayout->addLayout(missingRow);
 
   m_sideTabs->addTab(overviewPage, tr("Overview"));
 
@@ -198,9 +216,9 @@ OverseerWidget::OverseerWidget(InferenceService *inferenceService,
   // --- User actions needed tab -------------------------------------------
 
   m_userActionsPage = new QWidget(m_sideTabs);
-  auto *userActionsLayout = new QVBoxLayout(m_userActionsPage);
-  userActionsLayout->setContentsMargins(6, 6, 6, 6);
-  userActionsLayout->setSpacing(6);
+  auto *userActionsPageLayout = new QVBoxLayout(m_userActionsPage);
+  userActionsPageLayout->setContentsMargins(6, 6, 6, 6);
+  userActionsPageLayout->setSpacing(6);
 
   m_userActionsScroll = new QScrollArea(m_userActionsPage);
   m_userActionsScroll->setWidgetResizable(true);
@@ -226,7 +244,7 @@ OverseerWidget::OverseerWidget(InferenceService *inferenceService,
 
   m_userActionsScroll->setWidget(m_userActionsContent);
 
-  userActionsLayout->addWidget(m_userActionsScroll, 1);
+  userActionsPageLayout->addWidget(m_userActionsScroll, 1);
 
   m_sideTabs->addTab(m_userActionsPage, tr("User actions needed"));
 
@@ -275,38 +293,77 @@ OverseerWidget::OverseerWidget(InferenceService *inferenceService,
   connect(m_overviewEditor, &OverseerOverviewEditor::filesDropped, this,
           &OverseerWidget::onOverviewFilesDropped);
 
+  connect(m_overviewEditor, &OverseerOverviewEditor::missingReferencesChanged,
+          this, &OverseerWidget::onMissingReferencesChanged);
+
+  connect(m_removeMissingButton, &QPushButton::clicked, this,
+          &OverseerWidget::onRemoveMissingReferencesClicked);
+
   connect(m_toolCallDepthSpin,
           QOverload<int>::of(&QSpinBox::valueChanged), this,
           &OverseerWidget::onToolCallDepthChanged);
 
   if (m_inferenceService) {
     connect(m_inferenceService, &InferenceService::llmDelta, this,
-            [this](const QString &text) {
-              if (!m_expectingLlmResponse || !m_currentSession) {
+            [this](const InferenceService::RequestToken &token,
+                   const QString &text) {
+              if (token != m_activeToken) {
                 return;
               }
+
+              if (!m_currentSession) {
+                return;
+              }
+
               appendAssistantChunk(text);
             });
 
-    connect(m_inferenceService, &InferenceService::llmFinished, this, [this] {
-      if (!m_expectingLlmResponse || !m_currentSession) {
-        return;
-      }
-      m_expectingLlmResponse = false;
-      finishAssistantBlock();
-      m_turnMessages = QJsonArray();
-      m_toolCallDepth = 0;
-    });
-
-    connect(m_inferenceService, &InferenceService::llmToolCalls, this,
-            &OverseerWidget::onLlmToolCalls);
-
-    connect(m_inferenceService, &InferenceService::llmError, this,
-            [this](const QString &error) {
-              if (!m_expectingLlmResponse || !m_currentSession) {
+    connect(m_inferenceService, &InferenceService::llmFinished, this,
+            [this](const InferenceService::RequestToken &token) {
+              if (token != m_activeToken) {
                 return;
               }
-              m_expectingLlmResponse = false;
+
+              m_activeToken = InferenceService::RequestToken();
+
+              if (!m_currentSession) {
+                return;
+              }
+
+              finishAssistantBlock();
+              m_turnMessages = QJsonArray();
+              m_toolCallDepth = 0;
+            });
+
+    connect(m_inferenceService, &InferenceService::llmToolCalls, this,
+            [this](const InferenceService::RequestToken &token,
+                   const QJsonArray &toolCalls) {
+              if (token != m_activeToken) {
+                return;
+              }
+
+              m_activeToken = InferenceService::RequestToken();
+
+              if (!m_currentSession) {
+                return;
+              }
+
+              handleToolCalls(toolCalls);
+            });
+
+    connect(m_inferenceService, &InferenceService::llmError, this,
+            [this](const InferenceService::RequestToken &token,
+                   const QString &error) {
+              if (token != m_activeToken) {
+                return;
+              }
+
+              m_activeToken = InferenceService::RequestToken();
+
+              if (!m_currentSession) {
+                return;
+              }
+
               finishAssistantBlock();
               appendTranscriptEntry(tr("error"), error);
               m_turnMessages = QJsonArray();
@@ -423,6 +480,11 @@ void OverseerWidget::openSession(OverseerSession *session) {
 void OverseerWidget::closeSession() {
   if (!m_currentSession) {
     return;
+  }
+
+  if (m_inferenceService && !m_activeToken.isNull()) {
+    m_inferenceService->abortChatRequest(m_activeToken);
+    m_activeToken = InferenceService::RequestToken();
   }
 
   if (m_toastStack) {
@@ -555,6 +617,12 @@ QString OverseerWidget::buildSystemPrompt() const {
       "You also have read_notes_file, which can read any file under the "
       "user's notes root. Use it for referenced files. It is read-only.\n"
       "\n"
+      "You have edit_note, which opens a referenced note for editing in a "
+      "session-local copy. The user reviews and applies changes; the "
+      "original note is not modified until the user explicitly promotes it. "
+      "Use edit_note when the user asks you to change a referenced file. "
+      "Paths passed to edit_note must be under the notes root.\n"
+      "\n"
       "You have propose_memory_fact. Use it sparingly for facts that should "
       "persist across sessions. The user will review each proposal and "
       "either accept or reject it.\n"
@@ -579,6 +647,25 @@ OverseerTool::Context OverseerWidget::currentToolContext() const {
 
   context.notesRoot = Settings::getRootDirectory();
 
+  auto *self = const_cast<OverseerWidget *>(this);
+
+  context.requestEditNoteReview =
+      [self](const QString &copyPath, const QString &originalPath,
+             const QString &instruction) {
+        if (!self->m_inferenceService) {
+          return;
+        }
+
+        auto *dialog = new EditNoteReviewDialog(
+            self->m_inferenceService, copyPath, originalPath, instruction,
+            self);
+
+        dialog->setAttribute(Qt::WA_DeleteOnClose, true);
+        dialog->show();
+        dialog->raise();
+        dialog->activateWindow();
+      };
+
   return context;
 }
 
@@ -587,11 +674,9 @@ void OverseerWidget::dispatchChatRequest() {
     return;
   }
 
-  m_expectingLlmResponse = true;
-
-  m_inferenceService->sendChatRequest(m_turnMessages, QString(), 0.7, 120000,
-                                      QString(), QJsonObject(),
-                                      m_tools.schemas());
+  m_activeToken = m_inferenceService->sendChatRequest(
+      m_turnMessages, QString(), 0.7, 120000, QString(), QJsonObject(),
+      m_tools.schemas());
 }
 
 void OverseerWidget::logToolHumanReadable(
@@ -648,6 +733,51 @@ void OverseerWidget::logToolDetailed(const QString &toolName,
   m_toolLog->ensureCursorVisible();
 }
 
+void OverseerWidget::handleToolCalls(const QJsonArray &toolCalls) {
+  if (!m_assistantRawText.isEmpty()) {
+    finishAssistantBlock();
+  }
+
+  bool onlyNonBlocking = !toolCalls.isEmpty();
+
+  for (const QJsonValue &value : toolCalls) {
+    if (!value.isObject()) {
+      onlyNonBlocking = false;
+      break;
+    }
+
+    const QJsonObject call = value.toObject();
+    const QJsonObject function =
+        call.value(QStringLiteral("function")).toObject();
+    const QString name =
+        function.value(QStringLiteral("name")).toString();
+
+    if (name != QStringLiteral("propose_memory_fact") &&
+        name != QStringLiteral("edit_note")) {
+      onlyNonBlocking = false;
+      break;
+    }
+  }
+
+  if (!onlyNonBlocking) {
+    if (m_toolCallDepth >= m_toolCallDepthLimit) {
+      appendTranscriptEntry(
+          tr("error"),
+          tr("Tool call depth limit reached (%1). Stopping.")
+              .arg(m_toolCallDepthLimit));
+      m_turnMessages = QJsonArray();
+      m_toolCallDepth = 0;
+      return;
+    }
+
+    ++m_toolCallDepth;
+  }
+
+  executeToolCalls(toolCalls);
+
+  dispatchChatRequest();
+}
+
 void OverseerWidget::executeToolCalls(const QJsonArray &toolCalls) {
   const OverseerTool::Context context = currentToolContext();
 
@@ -695,8 +825,6 @@ void OverseerWidget::executeToolCalls(const QJsonArray &toolCalls) {
 
     logToolDetailed(name, arguments, result, durationMs);
 
-    // If the tool was a memory proposal and it succeeded, record it,
-    // append a readable line to the transcript, and spawn a toast.
     if (name == QStringLiteral("propose_memory_fact") && result.ok) {
       const QString fact =
           arguments.value(QStringLiteral("fact")).toString().trimmed();
@@ -741,56 +869,6 @@ void OverseerWidget::executeToolCalls(const QJsonArray &toolCalls) {
 
     m_turnMessages.append(toolMessage);
   }
-}
-
-void OverseerWidget::onLlmToolCalls(const QJsonArray &toolCalls) {
-  if (!m_expectingLlmResponse || !m_currentSession) {
-    return;
-  }
-
-  m_expectingLlmResponse = false;
-
-  if (!m_assistantRawText.isEmpty()) {
-    finishAssistantBlock();
-  }
-
-  bool onlyProposals = !toolCalls.isEmpty();
-
-  for (const QJsonValue &value : toolCalls) {
-    if (!value.isObject()) {
-      onlyProposals = false;
-      break;
-    }
-
-    const QJsonObject call = value.toObject();
-    const QJsonObject function =
-        call.value(QStringLiteral("function")).toObject();
-    const QString name =
-        function.value(QStringLiteral("name")).toString();
-
-    if (name != QStringLiteral("propose_memory_fact")) {
-      onlyProposals = false;
-      break;
-    }
-  }
-
-  if (!onlyProposals) {
-    if (m_toolCallDepth >= m_toolCallDepthLimit) {
-      appendTranscriptEntry(
-          tr("error"),
-          tr("Tool call depth limit reached (%1). Stopping.")
-              .arg(m_toolCallDepthLimit));
-      m_turnMessages = QJsonArray();
-      m_toolCallDepth = 0;
-      return;
-    }
-
-    ++m_toolCallDepth;
-  }
-
-  executeToolCalls(toolCalls);
-
-  dispatchChatRequest();
 }
 
 void OverseerWidget::onSendClicked() {
@@ -904,6 +982,41 @@ void OverseerWidget::onToolCallDepthChanged(int value) {
   m_toolCallDepthLimit = qBound(1, value, 64);
 
   Settings::setOverseerToolCallDepthLimit(m_toolCallDepthLimit);
+}
+
+void OverseerWidget::onMissingReferencesChanged(const QStringList &missing) {
+  if (!m_missingReferencesLabel || !m_removeMissingButton) {
+    return;
+  }
+
+  if (missing.isEmpty()) {
+    m_missingReferencesLabel->setVisible(false);
+    m_removeMissingButton->setVisible(false);
+    return;
+  }
+
+  m_missingReferencesLabel->setText(
+      tr("%n missing reference(s).", "", missing.size()));
+  m_missingReferencesLabel->setVisible(true);
+
+  m_removeMissingButton->setText(
+      tr("Remove %n missing", "", missing.size()));
+  m_removeMissingButton->setVisible(true);
+}
+
+void OverseerWidget::onRemoveMissingReferencesClicked() {
+  if (!m_overviewEditor || !m_currentSession) {
+    return;
+  }
+
+  const int removed = m_overviewEditor->removeMissingReferences();
+
+  if (removed <= 0) {
+    return;
+  }
+
+  m_currentSession->writeOverview(m_overviewEditor->toPlainText());
+  loadOverviewIntoEditor();
 }
 
 // ---------------------------------------------------------------------------
@@ -1078,17 +1191,21 @@ void OverseerWidget::appendFactToMemory(const QString &fact) {
 // ---------------------------------------------------------------------------
 
 void OverseerWidget::rebuildUserActionsTab() {
-  if (!m_userActionsLayout) {
+  if (!m_userActionsLayout || !m_userActionsContent) {
     return;
   }
 
-  // Remove all existing cards (but keep the empty label and the stretch).
   const QList<MemoryProposalCard *> existing =
-      m_userActionsContent->findChildren<MemoryProposalCard *>();
+      m_userActionsContent->findChildren<MemoryProposalCard *>(
+          QString(), Qt::FindDirectChildrenOnly);
 
   for (MemoryProposalCard *card : existing) {
+    if (!card) {
+      continue;
+    }
+
     m_userActionsLayout->removeWidget(card);
-    card->deleteLater();
+    delete card;
   }
 
   int pendingCount = 0;
@@ -1111,13 +1228,21 @@ void OverseerWidget::rebuildUserActionsTab() {
               setProposalStatus(key, QStringLiteral("rejected"));
             });
 
-    // Insert before the empty label so ordering is stable.
     m_userActionsLayout->insertWidget(pendingCount, card);
     ++pendingCount;
   }
 
   if (m_userActionsEmptyLabel) {
     m_userActionsEmptyLabel->setVisible(pendingCount == 0);
+  }
+
+  m_userActionsLayout->activate();
+  m_userActionsContent->adjustSize();
+  m_userActionsContent->updateGeometry();
+
+  if (m_userActionsScroll) {
+    m_userActionsScroll->widget()->updateGeometry();
+    m_userActionsScroll->viewport()->update();
   }
 
   updateUserActionsTabTitle();

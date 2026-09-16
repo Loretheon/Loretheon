@@ -22,14 +22,9 @@
 
 namespace {
 
-// Strips markdown code fences, leading/trailing horizontal rules, and
-// stray whitespace from a generated replacement. LLMs frequently wrap
-// short outputs in ```...``` or in ---...--- and those wrappers corrupt
-// the target file.
 QString sanitizeGeneratedText(const QString &raw, bool isShortFragment) {
   QString text = raw;
 
-  // Remove triple-backtick fences (with or without language tag).
   static const QRegularExpression fenceRe(
       QStringLiteral("^\\s*```[a-zA-Z0-9_-]*\\s*\\n?"),
       QRegularExpression::MultilineOption);
@@ -42,11 +37,8 @@ QString sanitizeGeneratedText(const QString &raw, bool isShortFragment) {
   text.remove(fenceEndRe);
 
   if (isShortFragment) {
-    // For find-substring replacements the output must not contain any
-    // newlines. Collapse whitespace and trim.
     text = text.trimmed();
 
-    // Strip a wrapping --- ... --- block (common LLM habit).
     static const QRegularExpression dashWrap(
         QStringLiteral("^\\s*---+\\s*(.*?)\\s*---+\\s*$"),
         QRegularExpression::DotMatchesEverythingOption);
@@ -56,15 +48,11 @@ QString sanitizeGeneratedText(const QString &raw, bool isShortFragment) {
       text = m.captured(1).trimmed();
     }
 
-    // Strip surrounding quotes if the whole fragment is quoted.
     if (text.size() >= 2 && text.startsWith(QChar('"')) &&
         text.endsWith(QChar('"'))) {
       text = text.mid(1, text.size() - 2);
     }
 
-    // If the sanitized fragment still contains a newline, take the first
-    // non-empty line as the replacement. The find span is inside a single
-    // line for scoped replacements in practice.
     if (text.contains(QChar('\n'))) {
       const QStringList lines = text.split(QChar('\n'));
       for (const QString &line : lines) {
@@ -108,7 +96,12 @@ void ChatWidgetEditFlow::sendPromptWithMode(const QString &prompt,
     m_widget->m_editSession->abort();
   }
 
-  m_widget->m_inferenceService->abortChatRequest();
+  // If ChatWidget has an active token, abort that specific request. This
+  // is safe because the token identifies the request ChatWidget owns.
+  if (!m_widget->m_activeToken.isNull() && m_widget->m_inferenceService) {
+    m_widget->m_inferenceService->abortChatRequest(m_widget->m_activeToken);
+    m_widget->m_activeToken = InferenceService::RequestToken();
+  }
 
   resetState();
 
@@ -152,8 +145,7 @@ void ChatWidgetEditFlow::sendPromptWithMode(const QString &prompt,
   messages.append(QJsonObject{{QStringLiteral("role"), QStringLiteral("user")},
                               {QStringLiteral("content"), prompt}});
 
-  m_widget->m_inferenceService->sendChatRequest(messages, QString(), 0.7,
-                                                120000);
+  m_widget->sendChatRequestWithToken(messages, QString(), 0.7, 120000);
 }
 
 void ChatWidgetEditFlow::requestNextEditCommand() {
@@ -406,8 +398,7 @@ void ChatWidgetEditFlow::requestEditContent() {
 
   m_widget->m_currentLlmResponse.clear();
 
-  m_widget->m_inferenceService->sendChatRequest(messages, QString(), 0.7,
-                                                120000);
+  m_widget->sendChatRequestWithToken(messages, QString(), 0.7, 120000);
 }
 
 void ChatWidgetEditFlow::onPlanReady(const QVector<EditCommand> &commands) {

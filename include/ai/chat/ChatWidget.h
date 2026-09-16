@@ -8,6 +8,8 @@
 #include "../edit/EditMatch.h"
 #include "../edit/PendingEdit.h"
 
+#include "inference/InferenceService.h"
+
 #include <QList>
 #include <QString>
 #include <QStringList>
@@ -30,8 +32,6 @@ class HistoryPanel;
 class EditPlanner;
 class EditSession;
 class EditSessionWidget;
-
-class InferenceService;
 
 class TextEdit;
 
@@ -60,12 +60,6 @@ signals:
 private slots:
   void onPlanValidatedFromSession(const QVector<EditCommand> &commands);
   void onSendClicked();
-
-  void onLlmDelta(const QString &text);
-
-  void onLlmFinished();
-
-  void onLlmError(const QString &error);
 
   void onPendingEditStarted(const PendingEdit &edit);
 
@@ -116,9 +110,17 @@ private slots:
 private:
   enum class EditPhase { None, PlanReview, Content };
 
+  // Send entry points. They route through ChatWidgetEditFlow and, when
+  // the flow decides to issue an LLM request, the flow calls
+  // sendChatRequestWithToken() so the widget can store the token.
   void sendPrompt(const QString &prompt);
-
   void sendPromptWithMode(const QString &prompt, int scopeMode);
+
+  // Called by ChatWidgetEditFlow. Returns the token assigned to the
+  // request. Stores it in m_activeToken.
+  InferenceService::RequestToken sendChatRequestWithToken(
+      const QJsonArray &messages, const QString &model = QString(),
+      double temperature = 0.7, int timeoutMs = 120000);
 
   void appendUserMessage(const QString &text);
 
@@ -199,10 +201,10 @@ private:
 
   bool m_planReadyToStream = false;
 
-  // True between sendChatRequest() and llmFinished/llmError. Guards the
-  // delta handlers so that chat streams destined for other widgets (e.g.
-  // Overseer) are not appended to this transcript.
-  bool m_expectingLlmResponse = false;
+  // The token returned by the current sendChatRequest. Every llm* signal
+  // is filtered against it, so a stream from another consumer (Overseer,
+  // settings test, dialog planner) never touches this widget's state.
+  InferenceService::RequestToken m_activeToken;
 };
 
 #endif // CHATWIDGET_H

@@ -329,7 +329,7 @@ add_executable(Episteme
         include/text/DocumentArea.h
         src/overseer/ProposeMemoryFactTool.cpp
         include/overseer/ProposeMemoryFactTool.h
-        include/ui/LlmSettingsPanel.cpp
+        src/ui/LlmSettingsPanel.cpp
         include/ui/LlmSettingsPanel.h
         include/overseer/MemoryProposalCard.cpp
         include/overseer/MemoryProposalCard.h
@@ -337,6 +337,10 @@ add_executable(Episteme
         include/overseer/MemoryProposalToast.h
         include/overseer/ToastStack.cpp
         include/overseer/ToastStack.h
+        include/overseer/EditNoteTool.cpp
+        include/overseer/EditNoteTool.h
+        include/overseer/EditNoteReviewDialog.cpp
+        include/overseer/EditNoteReviewDialog.h
 )
 
 add_dependencies(Episteme

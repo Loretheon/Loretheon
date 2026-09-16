@@ -379,13 +379,54 @@ EditPlanner::EditPlanner(InferenceService *inferenceService, QObject *parent)
   }
 
   connect(m_inferenceService, &InferenceService::llmDelta, this,
-          &EditPlanner::onLlmDelta);
+          [this](const InferenceService::RequestToken &token,
+                 const QString &text) {
+            if (token != m_activeToken || !m_active || text.isEmpty()) {
+              return;
+            }
+
+            m_streamingResponse += text;
+            processStream();
+          });
 
   connect(m_inferenceService, &InferenceService::llmFinished, this,
-          &EditPlanner::onLlmFinished);
+          [this](const InferenceService::RequestToken &token) {
+            if (token != m_activeToken) {
+              return;
+            }
+
+            m_activeToken = InferenceService::RequestToken();
+
+            if (!m_active) {
+              return;
+            }
+
+            m_active = false;
+            m_streamingResponse.clear();
+
+            emit failed(
+                QStringLiteral("Edit planner did not produce a complete "
+                               "plan."));
+          });
 
   connect(m_inferenceService, &InferenceService::llmError, this,
-          &EditPlanner::onLlmError);
+          [this](const InferenceService::RequestToken &token,
+                 const QString &error) {
+            if (token != m_activeToken) {
+              return;
+            }
+
+            m_activeToken = InferenceService::RequestToken();
+
+            if (!m_active) {
+              return;
+            }
+
+            m_active = false;
+            m_streamingResponse.clear();
+
+            emit failed(QStringLiteral("LLM error: %1").arg(error));
+          });
 }
 
 void EditPlanner::start(TextEdit *editor, const QString &userRequest) {
@@ -605,49 +646,19 @@ void EditPlanner::start(TextEdit *editor, const QString &userRequest,
 
   emit contextScopes(contextScopeIds);
 
-  m_inferenceService->sendChatRequest(messages, QString(), 0.7, 120000,
-                                      EditGrammar::gbnf(scopeIds));
+  m_activeToken = m_inferenceService->sendChatRequest(
+      messages, QString(), 0.7, 120000, EditGrammar::gbnf(scopeIds));
 }
 
 void EditPlanner::abort() {
   m_active = false;
   m_streamingResponse.clear();
 
-  if (m_inferenceService) {
-    m_inferenceService->abortChatRequest();
-  }
-}
-
-void EditPlanner::onLlmDelta(const QString &text) {
-  if (!m_active || text.isEmpty()) {
-    return;
+  if (m_inferenceService && !m_activeToken.isNull()) {
+    m_inferenceService->abortChatRequest(m_activeToken);
   }
 
-  m_streamingResponse += text;
-
-  processStream();
-}
-
-void EditPlanner::onLlmFinished() {
-  if (!m_active) {
-    return;
-  }
-
-  m_active = false;
-  m_streamingResponse.clear();
-
-  emit failed(QStringLiteral("Edit planner did not produce a complete plan."));
-}
-
-void EditPlanner::onLlmError(const QString &error) {
-  if (!m_active) {
-    return;
-  }
-
-  m_active = false;
-  m_streamingResponse.clear();
-
-  emit failed(QStringLiteral("LLM error: %1").arg(error));
+  m_activeToken = InferenceService::RequestToken();
 }
 
 bool EditPlanner::takeCompleteJsonValue(QString &buffer, QString &jsonText) {
@@ -763,8 +774,11 @@ void EditPlanner::processStream() {
 
   m_active = false;
 
-  if (m_inferenceService) {
-    m_inferenceService->abortChatRequest();
+  // The stream is complete. Abort the token so InferenceService cleans up
+  // the request slot, and clear our handle.
+  if (m_inferenceService && !m_activeToken.isNull()) {
+    m_inferenceService->abortChatRequest(m_activeToken);
+    m_activeToken = InferenceService::RequestToken();
   }
 
   QJsonParseError parseError;

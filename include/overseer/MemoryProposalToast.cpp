@@ -9,7 +9,6 @@
 #include <QVBoxLayout>
 
 namespace {
-constexpr int SlideInMs = 1000;
 constexpr int FadeOutMs = 250;
 constexpr int ToastRadius = 8;
 } // namespace
@@ -21,6 +20,11 @@ MemoryProposalToast::MemoryProposalToast(const QString &fact,
   setObjectName(QStringLiteral("memoryProposalToast"));
   setAttribute(Qt::WA_TransparentForMouseEvents, true);
   setAttribute(Qt::WA_ShowWithoutActivating, true);
+
+  // Ensure paintEvent actually runs against a real backing surface.
+  setAttribute(Qt::WA_StyledBackground, true);
+
+  setAutoFillBackground(false);
 
   m_factLabel = new QLabel(fact, this);
   m_factLabel->setWordWrap(true);
@@ -58,10 +62,11 @@ MemoryProposalToast::MemoryProposalToast(const QString &fact,
   layout->addWidget(m_factLabel);
   layout->addWidget(m_rationaleLabel);
 
-  // Fade support.
+  // Fade only on dismiss, not as an always-on effect. This avoids the
+  // X11 issue where an opacity effect on a child widget with no
+  // composition surface renders nothing.
   m_opacity = new QGraphicsOpacityEffect(this);
   m_opacity->setOpacity(1.0);
-  setGraphicsEffect(m_opacity);
 
   m_fade = new QPropertyAnimation(m_opacity, "opacity", this);
   m_fade->setDuration(FadeOutMs);
@@ -104,6 +109,10 @@ void MemoryProposalToast::startFadeOut() {
   if (m_lifetimeTimer) {
     m_lifetimeTimer->stop();
   }
+
+  // Install the opacity effect now, right before we need it, so the
+  // widget is fully realised first.
+  setGraphicsEffect(m_opacity);
 
   m_fade->stop();
   m_fade->setStartValue(m_opacity->opacity());

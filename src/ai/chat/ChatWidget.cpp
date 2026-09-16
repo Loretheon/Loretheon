@@ -187,14 +187,64 @@ ChatWidget::ChatWidget(InferenceService *inferenceService,
   connect(m_input, &QLineEdit::returnPressed, this, &ChatWidget::onSendClicked);
 
   if (m_inferenceService) {
+    // Every llm* handler filters on the token issued by the most recent
+    // sendChatRequestWithToken call from this widget.
     connect(m_inferenceService, &InferenceService::llmDelta, this,
-            &ChatWidget::onLlmDelta);
+            [this](const InferenceService::RequestToken &token,
+                   const QString &text) {
+              if (token != m_activeToken) {
+                return;
+              }
+
+              if (m_editPhase == EditPhase::Content && m_editSession &&
+                  m_editSession->state() == EditSession::State::Streaming) {
+                m_editSession->appendStreaming(text);
+                return;
+              }
+
+              appendAssistantChunk(text);
+            });
 
     connect(m_inferenceService, &InferenceService::llmFinished, this,
-            &ChatWidget::onLlmFinished);
+            [this](const InferenceService::RequestToken &token) {
+              if (token != m_activeToken) {
+                return;
+              }
+
+              m_activeToken = InferenceService::RequestToken();
+
+              if (m_editPhase == EditPhase::Content && m_editSession &&
+                  m_editSession->state() == EditSession::State::Streaming) {
+                m_editSession->finishStreaming();
+                return;
+              }
+
+              renderLastAssistantMessage();
+            });
+
+    connect(m_inferenceService, &InferenceService::llmToolCalls, this,
+            [this](const InferenceService::RequestToken &token,
+                   const QJsonArray &) {
+              if (token != m_activeToken) {
+                return;
+              }
+
+              m_activeToken = InferenceService::RequestToken();
+              // ChatWidget does not use tool calls itself; if the model
+              // sent them, treat it as an error state for this widget.
+              appendStatusMessage(tr("Unexpected tool call in chat mode."));
+            });
 
     connect(m_inferenceService, &InferenceService::llmError, this,
-            &ChatWidget::onLlmError);
+            [this](const InferenceService::RequestToken &token,
+                   const QString &error) {
+              if (token != m_activeToken) {
+                return;
+              }
+
+              m_activeToken = InferenceService::RequestToken();
+              appendStatusMessage(tr("Error: %1").arg(error));
+            });
   }
 
   if (m_editSession) {
@@ -263,8 +313,10 @@ ChatWidget::ChatWidget(InferenceService *inferenceService,
 
 void ChatWidget::setActiveEditor(TextEdit *editor) {
   if (m_activeEditor) {
-    disconnect(m_activeEditor->document(), &QTextDocument::contentsChanged,
-               this, &ChatWidget::onDocumentStructureChanged);
+    if (auto *doc = m_activeEditor->document()) {
+      disconnect(doc, &QTextDocument::contentsChanged, this,
+                 &ChatWidget::onDocumentStructureChanged);
+    }
   }
 
   m_activeEditor = editor;
@@ -274,8 +326,10 @@ void ChatWidget::setActiveEditor(TextEdit *editor) {
   }
 
   if (m_activeEditor) {
-    connect(m_activeEditor->document(), &QTextDocument::contentsChanged, this,
-            &ChatWidget::onDocumentStructureChanged);
+    if (auto *doc = m_activeEditor->document()) {
+      connect(doc, &QTextDocument::contentsChanged, this,
+              &ChatWidget::onDocumentStructureChanged);
+    }
 
     m_activeEditor->refreshPendingEdits();
   }
@@ -485,11 +539,22 @@ void ChatWidget::sendPrompt(const QString &prompt) {
 }
 
 void ChatWidget::sendPromptWithMode(const QString &prompt, int scopeMode) {
-  m_expectingLlmResponse = true;
-
   if (m_editFlow) {
     m_editFlow->sendPromptWithMode(prompt, scopeMode);
   }
+}
+
+InferenceService::RequestToken ChatWidget::sendChatRequestWithToken(
+    const QJsonArray &messages, const QString &model, double temperature,
+    int timeoutMs) {
+  if (!m_inferenceService) {
+    return InferenceService::RequestToken();
+  }
+
+  m_activeToken = m_inferenceService->sendChatRequest(
+      messages, model, temperature, timeoutMs);
+
+  return m_activeToken;
 }
 
 void ChatWidget::appendUserMessage(const QString &text) {
@@ -511,46 +576,6 @@ void ChatWidget::appendStatusMessage(const QString &text) {
 
 void ChatWidget::renderLastAssistantMessage() {
   ChatWidgetTranscript::renderLastAssistantMessage(m_transcript);
-}
-
-void ChatWidget::onLlmDelta(const QString &delta) {
-  if (!m_expectingLlmResponse) {
-    return;
-  }
-
-  if (m_editPhase == EditPhase::Content && m_editSession &&
-      m_editSession->state() == EditSession::State::Streaming) {
-    m_editSession->appendStreaming(delta);
-    return;
-  }
-
-  appendAssistantChunk(delta);
-}
-
-void ChatWidget::onLlmFinished() {
-  if (!m_expectingLlmResponse) {
-    return;
-  }
-
-  m_expectingLlmResponse = false;
-
-  if (m_editPhase == EditPhase::Content && m_editSession &&
-      m_editSession->state() == EditSession::State::Streaming) {
-    m_editSession->finishStreaming();
-    return;
-  }
-
-  renderLastAssistantMessage();
-}
-
-void ChatWidget::onLlmError(const QString &error) {
-  if (!m_expectingLlmResponse) {
-    return;
-  }
-
-  m_expectingLlmResponse = false;
-
-  appendStatusMessage(tr("Error: %1").arg(error));
 }
 
 void ChatWidget::onPendingEditStarted(const PendingEdit &edit) {

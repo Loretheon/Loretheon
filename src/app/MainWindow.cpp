@@ -123,8 +123,9 @@ MainWindow::MainWindow() {
             }
           });
 
+
   connect(documentArea, &DocumentArea::currentEditorChanged, this,
-          &MainWindow::bindCurrentEditor);
+          &MainWindow::bindCurrentEditor, Qt::QueuedConnection);
 
   connect(documentArea, &DocumentArea::openDocumentRequested, documentManager,
           &DocumentManager::openFile);

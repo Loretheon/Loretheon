@@ -23,9 +23,11 @@ private slots:
   void onTestClicked();
   void onAccepted();
 
-  void onTestDelta(const QString &text);
-  void onTestFinished();
-  void onTestError(const QString &error);
+  void onTestDelta(const InferenceService::RequestToken &token,
+                   const QString &text);
+  void onTestFinished(const InferenceService::RequestToken &token);
+  void onTestError(const InferenceService::RequestToken &token,
+                   const QString &error);
 
 private:
   void loadFromSettings();
@@ -49,6 +51,9 @@ private:
   bool m_testInProgress = false;
   QString m_testAccumulator;
   InferenceService::LlmConfig m_savedConfig;
+
+  // Token of the currently in-flight test probe. Null when idle.
+  InferenceService::RequestToken m_testToken;
 };
 
 #endif // EPISTEME_LLMSETTINGSPANEL_H

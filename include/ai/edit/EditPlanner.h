@@ -4,11 +4,12 @@
 #include "PayloadLogger.h"
 #include "edit/EditCommand.h"
 
+#include "inference/InferenceService.h"
+
 #include <QObject>
 #include <QString>
 #include <QVector>
 
-class InferenceService;
 class TextEdit;
 
 class EditPlanner : public QObject {
@@ -16,8 +17,8 @@ class EditPlanner : public QObject {
 
 public:
   enum class ScopeMode {
-    Scoped,    // Plan commands target named scopes (sections, nodes, etc.)
-    WholeFile, // Plan is a single command targeting the document root
+    Scoped,
+    WholeFile,
   };
 
   Q_ENUM(ScopeMode)
@@ -31,19 +32,14 @@ public:
 
   void abort();
 
+  bool isActive() const { return m_active; }
+
   signals:
     void planValidated(const QVector<EditCommand> &commands);
 
   void contextScopes(const QStringList &scopeIds);
 
   void failed(const QString &reason);
-
-private slots:
-  void onLlmDelta(const QString &text);
-
-  void onLlmFinished();
-
-  void onLlmError(const QString &error);
 
 private:
   void processStream();
@@ -63,6 +59,8 @@ private:
   ScopeMode m_scopeMode{ScopeMode::Scoped};
 
   bool m_active{false};
+
+  InferenceService::RequestToken m_activeToken;
 };
 
 #endif // EDITPLANNER_H

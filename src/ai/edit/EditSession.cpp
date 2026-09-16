@@ -39,7 +39,25 @@ void EditSession::setEditor(TextEdit *editor) {
     return;
   }
 
-  abort();
+  // If the applier is mid-stream, cancel it without touching the
+  // document. Calling abort() here can dereference a document that has
+  // already been swapped out by TextEdit::setDocument, which is the
+  // cause of crashes when switching editors while a stream is live.
+  if (m_applier && m_applier->isStreaming()) {
+    m_applier->cancelStreaming();
+  }
+
+  m_pendingCandidates.clear();
+  m_pendingEdits.clear();
+  m_pendingMatch = EditMatch();
+  m_pendingCommand = EditCommand();
+  m_currentPendingEditId = InvalidPendingEditId;
+  m_documentRevision = InvalidRevision;
+
+  if (m_state != State::Idle) {
+    setState(State::Idle);
+  }
+
   m_editor = editor;
 }
 

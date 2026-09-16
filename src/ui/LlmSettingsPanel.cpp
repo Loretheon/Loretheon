@@ -1,6 +1,6 @@
 #include "LlmSettingsPanel.h"
 
-#include "../../../include/app/Settings.h"
+#include "Settings.h"
 #include "inference/InferenceService.h"
 
 #include <QComboBox>
@@ -151,7 +151,6 @@ void LlmSettingsPanel::onTestClicked() {
     return;
   }
 
-  // Remember what was active so we can restore it after the probe.
   m_savedConfig = InferenceService::LlmConfig();
   m_savedConfig.mode = m_inference->llmMode();
   m_savedConfig.endpoint = m_inference->llmEndpoint();
@@ -185,9 +184,6 @@ void LlmSettingsPanel::onTestClicked() {
     return;
   }
 
-  // setLlmConfig may be synchronous or asynchronous depending on mode.
-  // If the LLM is already ready, send the probe immediately. Otherwise
-  // wait for the ready signal, then send.
   if (m_inference->isLlmReady()) {
     sendProbe();
   } else {
@@ -211,22 +207,26 @@ void LlmSettingsPanel::sendProbe() {
   QJsonArray messages;
   messages.append(userMessage);
 
-  m_inference->sendChatRequest(messages, QString(), 0.0, 20000);
+  m_testToken = m_inference->sendChatRequest(
+      messages, QString(), 0.0, 20000);
 }
 
-void LlmSettingsPanel::onTestDelta(const QString &text) {
-  if (!m_testInProgress) {
+void LlmSettingsPanel::onTestDelta(const InferenceService::RequestToken &token,
+                                   const QString &text) {
+  if (token != m_testToken || !m_testInProgress) {
     return;
   }
 
   m_testAccumulator += text;
 }
 
-void LlmSettingsPanel::onTestFinished() {
-  if (!m_testInProgress) {
+void LlmSettingsPanel::onTestFinished(
+    const InferenceService::RequestToken &token) {
+  if (token != m_testToken || !m_testInProgress) {
     return;
   }
 
+  m_testToken = InferenceService::RequestToken();
   setTestInProgress(false);
 
   const QString reply = m_testAccumulator.trimmed();
@@ -240,11 +240,13 @@ void LlmSettingsPanel::onTestFinished() {
   restoreSavedConfig();
 }
 
-void LlmSettingsPanel::onTestError(const QString &error) {
-  if (!m_testInProgress) {
+void LlmSettingsPanel::onTestError(const InferenceService::RequestToken &token,
+                                   const QString &error) {
+  if (token != m_testToken || !m_testInProgress) {
     return;
   }
 
+  m_testToken = InferenceService::RequestToken();
   setTestInProgress(false);
   m_testStatus->setText(tr("Failed: %1").arg(error));
 
@@ -263,8 +265,6 @@ void LlmSettingsPanel::restoreSavedConfig() {
   current.apiKey = m_savedConfig.apiKey;
   current.authType = m_savedConfig.authType;
 
-  // The service doesn't expose apiKey/authType, so if the saved config
-  // was incomplete, fall back to what is persisted in Settings.
   if (current.apiKey.isEmpty()) {
     const Settings::LlmSettings stored = Settings::getLlmSettings();
     current.apiKey = stored.apiKey;

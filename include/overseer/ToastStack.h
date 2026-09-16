@@ -25,14 +25,12 @@ public:
   // Remove all live toasts. Called when the session changes.
   void dismissAll();
 
-  // Called by the parent widget's resizeEvent.
+  // Called by the parent widget's resizeEvent, or via the event filter.
   void reposition();
-
 
 protected:
   bool eventFilter(QObject *watched, QEvent *event) override;
 
-  
 private:
   static constexpr int StackCap = 3;
   static constexpr int MarginPx = 12;
