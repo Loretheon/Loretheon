@@ -1,7 +1,7 @@
 #include "../../include/overseer/Workstation.h"
 
 #include "../../include/app/theme/ThemeTokens.h"
-#include "../../include/overseer/WorkstationWindow.h"
+#include "WorkstationWindow.h"
 
 #include "../../include/app/DocumentManager.h"
 
@@ -27,11 +27,12 @@
 #include <QTimer>
 
 #include <algorithm>
+#include <limits>
 
 namespace {
 
 constexpr auto LayoutFilename = "workstation.json";
-constexpr int LayoutVersion = 1;
+constexpr int LayoutVersion = 2;
 
 } // namespace
 
@@ -147,11 +148,15 @@ void Workstation::onWindowCloseRequested(WorkstationWindow *window) {
   if (m_focusedWindow == window)
     m_focusedWindow = nullptr;
 
+  if (m_dropTarget == window)
+    m_dropTarget = nullptr;
+
   window->hide();
   window->setParent(nullptr);
   window->deleteLater();
 
   updateAlsoOpenBadges();
+  applyTiling();
   saveLayout();
 
   emit windowClosed(path);
@@ -163,42 +168,89 @@ void Workstation::onWindowGeometryChanged(WorkstationWindow *window) {
   saveLayout();
 }
 
-void Workstation::onWindowDragFinished(WorkstationWindow *window) {
+void Workstation::onWindowResizeFinished(WorkstationWindow *window) {
+  Q_UNUSED(window);
+  saveLayout();
+}
+
+void Workstation::onWindowDragStarted(WorkstationWindow *window) {
+  Q_UNUSED(window);
+  clearDragHighlights();
+}
+
+void Workstation::onWindowDragMoved(WorkstationWindow *window,
+                                    const QPoint &globalPos) {
   if (!window)
     return;
 
-  const QRect resolved = resolveNonOverlappingRect(window->geometry(), window);
+  if (window->mode() != WorkstationWindow::Mode::Tiled) {
+    // Floating: no drop target.
+    clearDragHighlights();
+    return;
+  }
 
-  if (resolved != window->geometry()) {
-    window->setGeometry(resolved);
-    window->setRestoreGeometry(resolved);
+  WorkstationWindow *nearest = nearestTiledWindow(globalPos, window);
+
+  if (nearest != m_dropTarget) {
+    if (m_dropTarget)
+      m_dropTarget->setDropTargetHighlight(false);
+
+    m_dropTarget = nearest;
+
+    if (m_dropTarget)
+      m_dropTarget->setDropTargetHighlight(true);
+  }
+}
+
+void Workstation::onWindowDragFinished(WorkstationWindow *window,
+                                       const QPoint &globalPos) {
+  clearDragHighlights();
+
+  if (!window)
+    return;
+
+  if (window->mode() == WorkstationWindow::Mode::Tiled) {
+    WorkstationWindow *nearest = nearestTiledWindow(globalPos, window);
+
+    if (nearest && nearest != window) {
+      // Swap their slots in the tiled order. Since tiling is
+      // computed from the list order, swapping the entries in
+      // m_windows changes their positions on the next applyTiling().
+      const int a = m_windows.indexOf(window);
+      const int b = m_windows.indexOf(nearest);
+
+      if (a >= 0 && b >= 0) {
+        m_windows.swapItemsAt(a, b);
+      }
+    }
+
+    applyTiling();
   }
 
   saveLayout();
 }
 
-void Workstation::onWindowResizeFinished(WorkstationWindow *window) {
+void Workstation::onWindowModeChangeRequested(WorkstationWindow *window,
+                                              WorkstationWindow::Mode mode) {
   if (!window)
     return;
 
-  const QRect resolved =
-      resolveNonOverlappingResize(window->geometry(), window);
+  window->setMode(mode);
 
-  if (resolved != window->geometry()) {
-    window->setGeometry(resolved);
-    window->setRestoreGeometry(resolved);
+  if (mode == WorkstationWindow::Mode::Tiled) {
+    // Move to end of the tiling order so it occupies the last cell.
+    m_windows.removeOne(window);
+    m_windows.append(window);
   }
 
+  applyTiling();
   saveLayout();
 }
 
 void Workstation::onDiskFileChanged(const QString &path) {
-  // If we wrote the file ourselves, ignore the notification. Qt still
-  // fires it for our own writes.
   if (m_ignoreNextChange.contains(path)) {
     m_ignoreNextChange.remove(path);
 
-    // Rewatch; many editors replace the file, which removes the watch.
     QTimer::singleShot(0, this, [this, path]() {
       if (QFileInfo::exists(path) && !m_fileWatcher.files().contains(path))
         m_fileWatcher.addPath(path);
@@ -215,22 +267,17 @@ void Workstation::onDiskFileChanged(const QString &path) {
   TextDocument *doc = window->document();
 
   if (!doc) {
-    // Rewatch and bail.
     if (QFileInfo::exists(path) && !m_fileWatcher.files().contains(path))
       m_fileWatcher.addPath(path);
     return;
   }
 
   if (!doc->isModified()) {
-    // No unsaved edits. Reload silently.
     reloadWindowFromDisk(window);
   } else {
-    // Unsaved edits present. Show the conflict banner.
     window->showDiskConflictBanner();
   }
 
-  // QFileSystemWatcher removes the path when the file is replaced. Add
-  // it back so we keep watching.
   QTimer::singleShot(0, this, [this, path]() {
     if (QFileInfo::exists(path) && !m_fileWatcher.files().contains(path))
       m_fileWatcher.addPath(path);
@@ -267,6 +314,7 @@ void Workstation::reloadWindowFromDisk(WorkstationWindow *window) {
   window->hideDiskConflictBanner();
   window->refreshModifiedIndicator();
 }
+
 void Workstation::saveWindowToDisk(WorkstationWindow *window) {
   if (!window || !m_manager)
     return;
@@ -294,9 +342,6 @@ void Workstation::onDiskConflictKeepMine(WorkstationWindow *window) {
   if (!window)
     return;
 
-  // Leave the in-memory document alone. Hide the banner so the user
-  // can keep editing; the modified indicator remains, so they know
-  // the file is unsaved.
   window->hideDiskConflictBanner();
   window->refreshModifiedIndicator();
 }
@@ -305,197 +350,153 @@ void Workstation::onDiskConflictOverwrite(WorkstationWindow *window) {
   saveWindowToDisk(window);
 }
 
-QSize Workstation::defaultNewWindowSize() const {
-  const int canvasW = qMax(width(), 400);
-  const int canvasH = qMax(height(), 300);
+QList<WorkstationWindow *> Workstation::tiledWindows() const {
+  QList<WorkstationWindow *> result;
 
-  int cols = 3;
+  for (WorkstationWindow *w : m_windows) {
+    if (w && w->mode() == WorkstationWindow::Mode::Tiled)
+      result.append(w);
+  }
 
-  if (canvasW < 700)
-    cols = 1;
-  else if (canvasW < 1100)
-    cols = 2;
-
-  const int usableW = canvasW - kMargin * 2 - kGap * (cols - 1);
-
-  const int cellW = qMax(WorkstationWindow::kMinimumWidth, usableW / cols);
-  const int cellH = qMax(WorkstationWindow::kMinimumHeight,
-                         static_cast<int>(canvasH * 0.62));
-
-  return QSize(cellW, cellH);
+  return result;
 }
 
-bool Workstation::rectOverlapsAny(const QRect &candidate,
-                                  WorkstationWindow *ignore) const {
+QList<WorkstationWindow *> Workstation::floatingWindows() const {
+  QList<WorkstationWindow *> result;
+
+  for (WorkstationWindow *w : m_windows) {
+    if (w && w->mode() == WorkstationWindow::Mode::Floating)
+      result.append(w);
+  }
+
+  return result;
+}
+
+QList<QRect> Workstation::computeTiledRects(int count) const {
+  QList<QRect> result;
+
+  if (count <= 0)
+    return result;
+
+  const int usableW = width() - kMargin * 2;
+  const int usableH = height() - kMargin * 2;
+
+  if (usableW <= 0 || usableH <= 0) {
+    for (int i = 0; i < count; ++i)
+      result.append(QRect(kMargin, kMargin, 200, 200));
+
+    return result;
+  }
+
+  // Column count: favor a roughly square grid that keeps cells close
+  // to a 4:3 aspect ratio.
+  int cols = qCeil(qSqrt(static_cast<double>(count) *
+                         (static_cast<double>(usableH) /
+                          static_cast<double>(usableW))));
+
+  cols = qBound(1, cols, count);
+
+  const int rows = qCeil(static_cast<double>(count) / cols);
+
+  const int cellW = (usableW - kGap * (cols - 1)) / cols;
+  const int cellH = (usableH - kGap * (rows - 1)) / rows;
+
+  for (int i = 0; i < count; ++i) {
+    const int r = i / cols;
+    const int c = i % cols;
+
+    const int x = kMargin + c * (cellW + kGap);
+    const int y = kMargin + r * (cellH + kGap);
+
+    result.append(QRect(x, y, cellW, cellH));
+  }
+
+  return result;
+}
+
+void Workstation::applyTiling() {
+  const QList<WorkstationWindow *> tiled = tiledWindows();
+
+  const QList<QRect> rects = computeTiledRects(tiled.size());
+
+  for (int i = 0; i < tiled.size() && i < rects.size(); ++i) {
+    WorkstationWindow *w = tiled.at(i);
+
+    if (!w)
+      continue;
+
+    const QRect r = rects.at(i);
+
+    w->setGeometry(r);
+    w->setRestoreGeometry(r);
+  }
+}
+
+void Workstation::setAllTiled() {
   for (WorkstationWindow *w : std::as_const(m_windows)) {
+    if (!w)
+      continue;
+
+    w->setMode(WorkstationWindow::Mode::Tiled);
+  }
+
+  applyTiling();
+  saveLayout();
+}
+
+void Workstation::setAllFloating() {
+  for (WorkstationWindow *w : std::as_const(m_windows)) {
+    if (!w)
+      continue;
+
+    w->setMode(WorkstationWindow::Mode::Floating);
+  }
+
+  saveLayout();
+}
+
+void Workstation::arrangeAll() {
+  // Re-tile every tiled window. Reset each tiled window's stored
+  // geometry to the computed tiling so the "reset" is deterministic.
+  applyTiling();
+  saveLayout();
+}
+
+WorkstationWindow *Workstation::nearestTiledWindow(
+    const QPoint &globalPos, WorkstationWindow *ignore) const {
+  WorkstationWindow *best = nullptr;
+  int bestDistance = std::numeric_limits<int>::max();
+
+  for (WorkstationWindow *w : m_windows) {
     if (!w || w == ignore)
       continue;
 
-    if (candidate.intersects(w->geometry().adjusted(-kMinGap, -kMinGap,
-                                                    kMinGap, kMinGap))) {
-      return true;
-    }
-  }
-
-  return false;
-}
-
-QRect Workstation::findFreeSlot(const QSize &size,
-                                WorkstationWindow *ignore) const {
-  const int canvasW = width();
-  const int canvasH = height();
-
-  const int w = qMin(size.width(), canvasW - kMargin * 2);
-  const int h = qMin(size.height(), canvasH - kMargin * 2);
-
-  const int step = kGap + 8;
-
-  QList<QRect> occupied;
-
-  occupied.reserve(m_windows.size());
-
-  for (WorkstationWindow *other : std::as_const(m_windows)) {
-    if (!other || other == ignore)
+    if (w->mode() != WorkstationWindow::Mode::Tiled)
       continue;
 
-    occupied.append(other->geometry().adjusted(-kMinGap, -kMinGap, kMinGap,
-                                               kMinGap));
-  }
+    const QPoint center = w->mapToGlobal(w->rect().center());
+    const int dx = center.x() - globalPos.x();
+    const int dy = center.y() - globalPos.y();
+    const int distance = dx * dx + dy * dy;
 
-  auto overlaps = [&occupied](const QRect &candidate) {
-    for (const QRect &r : occupied) {
-      if (candidate.intersects(r))
-        return true;
-    }
-    return false;
-  };
-
-  for (int y = kMargin; y + h <= canvasH - kMargin; y += step) {
-    for (int x = kMargin; x + w <= canvasW - kMargin; x += step) {
-      const QRect candidate(x, y, w, h);
-
-      if (!overlaps(candidate))
-        return candidate;
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      best = w;
     }
   }
 
-  int lowestBottom = kMargin;
-
-  for (WorkstationWindow *existing : std::as_const(m_windows)) {
-    if (!existing || existing == ignore)
-      continue;
-
-    lowestBottom = qMax(lowestBottom, existing->geometry().bottom() + kGap);
-  }
-
-  if (lowestBottom + h <= canvasH - kMargin) {
-    return QRect(kMargin, lowestBottom, w, h);
-  }
-
-  const int cols = qMax(1, canvasW / (w + kGap));
-  const int cellW = (canvasW - kMargin * 2 - kGap * (cols - 1)) / cols;
-  const int cellH = qMax(WorkstationWindow::kMinimumHeight,
-                         (canvasH - kMargin * 2 - kGap) / 2);
-
-  const int index = m_windows.size();
-
-  const int col = index % cols;
-  const int row = (index / cols) % 2;
-
-  const QRect fallback(kMargin + col * (cellW + kGap),
-                       kMargin + row * (cellH + kGap),
-                       qMax(WorkstationWindow::kMinimumWidth, cellW),
-                       qMax(WorkstationWindow::kMinimumHeight, cellH));
-
-  return fallback;
+  return best;
 }
 
-QRect Workstation::resolveNonOverlappingRect(
-    const QRect &target, WorkstationWindow *window) const {
-  constexpr int minVisible = 60;
-
-  QRect clamped = target;
-
-  const int maxX = width() - minVisible;
-  const int maxY = height() - minVisible;
-
-  if (clamped.left() > maxX)
-    clamped.moveLeft(maxX);
-
-  if (clamped.top() > maxY)
-    clamped.moveTop(maxY);
-
-  if (clamped.left() + minVisible < 0)
-    clamped.moveLeft(-(clamped.width() - minVisible));
-
-  if (clamped.top() < 0)
-    clamped.moveTop(0);
-
-  if (!rectOverlapsAny(clamped, window))
-    return clamped;
-
-  const int step = kMinGap + 6;
-  const int maxRadius = qMax(width(), height());
-
-  for (int r = step; r <= maxRadius; r += step) {
-    const QPoint deltas[] = {
-        {r, 0},  {-r, 0}, {0, r},  {0, -r},
-        {r, r},  {-r, r}, {r, -r}, {-r, -r},
-    };
-
-    for (const QPoint &delta : deltas) {
-      QRect candidate = clamped.translated(delta);
-
-      if (candidate.left() + minVisible < 0)
-        continue;
-
-      if (candidate.top() < 0)
-        continue;
-
-      if (candidate.left() > width() - minVisible)
-        continue;
-
-      if (candidate.top() > height() - minVisible)
-        continue;
-
-      if (!rectOverlapsAny(candidate, window))
-        return candidate;
+void Workstation::clearDragHighlights() {
+  for (WorkstationWindow *w : std::as_const(m_windows)) {
+    if (w) {
+      w->setDropTargetHighlight(false);
+      w->setDragOverHighlight(false);
     }
   }
 
-  return findFreeSlot(target.size(), window);
-}
-
-QRect Workstation::resolveNonOverlappingResize(
-    const QRect &target, WorkstationWindow *window) const {
-  QRect candidate = target;
-
-  const int minW = WorkstationWindow::kMinimumWidth;
-  const int minH = WorkstationWindow::kMinimumHeight;
-
-  if (!rectOverlapsAny(candidate, window))
-    return candidate;
-
-  while (candidate.height() > minH && rectOverlapsAny(candidate, window))
-    candidate.setHeight(candidate.height() - 8);
-
-  while (candidate.width() > minW && rectOverlapsAny(candidate, window))
-    candidate.setWidth(candidate.width() - 8);
-
-  if (!rectOverlapsAny(candidate, window))
-    return candidate;
-
-  const QSize minSize(qMax(minW, candidate.width()),
-                      qMax(minH, candidate.height()));
-
-  QRect slot = findFreeSlot(minSize, window);
-
-  slot.moveTopLeft(target.topLeft());
-
-  if (rectOverlapsAny(slot, window))
-    slot = findFreeSlot(minSize, window);
-
-  return slot;
+  m_dropTarget = nullptr;
 }
 
 WorkstationWindow *Workstation::openFile(const QString &absolutePath,
@@ -542,12 +543,8 @@ WorkstationWindow *Workstation::openFile(const QString &absolutePath,
   QWidget *body = m_bodyFactory.createBody(hint, document, m_editSession, this);
 
   auto *window = new WorkstationWindow(document, body, absolutePath, this);
-
-  const QSize preferred = defaultNewWindowSize();
-  const QRect slot = findFreeSlot(preferred, window);
-
-  window->setGeometry(slot);
-  window->setRestoreGeometry(slot);
+  window->setEditSession(m_editSession);
+  window->setMode(WorkstationWindow::Mode::Tiled);
 
   connect(window, &WorkstationWindow::closeRequested, this,
           &Workstation::onWindowCloseRequested);
@@ -558,22 +555,35 @@ WorkstationWindow *Workstation::openFile(const QString &absolutePath,
   connect(window, &WorkstationWindow::geometryChanged, this,
           &Workstation::onWindowGeometryChanged);
 
+  connect(window, &WorkstationWindow::dragStarted, this,
+          &Workstation::onWindowDragStarted);
+
+  connect(window, &WorkstationWindow::dragMoved, this,
+          &Workstation::onWindowDragMoved);
+
   connect(window, &WorkstationWindow::dragFinished, this,
           &Workstation::onWindowDragFinished);
 
   connect(window, &WorkstationWindow::resizeFinished, this,
           &Workstation::onWindowResizeFinished);
 
+  connect(window, &WorkstationWindow::modeChangeRequested, this,
+          &Workstation::onWindowModeChangeRequested);
+
   connect(window, &WorkstationWindow::closeAllRequested, this,
           &Workstation::closeAll);
 
+  connect(window, &WorkstationWindow::tileAllRequested, this,
+          &Workstation::setAllTiled);
+
+  connect(window, &WorkstationWindow::floatAllRequested, this,
+          &Workstation::setAllFloating);
+
   connect(window, &WorkstationWindow::autoArrangeRequested, this,
-          &Workstation::autoArrange);
+          &Workstation::arrangeAll);
 
-  connect(window, &WorkstationWindow::tileRequested, this, &Workstation::tile);
-
-  connect(window, &WorkstationWindow::cascadeRequested, this,
-          &Workstation::cascade);
+  connect(window, &WorkstationWindow::rewriteRequested, this,
+          [this](WorkstationWindow *w) { emit rewriteRequested(w); });
 
   connect(window, &WorkstationWindow::diskConflictReloadRequested, this,
           &Workstation::onDiskConflictReload);
@@ -593,6 +603,11 @@ WorkstationWindow *Workstation::openFile(const QString &absolutePath,
   bringToFront(window);
 
   updateAlsoOpenBadges();
+
+  // Apply the tiling. Existing tiled windows keep their relative
+  // order; the new one is appended.
+  applyTiling();
+
   saveLayout();
 
   emit windowOpened(absolutePath);
@@ -611,11 +626,6 @@ void Workstation::closeFile(const QString &absolutePath) {
 }
 
 void Workstation::closeAll() {
-  // Defer the actual teardown to the next event-loop turn. This method
-  // can be invoked from a signal emitted by one of the windows being
-  // torn down (e.g. the "Close all" item in a window's context menu).
-  // Deleting that window synchronously leaves the emitting QMenu and
-  // the widget's event handler pointing at freed memory.
   QTimer::singleShot(0, this, [this]() {
     if (m_windows.isEmpty())
       return;
@@ -624,6 +634,7 @@ void Workstation::closeAll() {
     m_windows.clear();
     m_byPath.clear();
     m_focusedWindow = nullptr;
+    m_dropTarget = nullptr;
 
     for (WorkstationWindow *w : snapshot) {
       if (!w)
@@ -636,8 +647,6 @@ void Workstation::closeAll() {
       w->deleteLater();
     }
 
-    // Flush the deferred deletions now so subsequent code (e.g. the
-    // file watcher) doesn't race them.
     QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
 
     saveLayout();
@@ -667,26 +676,32 @@ void Workstation::setFileStatus(const QString &absolutePath,
   WorkstationWindow *window = windowForPath(absolutePath);
 
   if (window)
-    window->setStatusPill(status);
+    window->setStatusText(status);
 }
 
 void Workstation::resizeEvent(QResizeEvent *event) {
   QWidget::resizeEvent(event);
 
+  // Tiled windows re-tile on resize.
+  applyTiling();
+
+  // Floating windows clamp back in if they went off.
+  constexpr int minVisible = 60;
+
   for (WorkstationWindow *w : std::as_const(m_windows)) {
-    if (!w)
+    if (!w || w->mode() != WorkstationWindow::Mode::Floating)
       continue;
 
     QRect g = w->geometry();
 
-    if (g.right() > width() - 4)
-      g.moveRight(width() - 4);
+    if (g.left() + minVisible > width())
+      g.moveLeft(width() - minVisible);
 
-    if (g.bottom() > height() - 4)
-      g.moveBottom(height() - 4);
+    if (g.top() > height() - minVisible)
+      g.moveTop(height() - minVisible);
 
-    if (g.left() < 0)
-      g.moveLeft(0);
+    if (g.left() < -(g.width() - minVisible))
+      g.moveLeft(-(g.width() - minVisible));
 
     if (g.top() < 0)
       g.moveTop(0);
@@ -725,105 +740,23 @@ void Workstation::paintEvent(QPaintEvent *event) {
 void Workstation::contextMenuEvent(QContextMenuEvent *event) {
   QMenu menu(this);
 
-  QAction *tileAct = menu.addAction(tr("Tile windows"));
-  QAction *cascadeAct = menu.addAction(tr("Cascade windows"));
-  QAction *arrangeAct = menu.addAction(tr("Auto-arrange"));
+  QAction *tileAll = menu.addAction(tr("Tile all"));
+  QAction *floatAll = menu.addAction(tr("Float all"));
+  QAction *arrange = menu.addAction(tr("Arrange all"));
   menu.addSeparator();
   QAction *closeAllAct = menu.addAction(tr("Close all windows"));
-  menu.addSeparator();
-  QAction *resetAct = menu.addAction(tr("Reset layout"));
 
   QAction *chosen = menu.exec(event->globalPos());
 
-  if (chosen == tileAct) {
-    tile();
-  } else if (chosen == cascadeAct) {
-    cascade();
-  } else if (chosen == arrangeAct) {
-    autoArrange();
+  if (chosen == tileAll) {
+    setAllTiled();
+  } else if (chosen == floatAll) {
+    setAllFloating();
+  } else if (chosen == arrange) {
+    arrangeAll();
   } else if (chosen == closeAllAct) {
     closeAll();
-  } else if (chosen == resetAct) {
-    resetLayout();
   }
-}
-
-void Workstation::autoArrange() {
-  if (m_windows.isEmpty())
-    return;
-
-  QList<WorkstationWindow *> ordered = m_windows;
-
-  std::sort(ordered.begin(), ordered.end(),
-            [](WorkstationWindow *a, WorkstationWindow *b) {
-              return a->zOrder() < b->zOrder();
-            });
-
-  const QList<WorkstationWindow *> snapshot = m_windows;
-  m_windows.clear();
-
-  for (WorkstationWindow *w : ordered) {
-    const QSize preferred = defaultNewWindowSize();
-    const QRect slot = findFreeSlot(preferred, w);
-
-    w->setGeometry(slot);
-    w->setRestoreGeometry(slot);
-
-    m_windows.append(w);
-  }
-
-  Q_UNUSED(snapshot);
-
-  saveLayout();
-}
-
-void Workstation::tile() {
-  const int count = m_windows.size();
-
-  if (count == 0)
-    return;
-
-  const int cols = qCeil(qSqrt(static_cast<double>(count)));
-  const int rows = qCeil(static_cast<double>(count) / cols);
-
-  const int cellW = (width() - kMargin * 2 - kGap * (cols - 1)) / cols;
-  const int cellH = (height() - kMargin * 2 - kGap * (rows - 1)) / rows;
-
-  for (int i = 0; i < count; ++i) {
-    const int r = i / cols;
-    const int c = i % cols;
-
-    const QRect cell(kMargin + c * (cellW + kGap),
-                     kMargin + r * (cellH + kGap), cellW, cellH);
-
-    m_windows[i]->setGeometry(cell);
-    m_windows[i]->setRestoreGeometry(cell);
-  }
-
-  saveLayout();
-}
-
-void Workstation::cascade() {
-  const int count = m_windows.size();
-
-  if (count == 0)
-    return;
-
-  constexpr int step = 28;
-
-  for (int i = 0; i < count; ++i) {
-    const int offset = i * step;
-
-    const QRect g(kMargin + offset, kMargin + offset,
-                  qMin(560, width() - offset - kMargin * 2),
-                  qMin(420, height() - offset - kMargin * 2));
-
-    m_windows[i]->setGeometry(g);
-    m_windows[i]->setRestoreGeometry(g);
-    m_windows[i]->raise();
-  }
-
-  saveLayout();
 }
 
 void Workstation::resetLayout() {
@@ -869,6 +802,10 @@ void Workstation::saveLayout() {
     obj.insert(QStringLiteral("h"), g.height());
     obj.insert(QStringLiteral("z"), w->zOrder());
     obj.insert(QStringLiteral("maximized"), w->isMaximized());
+    obj.insert(QStringLiteral("mode"),
+               w->mode() == WorkstationWindow::Mode::Tiled
+                   ? QStringLiteral("tiled")
+                   : QStringLiteral("floating"));
 
     windowsArr.append(obj);
   }
@@ -892,6 +829,7 @@ void Workstation::loadLayout() {
   m_windows.clear();
   m_byPath.clear();
   m_focusedWindow = nullptr;
+  m_dropTarget = nullptr;
 
   for (WorkstationWindow *w : snapshot) {
     if (w)
@@ -945,10 +883,21 @@ void Workstation::loadLayout() {
     const int h = obj.value(QStringLiteral("h")).toInt(360);
     const int z = obj.value(QStringLiteral("z")).toInt(0);
 
+    const QString modeStr =
+        obj.value(QStringLiteral("mode")).toString(QStringLiteral("floating"));
+
+    const auto mode = modeStr == QStringLiteral("tiled")
+                          ? WorkstationWindow::Mode::Tiled
+                          : WorkstationWindow::Mode::Floating;
+
+    window->setMode(mode);
+
     const QRect g(x, y, w, h);
 
-    window->setGeometry(g);
-    window->setRestoreGeometry(g);
+    if (mode == WorkstationWindow::Mode::Floating) {
+      window->setGeometry(g);
+      window->setRestoreGeometry(g);
+    }
 
     if (z > 0) {
       window->setZOrder(z);
@@ -957,7 +906,8 @@ void Workstation::loadLayout() {
         m_zCounter = z;
     }
 
-    if (obj.value(QStringLiteral("maximized")).toBool())
+    if (obj.value(QStringLiteral("maximized")).toBool() &&
+        mode == WorkstationWindow::Mode::Floating)
       window->toggleMaximize();
   }
 
@@ -974,6 +924,7 @@ void Workstation::loadLayout() {
   }
 
   updateAlsoOpenBadges();
+  applyTiling();
 
   emit windowListChanged();
 }

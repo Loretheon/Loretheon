@@ -75,7 +75,5 @@ private:
 
   QHash<int, TranscriptEventCard *> m_eventCards;
 
-  // Deferred snap-to-bottom handles. Used to cancel a pending snap if
-  // the user scrolls away before it fires.
   bool m_snapPending = false;
 };

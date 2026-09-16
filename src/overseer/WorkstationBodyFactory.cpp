@@ -13,6 +13,7 @@ WorkstationBodyFactory::WorkstationBodyFactory() {
                   QWidget *parent) -> QWidget * {
                  auto *widget = new TextWidget(parent);
 
+                 widget->setWorkstationMode(true);
                  widget->setActiveDocument(document);
 
                  if (editSession) {

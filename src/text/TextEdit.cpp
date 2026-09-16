@@ -1,5 +1,6 @@
 #include "TextEdit.h"
-
+#include <QContextMenuEvent>
+#include <QMenu>
 #include "../../include/text/Toolbar.h"
 #include "../../include/text/formats/HTMLFormatDelegate.h"
 #include "../../include/text/formats/MarkdownFormatDelegate.h"
@@ -167,6 +168,25 @@ void TextEdit::setupToolbarConnections() {
   }
 
   m_toolbar->setTextEdit(this);
+}
+
+void TextEdit::setToolbarVisible(bool visible) {
+  if (m_toolbarVisible == visible)
+    return;
+
+  m_toolbarVisible = visible;
+
+  if (m_toolbar) {
+    m_toolbar->setVisible(visible);
+
+    const int toolbarHeight = visible ? m_toolbar->sizeHint().height() : 0;
+
+    setViewportMargins(0, toolbarHeight, 0,
+                       m_reviewBar && m_reviewBar->isVisible()
+                           ? qMin(m_reviewBar->sizeHint().height(),
+                                  height() / ReviewBarMaxHeightDivisor)
+                           : 0);
+  }
 }
 
 void TextEdit::setupReviewBar() {
@@ -1205,7 +1225,8 @@ void TextEdit::resizeEvent(QResizeEvent *event) {
     return;
   }
 
-  const int toolbarHeight = m_toolbar->sizeHint().height();
+  const int toolbarHeight =
+      m_toolbarVisible ? m_toolbar->sizeHint().height() : 0;
 
   m_toolbar->setGeometry(0, 0, width(), toolbarHeight);
 
@@ -1219,4 +1240,73 @@ void TextEdit::resizeEvent(QResizeEvent *event) {
   setViewportMargins(0, toolbarHeight, 0, reviewHeight);
 
   m_reviewBar->setGeometry(0, height() - reviewHeight, width(), reviewHeight);
+}
+
+void TextEdit::contextMenuEvent(QContextMenuEvent *event) {
+  QMenu *menu = createStandardContextMenu();
+
+  if (!menu) {
+    menu = new QMenu(this);
+  }
+
+  menu->addSeparator();
+
+  QMenu *format = buildFormatMenu(menu);
+  menu->addMenu(format);
+
+  menu->exec(event->globalPos());
+  delete menu;
+}
+
+QMenu *TextEdit::buildFormatMenu(QWidget *parent) {
+  auto *menu = new QMenu(tr("Format"), parent);
+
+  if (!m_delegate) {
+    QAction *disabled = menu->addAction(tr("(not available for this file type)"));
+    disabled->setEnabled(false);
+    return menu;
+  }
+
+  menu->addAction(tr("Bold"), this, &TextEdit::toggleBold);
+  menu->addAction(tr("Italic"), this, &TextEdit::toggleItalic);
+  menu->addAction(tr("Strikethrough"), this, &TextEdit::toggleStrikethrough);
+  menu->addAction(tr("Inline Code"), this, &TextEdit::toggleCodeSpan);
+  menu->addAction(tr("Highlight"), this, &TextEdit::toggleHighlight);
+
+  menu->addSeparator();
+
+  auto *headings = menu->addMenu(tr("Heading"));
+  headings->addAction(tr("Paragraph"), this,
+                      [this]() { setHeadingLevel(0); });
+  for (int level = 1; level <= 6; ++level) {
+    headings->addAction(tr("Heading %1").arg(level), this,
+                        [this, level]() { setHeadingLevel(level); });
+  }
+
+  menu->addAction(tr("Bullet List"), this, &TextEdit::toggleBulletList);
+  menu->addAction(tr("Numbered List"), this, &TextEdit::toggleOrderedList);
+  menu->addAction(tr("Task Item"), this, &TextEdit::toggleTaskItem);
+  menu->addAction(tr("Block Quote"), this, &TextEdit::toggleBlockQuote);
+
+  menu->addSeparator();
+
+  menu->addAction(tr("Code Block"), this, &TextEdit::toggleCodeBlock);
+  menu->addAction(tr("Math Block"), this, &TextEdit::toggleMathBlock);
+  menu->addAction(tr("Horizontal Rule"), this,
+                  &TextEdit::insertHorizontalRule);
+  menu->addAction(tr("Hard Line Break"), this, &TextEdit::insertHardLineBreak);
+
+  menu->addSeparator();
+
+  menu->addAction(tr("Insert Link"), this, &TextEdit::insertLink);
+  menu->addAction(tr("Insert Image"), this, &TextEdit::insertImage);
+  menu->addAction(tr("Insert Table"), this, &TextEdit::insertTable);
+  menu->addAction(tr("Insert Footnote"), this, &TextEdit::insertFootnote);
+
+  menu->addSeparator();
+
+  menu->addAction(tr("Increase Indent"), this, &TextEdit::increaseIndent);
+  menu->addAction(tr("Decrease Indent"), this, &TextEdit::decreaseIndent);
+
+  return menu;
 }

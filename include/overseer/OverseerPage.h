@@ -4,14 +4,17 @@
 
 #include <QWidget>
 
+class FileWidget;
+class AutoHideDock;
 class ChatWidget;
 class DocumentArea;
 class DocumentManager;
 class EditSession;
-class FileWidget;
 class InferenceService;
 class OverseerWidget;
 class Workstation;
+class TextDocument;
+class TextEdit;
 
 class QSplitter;
 class QStackedWidget;
@@ -39,8 +42,8 @@ public:
 public slots:
   void stageFileInSession(const QString &absolutePath);
 
-  signals:
-    void statusMessage(const QString &text, int timeoutMs);
+signals:
+  void statusMessage(const QString &text, int timeoutMs);
   void openFileInNormalEditorRequested(const QString &absolutePath);
   void dirtyChanged(bool dirty);
 
@@ -50,10 +53,15 @@ private slots:
   void onFileSelected(const QString &path);
   void onDocumentChanged();
   void onAddToOverview(const QStringList &paths);
+  void onFocusedFileChanged(const QString &absolutePath);
+  void onScopedEditRequested(TextEdit *editor, TextDocument *document,
+                             const QString &instruction);
 
 private:
   void reloadSession(const QString &name);
   void closeAllSessionDocuments();
+
+  void migrateLegacyLayoutFiles();
 
   InferenceService *m_inferenceService = nullptr;
   EditSession *m_editSession = nullptr;
@@ -64,6 +72,9 @@ private:
   DocumentManager *m_documentManager = nullptr;
   DocumentArea *m_documentArea = nullptr;
   FileWidget *m_fileWidget = nullptr;
+
+  AutoHideDock *m_leftDock = nullptr;
+  AutoHideDock *m_rightDock = nullptr;
 
   QSplitter *m_mainSplitter = nullptr;
 

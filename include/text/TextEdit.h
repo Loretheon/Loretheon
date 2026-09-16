@@ -30,9 +30,9 @@ public:
   Q_ENUM(DocumentMode)
 
   enum class HighlightMode {
-    Intent,  // Highlight the full scope range for any referenced scope.
-    Sent,    // Highlight only the heading lines of referenced scopes.
-    Both     // Solid tint for full ranges, lighter tint for heading lines.
+    Intent,
+    Sent,
+    Both
   };
 
   Q_ENUM(HighlightMode)
@@ -65,6 +65,8 @@ public:
 
   bool isSourceMode() const { return m_sourceMode; }
 
+  bool isToolbarVisible() const { return m_toolbarVisible; }
+
   void showPendingEdit(const PendingEdit &edit);
 
   void updatePendingEdit(const PendingEdit &edit);
@@ -87,6 +89,10 @@ public slots:
   void setDocumentMode(DocumentMode mode);
 
   void setAutoAcceptEdits(bool enabled);
+
+  // Hide or show the top toolbar. When hidden, all formatting actions
+  // are available from the editor's right-click context menu.
+  void setToolbarVisible(bool visible);
 
   void setPendingEditAccepted(int editId, bool accepted);
 
@@ -159,6 +165,7 @@ signals:
 protected:
   void resizeEvent(QResizeEvent *event) override;
   void mouseMoveEvent(QMouseEvent *event) override;
+  void contextMenuEvent(QContextMenuEvent *event) override;
 
 private:
   QString pendingEditPreview(const PendingEdit &edit) const;
@@ -188,6 +195,9 @@ private:
 
   void setReviewRowStyle(QWidget *row, const PendingEdit &edit);
 
+  // Builds the formatting submenu used by contextMenuEvent.
+  QMenu *buildFormatMenu(QWidget *parent);
+
   Toolbar *m_toolbar = nullptr;
 
   QWidget *m_reviewBar = nullptr;
@@ -215,6 +225,8 @@ private:
   bool m_sourceMode{false};
 
   bool m_autoAcceptEdits{false};
+
+  bool m_toolbarVisible{true};
 
   QHash<int, PendingEdit> m_pendingEdits;
 

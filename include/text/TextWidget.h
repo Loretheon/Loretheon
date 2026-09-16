@@ -12,7 +12,6 @@
 class TextEdit;
 class TextBrowser;
 class QStackedWidget;
-class QToolButton;
 class DiagramView;
 class DiagramToolbar;
 class GraphvizRenderer;
@@ -39,12 +38,20 @@ public:
 
   void setPreviewSession(EditSession *session);
 
+  void setWorkstationMode(bool on);
+
   void setThemeTokens(const ThemeTokens &tokens) override;
+
+  bool isViewMode() const;
 
 public slots:
   void setContextScopes(const QStringList &scopeIds);
   void activatePreview(bool active);
   void clearContextScopes();
+
+  // Toggle the outer stack between the editor page (false) and the
+  // preview / view page (true).
+  void setViewMode(bool viewMode);
 
 signals:
   void openDocumentRequested(const QString &path);
@@ -52,12 +59,12 @@ signals:
 
 protected:
   void showEvent(QShowEvent *event) override;
+  void contextMenuEvent(QContextMenuEvent *event) override;
 
 private slots:
   void syncPreview();
   void onElementClicked(const QString &id, const QString &name,
                         const QPoint &globalPos);
-  void toggleEditView();
 
 private:
   void disconnectActiveDocument();
@@ -84,10 +91,11 @@ private:
   MermaidRenderer *mermaidRenderer = nullptr;
 
   QStackedWidget *outerStack = nullptr;
-  QToolButton *editViewToggle = nullptr;
 
   TextDocument *activeDocument = nullptr;
   ThemeTokens m_tokens;
+
+  bool m_workstationMode = false;
 };
 
 #endif // TEXTWIDGET_H

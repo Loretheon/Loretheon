@@ -2,6 +2,7 @@
 
 #include "../../include/overseer/OverseerToolRegistry.h"
 #include "EditNoteTool.h"
+#include "EditWorkstationFileTool.h"
 #include "ProposeMemoryFactTool.h"
 
 #include <QDir>
@@ -70,9 +71,6 @@ QString safeResolve(const QString &relative, const QString &outputFolder) {
     const QString parent = QFileInfo(existingAncestor).absolutePath();
 
     if (parent == existingAncestor) {
-      // Reached the filesystem root without finding an existing
-      // ancestor. This cannot happen for a relative path under an
-      // existing output folder, but guard anyway.
       return {};
     }
 
@@ -162,6 +160,30 @@ QString describeRejection(const QString &relative) {
              "Incorrect form: \"/home/user/notes/outline.md\", "
              "\"../outline.md\", \"output/outline.md\".")
       .arg(relative);
+}
+
+bool violatesHardFocus(const QString &relative, const QString &outputFolder,
+                       const QString &hardFocusPath) {
+  if (hardFocusPath.isEmpty()) {
+    return false;
+  }
+
+  const QString target =
+      QDir(outputFolder).absoluteFilePath(QDir::cleanPath(relative));
+
+  const QString canonicalTarget = QFileInfo(target).absoluteFilePath();
+
+  const QString canonicalFocus = QFileInfo(hardFocusPath).absoluteFilePath();
+
+  return canonicalTarget != canonicalFocus;
+}
+
+QString hardFocusError(const QString &hardFocusPath) {
+  return QStringLiteral(
+             "Hard focus is active on %1. Only that file may be written "
+             "or edited. Reads remain available. Ask the user to "
+             "disable Lock before writing to other files.")
+      .arg(hardFocusPath);
 }
 
 } // namespace
@@ -419,6 +441,7 @@ WriteFileTool::execute(const QJsonObject &arguments,
     return makeError(describeRejection(relative));
   }
 
+
   QFileInfo info(absolute);
 
   QDir parent(info.absolutePath());
@@ -485,6 +508,7 @@ CreateDirectoryTool::execute(const QJsonObject &arguments,
   if (absolute.isEmpty()) {
     return makeError(describeRejection(relative));
   }
+  
 
   if (!QDir().mkpath(absolute)) {
     return makeError(QStringLiteral("Could not create directory."));
@@ -499,6 +523,9 @@ void OverseerTools::installAll(OverseerToolRegistry &registry) {
   registry.registerTool(std::make_unique<ReadNotesFileTool>());
   registry.registerTool(std::make_unique<WriteFileTool>());
   registry.registerTool(std::make_unique<CreateDirectoryTool>());
+  registry.registerTool(std::make_unique<OpenFileTool>());
+  registry.registerTool(std::make_unique<CloseFileTool>());
+  registry.registerTool(std::make_unique<EditWorkstationFileTool>());
   registry.registerTool(std::make_unique<ProposeMemoryFactTool>());
   registry.registerTool(std::make_unique<EditNoteTool>());
 }

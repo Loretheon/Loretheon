@@ -130,6 +130,7 @@ TranscriptPanel::TranscriptPanel(TranscriptStore *store, QWidget *parent)
       snapToBottom();
   });
 
+
   loadPreferences();
   onEventsReset();
 }
@@ -148,6 +149,7 @@ void TranscriptPanel::loadPreferences() {
 
   m_pinToBottom = s.value(PrefPinToBottomKey, false).toBool();
   m_pinToBottomCheck->setChecked(m_pinToBottom);
+
 }
 
 void TranscriptPanel::savePreferences() {

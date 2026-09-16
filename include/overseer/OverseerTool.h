@@ -5,6 +5,9 @@
 
 #include <functional>
 
+class TextDocument;
+class TextEdit;
+
 class OverseerTool {
 public:
   struct Result {
@@ -18,10 +21,22 @@ public:
     QString outputFolder;
     QString notesRoot;
 
+    QString focusedFilePath;
+    TextDocument *focusedDocument = nullptr;
+    TextEdit *focusedEditor = nullptr;
+
     std::function<void(const QString &copyPath,
                        const QString &originalPath,
                        const QString &instruction)>
         requestEditNoteReview;
+
+    std::function<void(const QString &absolutePath)> openFile;
+
+    std::function<void(const QString &absolutePath)> closeFile;
+
+    std::function<void(TextEdit *editor, TextDocument *document,
+                       const QString &instruction)>
+        requestScopedEdit;
   };
 
   virtual ~OverseerTool() = default;
@@ -30,8 +45,6 @@ public:
 
   virtual QString description() const = 0;
 
-  // Category drives filtering in the transcript UI.
-  // Standard categories: "read", "write", "edit", "proposal", "stage".
   virtual QString category() const { return QStringLiteral("other"); }
 
   virtual QJsonObject parametersSchema() const = 0;

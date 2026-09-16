@@ -2,7 +2,11 @@
 
 #include "../../include/app/theme/ThemeTokens.h"
 #include "TextDocument.h"
+#include "TextWidget.h"
 
+#include "../../include/ai/edit/EditSession.h"
+
+#include <QActionGroup>
 #include <QContextMenuEvent>
 #include <QCursor>
 #include <QEvent>
@@ -79,6 +83,28 @@ QString WorkstationWindow::displayName() const {
   return shortFileName(m_filePath);
 }
 
+void WorkstationWindow::setEditSession(EditSession *session) {
+  m_editSession = session;
+}
+
+void WorkstationWindow::setMode(Mode mode) {
+  if (m_mode == mode)
+    return;
+
+  m_mode = mode;
+
+  if (m_mode == Mode::Tiled && m_maximized)
+    toggleMaximize();
+
+  setProperty("mode", m_mode == Mode::Tiled ? QStringLiteral("tiled")
+                                            : QStringLiteral("floating"));
+  style()->unpolish(this);
+  style()->polish(this);
+  update();
+
+  emit modeChangeRequested(this, m_mode);
+}
+
 QSize WorkstationWindow::preferredSize() const {
   return QSize(480, 360);
 }
@@ -94,40 +120,20 @@ QWidget *WorkstationWindow::buildHeader() {
   m_titleLabel->setObjectName(QStringLiteral("workstationWindowTitle"));
   m_titleLabel->setAttribute(Qt::WA_TransparentForMouseEvents, true);
 
-  m_alsoOpenBadge = new QLabel(tr("Also open"), header);
-  m_alsoOpenBadge->setObjectName(QStringLiteral("workstationWindowBadge"));
-  m_alsoOpenBadge->setAttribute(Qt::WA_TransparentForMouseEvents, true);
-  m_alsoOpenBadge->setVisible(false);
-
-  m_statusPill = new QLabel(tr("Editor"), header);
-  m_statusPill->setObjectName(QStringLiteral("workstationWindowPill"));
-  m_statusPill->setAttribute(Qt::WA_TransparentForMouseEvents, true);
-
-  m_maximizeButton = new QPushButton(QStringLiteral("\u25A1"), header);
-  m_maximizeButton->setObjectName(QStringLiteral("workstationWindowBtn"));
-  m_maximizeButton->setFixedSize(26, 22);
-  m_maximizeButton->setToolTip(tr("Maximize / restore"));
-
   m_closeButton = new QPushButton(QStringLiteral("\u2715"), header);
   m_closeButton->setObjectName(QStringLiteral("workstationWindowBtn"));
-  m_closeButton->setFixedSize(26, 22);
+  m_closeButton->setFixedSize(24, 20);
   m_closeButton->setToolTip(tr("Close (Ctrl+W)"));
 
   auto *layout = new QHBoxLayout(header);
-  layout->setContentsMargins(10, 2, 6, 2);
+  layout->setContentsMargins(10, 2, 4, 2);
   layout->setSpacing(6);
   layout->addWidget(m_titleLabel);
-  layout->addWidget(m_alsoOpenBadge);
   layout->addStretch(1);
-  layout->addWidget(m_statusPill);
-  layout->addWidget(m_maximizeButton);
   layout->addWidget(m_closeButton);
 
   connect(m_closeButton, &QPushButton::clicked, this,
           [this]() { emit closeRequested(this); });
-
-  connect(m_maximizeButton, &QPushButton::clicked, this,
-          [this]() { toggleMaximize(); });
 
   return header;
 }
@@ -184,26 +190,34 @@ void WorkstationWindow::refreshModifiedIndicator() {
   if (!m_document)
     return;
 
-  if (m_document->isModified()) {
-    setStatusPill(tr("Modified"));
-  } else {
-    setStatusPill(tr("Editor"));
-  }
+  if (m_document->isModified())
+    setStatusText(tr("Modified"));
+  else
+    setStatusText(tr("Editor"));
 }
 
-void WorkstationWindow::setStatusPill(const QString &status) {
-  if (!m_statusPill)
-    return;
+void WorkstationWindow::setStatusText(const QString &status) {
+  m_statusText = status;
 
-  m_statusPill->setText(status);
-  m_statusPill->setProperty("status", status.toLower());
-  m_statusPill->style()->unpolish(m_statusPill);
-  m_statusPill->style()->polish(m_statusPill);
+  setProperty("status", status.toLower());
+  style()->unpolish(this);
+  style()->polish(this);
+  update();
 }
 
 void WorkstationWindow::setAlsoOpenElsewhere(bool alsoOpen) {
-  if (m_alsoOpenBadge)
-    m_alsoOpenBadge->setVisible(alsoOpen);
+  if (m_alsoOpenElsewhere == alsoOpen)
+    return;
+
+  m_alsoOpenElsewhere = alsoOpen;
+
+  QString title = shortFileName(m_filePath);
+
+  if (alsoOpen)
+    title += QStringLiteral(" · also open");
+
+  if (m_titleLabel)
+    m_titleLabel->setText(title);
 }
 
 void WorkstationWindow::setFocused(bool focused) {
@@ -213,8 +227,35 @@ void WorkstationWindow::setFocused(bool focused) {
   update();
 }
 
+void WorkstationWindow::setDragOverHighlight(bool highlighted) {
+  if (m_dragOverHighlight == highlighted)
+    return;
+
+  m_dragOverHighlight = highlighted;
+
+  setProperty("dragOver", highlighted);
+  style()->unpolish(this);
+  style()->polish(this);
+  update();
+}
+
+void WorkstationWindow::setDropTargetHighlight(bool highlighted) {
+  if (m_dropTargetHighlight == highlighted)
+    return;
+
+  m_dropTargetHighlight = highlighted;
+
+  setProperty("dropTarget", highlighted);
+  style()->unpolish(this);
+  style()->polish(this);
+  update();
+}
+
 void WorkstationWindow::toggleMaximize() {
   if (!parentWidget())
+    return;
+
+  if (m_mode == Mode::Tiled)
     return;
 
   if (!m_maximized) {
@@ -232,7 +273,7 @@ void WorkstationWindow::toggleMaximize() {
 void WorkstationWindow::setRestoreGeometry(const QRect &rect) {
   m_restoreGeometry = rect;
 
-  if (!m_maximized)
+  if (!m_maximized && m_mode == Mode::Floating)
     setGeometry(rect);
 }
 
@@ -249,12 +290,9 @@ bool WorkstationWindow::isDragHandlePoint(const QPoint &pos) const {
   if (!dragZone.contains(pos))
     return false;
 
-  if (m_maximizeButton &&
-      m_maximizeButton->geometry().contains(m_header->mapFrom(this, pos)))
-    return false;
+  const QPoint headerLocal = m_header->mapFrom(this, pos);
 
-  if (m_closeButton &&
-      m_closeButton->geometry().contains(m_header->mapFrom(this, pos)))
+  if (m_closeButton && m_closeButton->geometry().contains(headerLocal))
     return false;
 
   return true;
@@ -273,6 +311,9 @@ void WorkstationWindow::mousePressEvent(QMouseEvent *event) {
       beginDrag(event->globalPosition().toPoint());
       return;
     }
+
+    if (m_mode == Mode::Tiled)
+      return;
 
     const ResizeEdge edge = edgeAt(pos);
 
@@ -297,6 +338,14 @@ void WorkstationWindow::mouseMoveEvent(QMouseEvent *event) {
     return;
   }
 
+  if (m_mode == Mode::Tiled) {
+    if (isDragHandlePoint(event->position().toPoint()))
+      setCursor(Qt::OpenHandCursor);
+    else
+      unsetCursor();
+    return;
+  }
+
   const QPoint pos = event->position().toPoint();
 
   if (isDragHandlePoint(pos)) {
@@ -310,21 +359,18 @@ void WorkstationWindow::mouseMoveEvent(QMouseEvent *event) {
 void WorkstationWindow::mouseReleaseEvent(QMouseEvent *event) {
   Q_UNUSED(event);
 
-  if (m_dragging || m_resizing) {
-    const bool wasDragging = m_dragging;
-    const bool wasResizing = m_resizing;
-
+  if (m_dragging) {
     m_dragging = false;
+    unsetCursor();
+    emit dragFinished(this, QCursor::pos());
+    return;
+  }
+
+  if (m_resizing) {
     m_resizing = false;
     m_resizeEdge = ResizeEdge::None;
     unsetCursor();
-
-    if (wasDragging)
-      emit dragFinished(this);
-
-    if (wasResizing)
-      emit resizeFinished(this);
-
+    emit resizeFinished(this);
     emit geometryChanged(this);
   }
 }
@@ -362,9 +408,26 @@ void WorkstationWindow::paintEvent(QPaintEvent *event) {
 
   QColor bg = tokens.base;
   QColor border = focused ? tokens.blue : tokens.overlay0;
+  qreal borderWidth = focused ? 1.5 : 1.0;
+
+  if (m_mode == Mode::Tiled) {
+    border = focused ? tokens.blue : tokens.overlay1;
+    borderWidth = focused ? 1.5 : 1.0;
+  } else {
+    border = focused ? tokens.mauve : tokens.overlay0;
+    borderWidth = focused ? 1.5 : 1.0;
+  }
+
+  if (m_dropTargetHighlight) {
+    border = tokens.green;
+    borderWidth = 2.5;
+  } else if (m_dragOverHighlight) {
+    border = tokens.peach;
+    borderWidth = 2.0;
+  }
 
   painter.setBrush(bg);
-  painter.setPen(QPen(border, focused ? 1.5 : 1.0));
+  painter.setPen(QPen(border, borderWidth));
 
   painter.drawRoundedRect(rect().adjusted(1, 1, -1, -1), 6, 6);
 }
@@ -372,25 +435,87 @@ void WorkstationWindow::paintEvent(QPaintEvent *event) {
 void WorkstationWindow::contextMenuEvent(QContextMenuEvent *event) {
   QMenu menu(this);
 
+  auto *textWidget = qobject_cast<TextWidget *>(m_body);
+
+  if (textWidget) {
+    QAction *editMode = menu.addAction(tr("Edit"));
+    QAction *viewMode = menu.addAction(tr("View"));
+
+    editMode->setCheckable(true);
+    viewMode->setCheckable(true);
+    editMode->setChecked(!textWidget->isViewMode());
+    viewMode->setChecked(textWidget->isViewMode());
+
+    auto *modeGroup = new QActionGroup(&menu);
+    modeGroup->addAction(editMode);
+    modeGroup->addAction(viewMode);
+    modeGroup->setExclusive(true);
+
+    connect(editMode, &QAction::triggered, this, [textWidget]() {
+      textWidget->setViewMode(false);
+    });
+
+    connect(viewMode, &QAction::triggered, this, [textWidget]() {
+      textWidget->setViewMode(true);
+    });
+
+    menu.addSeparator();
+  }
+
+  QAction *rewrite = menu.addAction(tr("Rewrite with Overseer…"));
+  rewrite->setEnabled(m_editSession != nullptr);
+
+  menu.addSeparator();
+
+  QAction *tile = menu.addAction(tr("Tile"));
+  QAction *floating = menu.addAction(tr("Float"));
+
+  tile->setCheckable(true);
+  floating->setCheckable(true);
+  tile->setChecked(m_mode == Mode::Tiled);
+  floating->setChecked(m_mode == Mode::Floating);
+
+  auto *windowModeGroup = new QActionGroup(&menu);
+  windowModeGroup->addAction(tile);
+  windowModeGroup->addAction(floating);
+  windowModeGroup->setExclusive(true);
+
+  connect(tile, &QAction::triggered, this, [this]() {
+    emit modeChangeRequested(this, Mode::Tiled);
+  });
+
+  connect(floating, &QAction::triggered, this, [this]() {
+    emit modeChangeRequested(this, Mode::Floating);
+  });
+
+  menu.addSeparator();
+
   QAction *reload = menu.addAction(tr("Reload from disk"));
   QAction *save = menu.addAction(tr("Save"));
 
   menu.addSeparator();
+
+  QAction *maximize = menu.addAction(m_maximized ? tr("Restore")
+                                                 : tr("Maximize"));
+  maximize->setEnabled(m_mode == Mode::Floating);
 
   QAction *close = menu.addAction(tr("Close"));
   QAction *closeAll = menu.addAction(tr("Close all"));
 
   menu.addSeparator();
 
-  QAction *maximize = menu.addAction(m_maximized ? tr("Restore")
-                                                 : tr("Maximize"));
-  QAction *autoArrange = menu.addAction(tr("Auto-arrange"));
-  QAction *tile = menu.addAction(tr("Tile"));
-  QAction *cascade = menu.addAction(tr("Cascade"));
+  QAction *tileAll = menu.addAction(tr("Tile all"));
+  QAction *floatAll = menu.addAction(tr("Float all"));
+  QAction *arrangeAll = menu.addAction(tr("Arrange all"));
 
   QAction *chosen = menu.exec(event->globalPos());
 
-  if (chosen == reload) {
+  if (!chosen)
+    return;
+
+  if (chosen == rewrite) {
+    emit rewriteRequested(this);
+  } else if (chosen == reload) {
     emit diskConflictReloadRequested(this);
   } else if (chosen == save) {
     emit diskConflictOverwriteRequested(this);
@@ -400,12 +525,12 @@ void WorkstationWindow::contextMenuEvent(QContextMenuEvent *event) {
     emit closeAllRequested();
   } else if (chosen == maximize) {
     toggleMaximize();
-  } else if (chosen == autoArrange) {
+  } else if (chosen == tileAll) {
+    emit tileAllRequested();
+  } else if (chosen == floatAll) {
+    emit floatAllRequested();
+  } else if (chosen == arrangeAll) {
     emit autoArrangeRequested();
-  } else if (chosen == tile) {
-    emit tileRequested();
-  } else if (chosen == cascade) {
-    emit cascadeRequested();
   }
 }
 
@@ -475,13 +600,19 @@ void WorkstationWindow::beginDrag(const QPoint &globalPos) {
     return;
 
   m_dragging = true;
-  m_dragOffset = globalPos - frameGeometry().topLeft();
+  m_dragOffset = globalPos - mapToGlobal(QPoint(0, 0));
+  m_dragGlobalStart = globalPos;
 
   setCursor(Qt::ClosedHandCursor);
+
+  emit dragStarted(this);
 }
 
 void WorkstationWindow::beginResize(const QPoint &globalPos, ResizeEdge edge) {
   if (m_maximized)
+    return;
+
+  if (m_mode == Mode::Tiled)
     return;
 
   m_resizing = true;
@@ -494,10 +625,16 @@ void WorkstationWindow::applyDrag(const QPoint &globalPos) {
   if (!parentWidget())
     return;
 
-  const QPoint target = globalPos - m_dragOffset;
-  const QPoint localTarget = parentWidget()->mapFromGlobal(target);
+  const QPoint newGlobalTopLeft = globalPos - m_dragOffset;
 
-  QPoint pos = localTarget;
+  const QPoint newParentLocal =
+      parentWidget()->mapFromGlobal(newGlobalTopLeft);
+
+  if (m_mode == Mode::Tiled) {
+    move(newParentLocal);
+    emit dragMoved(this, globalPos);
+    return;
+  }
 
   constexpr int minVisible = 60;
 
@@ -507,10 +644,14 @@ void WorkstationWindow::applyDrag(const QPoint &globalPos) {
   const int maxX = parentWidget()->width() - minVisible;
   const int maxY = parentWidget()->height() - minVisible;
 
+  QPoint pos = newParentLocal;
+
   pos.setX(qBound(minX, pos.x(), qMax(minX, maxX)));
   pos.setY(qBound(minY, pos.y(), qMax(minY, maxY)));
 
   move(pos);
+
+  emit dragMoved(this, globalPos);
 }
 
 void WorkstationWindow::applyResize(const QPoint &globalPos) {
@@ -570,25 +711,6 @@ void WorkstationWindow::applyResize(const QPoint &globalPos) {
       g.setBottom(g.top() + kMinimumHeight);
     }
   }
-
-  setGeometry(g);
-}
-
-void WorkstationWindow::clampToParent() {
-  if (!parentWidget())
-    return;
-
-  QRect g = geometry();
-  const QRect bounds = parentWidget()->rect();
-
-  if (g.right() > bounds.right())
-    g.moveRight(bounds.right());
-  if (g.bottom() > bounds.bottom())
-    g.moveBottom(bounds.bottom());
-  if (g.left() < bounds.left())
-    g.moveLeft(bounds.left());
-  if (g.top() < bounds.top())
-    g.moveTop(bounds.top());
 
   setGeometry(g);
 }

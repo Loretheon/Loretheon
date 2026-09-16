@@ -19,6 +19,10 @@ class OverseerSidePanel;
 class ToastStack;
 class TranscriptPanel;
 class TranscriptStore;
+class TextDocument;
+class TextEdit;
+class EditPlanner;
+class EditSession;
 
 class QComboBox;
 class QLabel;
@@ -49,9 +53,17 @@ public:
 
   OverseerSession *currentSession() const { return m_currentSession; }
 
-  signals:
-  void fileWritten(const QString &absolutePath);
+public slots:
+  void setFocusedFilePath(const QString &absolutePath);
+  void setFocusedDocument(TextDocument *document, TextEdit *editor);
 
+signals:
+  void fileWritten(const QString &absolutePath);
+  void fileOpenRequested(const QString &absolutePath);
+  void fileCloseRequested(const QString &absolutePath);
+
+  void scopedEditRequested(TextEdit *editor, TextDocument *document,
+                           const QString &instruction);
 
 public slots:
   void addOverviewReference(const QString &path);
@@ -130,4 +142,8 @@ private:
   QString m_assistantRawText;
 
   QList<MemoryProposal> m_proposals;
+
+  QString m_focusedFilePath;
+  TextDocument *m_focusedDocument = nullptr;
+  TextEdit *m_focusedEditor = nullptr;
 };

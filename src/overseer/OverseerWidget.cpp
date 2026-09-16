@@ -1,5 +1,6 @@
 #include "OverseerWidget.h"
 
+#include "DirectoryExplorerSettings.h"
 #include "EditNoteReviewDialog.h"
 #include "MemoryPanel.h"
 #include "MemoryProposalCard.h"
@@ -43,6 +44,7 @@ OverseerWidget::OverseerWidget(InferenceService *inferenceService,
                                QWidget *parent)
     : QWidget(parent), m_inferenceService(inferenceService) {
   OverseerStorage::ensureRoot();
+
 
   OverseerTools::installAll(m_tools);
 
@@ -355,7 +357,7 @@ QString OverseerWidget::buildSystemPrompt() const {
     while (it.hasNext() && entries.size() < 200) {
       const QString rel = QDir(output).relativeFilePath(it.next());
 
-      if (rel.startsWith(QStringLiteral("workstation.json")))
+      if (rel == QStringLiteral("workstation.json"))
         continue;
 
       entries.append(rel);
@@ -380,12 +382,12 @@ QString OverseerWidget::buildSystemPrompt() const {
       "## Workspace\n"
       "\n"
       "You have one folder you can write to: the session's output folder. "
-      "Every path you pass to write_file, create_directory, read_file, and "
-      "list_directory is interpreted **relative to that folder**. Paths "
-      "must not start with a slash, must not start with a drive letter, "
-      "and must not contain `..`. The output folder *is* the root of your "
-      "workspace — do not prefix paths with its name or with a folder that "
-      "does not yet exist.\n"
+      "Every path you pass to write_file, create_directory, read_file, "
+      "list_directory, open_file, and close_file is interpreted **relative "
+      "to that folder**. Paths must not start with a slash, must not start "
+      "with a drive letter, and must not contain `..`. The output folder "
+      "*is* the root of your workspace — do not prefix paths with its name "
+      "or with a folder that does not yet exist.\n"
       "\n"
       "Current contents of the output folder:\n"
       "%1\n"
@@ -396,9 +398,13 @@ QString OverseerWidget::buildSystemPrompt() const {
       "empty string or `.` to list the root of the output folder.\n"
       "  - read_file(path) — read a file inside the output folder.\n"
       "  - write_file(path, content) — create or overwrite a file inside "
-      "the output folder.\n"
+      "the output folder. Parent directories are created automatically.\n"
       "  - create_directory(path) — create a directory inside the output "
-      "folder. Parent directories are created automatically.\n"
+      "folder.\n"
+      "  - open_file(path) — open a file from the output folder in the "
+      "Workstation so the user can see it. Use this when you want to draw "
+      "the user's attention to a specific file.\n"
+      "  - close_file(path) — close a file that is open in the Workstation.\n"
       "  - read_notes_file(path) — read-only access to files under the "
       "user's notes root. Use this to consult user notes.\n"
       "  - edit_note(path, instruction) — open a copy of a notes-root file "
@@ -425,12 +431,13 @@ QString OverseerWidget::buildSystemPrompt() const {
       "\n")
       .arg(workspaceTree);
 
+
+
   prompt += QStringLiteral("## Global Memory\n\n%1\n\n").arg(memory);
   prompt += QStringLiteral("## Session Overview\n\n%1\n\n").arg(overview);
 
   return prompt;
 }
-
 OverseerTool::Context OverseerWidget::currentToolContext() const {
   OverseerTool::Context context;
 
@@ -440,6 +447,10 @@ OverseerTool::Context OverseerWidget::currentToolContext() const {
   }
 
   context.notesRoot = Settings::getRootDirectory();
+
+  context.focusedFilePath = m_focusedFilePath;
+  context.focusedDocument = m_focusedDocument;
+  context.focusedEditor = m_focusedEditor;
 
   auto *self = const_cast<OverseerWidget *>(this);
 
@@ -457,7 +468,20 @@ OverseerTool::Context OverseerWidget::currentToolContext() const {
         dialog->show();
         dialog->raise();
         dialog->activateWindow();
-      };
+  };
+
+  context.openFile = [self](const QString &absolutePath) {
+    emit self->fileOpenRequested(absolutePath);
+  };
+
+  context.closeFile = [self](const QString &absolutePath) {
+    emit self->fileCloseRequested(absolutePath);
+  };
+
+  context.requestScopedEdit = [self](TextEdit *editor, TextDocument *document,
+                                     const QString &instruction) {
+    emit self->scopedEditRequested(editor, document, instruction);
+  };
 
   return context;
 }
@@ -567,7 +591,7 @@ void OverseerWidget::executeToolCalls(const QJsonArray &toolCalls) {
       emit fileWritten(abs);
     }
 
-    
+
     if (name == QStringLiteral("propose_memory_fact") && result.ok) {
       const QString fact =
           arguments.value(QStringLiteral("fact")).toString().trimmed();
@@ -827,3 +851,14 @@ void OverseerWidget::appendFactToMemory(const QString &fact) {
   memory += QStringLiteral("- %1\n").arg(trimmed);
   OverseerStorage::writeMemory(memory);
 }
+
+void OverseerWidget::setFocusedFilePath(const QString &absolutePath) {
+  m_focusedFilePath = absolutePath;
+}
+
+void OverseerWidget::setFocusedDocument(TextDocument *document,
+                                        TextEdit *editor) {
+  m_focusedDocument = document;
+  m_focusedEditor = editor;
+}
+

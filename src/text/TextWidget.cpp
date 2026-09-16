@@ -15,18 +15,19 @@
 
 #include "../ai/edit/EditSession.h"
 
+#include <QActionGroup>
 #include <QApplication>
 #include <QClipboard>
+#include <QContextMenuEvent>
 #include <QDebug>
 #include <QDesktopServices>
 #include <QFileInfo>
-#include <QHBoxLayout>
 #include <QMenu>
 #include <QProcess>
 #include <QShowEvent>
+#include <QSignalBlocker>
 #include <QStackedWidget>
 #include <QTextDocument>
-#include <QToolButton>
 #include <QUrl>
 #include <QVBoxLayout>
 
@@ -68,28 +69,9 @@ TextWidget::TextWidget(QWidget *parent)
   previewController =
       new PreviewController(textEdit, nullptr, previewPane, this);
 
-  editViewToggle = new QToolButton(this);
-  editViewToggle->setText(tr("View"));
-  editViewToggle->setCheckable(true);
-  editViewToggle->setAutoRaise(true);
-  editViewToggle->setToolTip(tr("Toggle between Edit and View"));
-
-  connect(editViewToggle, &QToolButton::toggled, this,
-          [this](bool viewMode) {
-            outerStack->setCurrentIndex(viewMode ? 1 : 0);
-            editViewToggle->setText(viewMode ? tr("Edit") : tr("View"));
-          });
-
-  auto *topBar = new QWidget(this);
-  auto *topLay = new QHBoxLayout(topBar);
-  topLay->setContentsMargins(4, 2, 4, 2);
-  topLay->addStretch(1);
-  topLay->addWidget(editViewToggle);
-
   auto *mainLay = new QVBoxLayout(this);
   mainLay->setContentsMargins(0, 0, 0, 0);
   mainLay->setSpacing(0);
-  mainLay->addWidget(topBar);
   mainLay->addWidget(outerStack, 1);
 
   connect(diagramToolbar, &DiagramToolbar::zoomInRequested, svgView,
@@ -196,6 +178,58 @@ void TextWidget::showEvent(QShowEvent *event) {
   }
 }
 
+bool TextWidget::isViewMode() const {
+  return outerStack && outerStack->currentIndex() == 1;
+}
+
+void TextWidget::setViewMode(bool viewMode) {
+  if (!outerStack)
+    return;
+
+  outerStack->setCurrentIndex(viewMode ? 1 : 0);
+}
+
+void TextWidget::contextMenuEvent(QContextMenuEvent *event) {
+  QMenu menu(this);
+
+  QAction *editAct = menu.addAction(tr("Edit"));
+  editAct->setCheckable(true);
+  editAct->setChecked(!isViewMode());
+
+  QAction *viewAct = menu.addAction(tr("View"));
+  viewAct->setCheckable(true);
+  viewAct->setChecked(isViewMode());
+
+  QActionGroup *modeGroup = new QActionGroup(&menu);
+  modeGroup->addAction(editAct);
+  modeGroup->addAction(viewAct);
+  modeGroup->setExclusive(true);
+
+  menu.addSeparator();
+
+  QAction *chosen = menu.exec(event->globalPos());
+
+  if (chosen == editAct)
+    setViewMode(false);
+  else if (chosen == viewAct)
+    setViewMode(true);
+}
+
+void TextWidget::setWorkstationMode(bool on) {
+  if (m_workstationMode == on)
+    return;
+
+  m_workstationMode = on;
+
+  if (textEdit) {
+    textEdit->setToolbarVisible(!on);
+  }
+
+  if (on) {
+    setViewMode(true);
+  }
+}
+
 void TextWidget::setPreviewSession(EditSession *session) {
   if (previewController) {
     previewController->setSession(session);
@@ -207,13 +241,6 @@ void TextWidget::activatePreview(bool active) {
     return;
   }
   previewController->setPreviewActive(active);
-}
-
-void TextWidget::toggleEditView() {
-  if (!editViewToggle) {
-    return;
-  }
-  editViewToggle->setChecked(!editViewToggle->isChecked());
 }
 
 void TextWidget::clearContextScopes() {
@@ -379,9 +406,7 @@ void TextWidget::clearPreview() {
 void TextWidget::findInEditor(const QString &text) {
   if (text.isEmpty() || !textEdit) return;
 
-  if (editViewToggle) {
-    editViewToggle->setChecked(false);
-  }
+  setViewMode(false);
 
   QTextCursor c = textEdit->textCursor();
   c.movePosition(QTextCursor::Start);

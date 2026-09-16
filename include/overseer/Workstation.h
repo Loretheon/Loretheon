@@ -3,14 +3,15 @@
 #include <QFileSystemWatcher>
 #include <QHash>
 #include <QList>
+#include <QSet>
 #include <QString>
 #include <QWidget>
 
 #include "WorkstationBodyFactory.h"
+#include "WorkstationWindow.h"
 
 class EditSession;
 class TextDocument;
-class WorkstationWindow;
 class DocumentManager;
 
 class Workstation : public QWidget {
@@ -32,31 +33,24 @@ public:
                               const QString &bodyHint = QString());
 
   void closeFile(const QString &absolutePath);
-
   void closeAll();
 
   void refreshAlsoOpenBadges();
 
-  void tile();
-  void cascade();
-  void autoArrange();
+  void applyTiling();
+
+  void setAllTiled();
+  void setAllFloating();
+  void arrangeAll();
 
   void setFileStatus(const QString &absolutePath, const QString &status);
 
   QList<WorkstationWindow *> windows() const { return m_windows; }
-
   WorkstationWindow *focusedWindow() const { return m_focusedWindow; }
 
   void focusWindow(WorkstationWindow *window);
 
-  // Reload the given window's document from disk, discarding in-memory
-  // edits. Called by the conflict banner's "Reload" button and by the
-  // context menu.
   void reloadWindowFromDisk(WorkstationWindow *window);
-
-  // Save the given window's document to disk, overwriting whatever is
-  // there. Called by the conflict banner's "Overwrite" button and by
-  // the context menu.
   void saveWindowToDisk(WorkstationWindow *window);
 
 signals:
@@ -64,6 +58,8 @@ signals:
   void currentFileChanged(const QString &absolutePath);
   void windowOpened(const QString &absolutePath);
   void windowListChanged();
+
+  void rewriteRequested(WorkstationWindow *window);
 
 protected:
   void resizeEvent(QResizeEvent *event) override;
@@ -74,8 +70,13 @@ private slots:
   void onWindowCloseRequested(WorkstationWindow *window);
   void onWindowFocusRequested(WorkstationWindow *window);
   void onWindowGeometryChanged(WorkstationWindow *window);
-  void onWindowDragFinished(WorkstationWindow *window);
+  void onWindowDragStarted(WorkstationWindow *window);
+  void onWindowDragMoved(WorkstationWindow *window, const QPoint &globalPos);
+  void onWindowDragFinished(WorkstationWindow *window,
+                            const QPoint &globalPos);
   void onWindowResizeFinished(WorkstationWindow *window);
+  void onWindowModeChangeRequested(WorkstationWindow *window,
+                                   WorkstationWindow::Mode mode);
 
   void onDiskFileChanged(const QString &path);
 
@@ -90,21 +91,21 @@ private:
 
   void bringToFront(WorkstationWindow *window);
   void updateAlsoOpenBadges();
+  void clearDragHighlights();
 
   QString absolutePathFor(const QString &relativePath) const;
   QString layoutPath() const;
   QString sessionFolder() const;
 
-  QSize defaultNewWindowSize() const;
-  QRect findFreeSlot(const QSize &size,
-                     WorkstationWindow *ignore = nullptr) const;
-  bool rectOverlapsAny(const QRect &candidate,
-                       WorkstationWindow *ignore = nullptr) const;
+  // Tiling.
+  QList<WorkstationWindow *> tiledWindows() const;
+  QList<WorkstationWindow *> floatingWindows() const;
+  QList<QRect> computeTiledRects(int count) const;
 
-  QRect resolveNonOverlappingRect(const QRect &target,
-                                  WorkstationWindow *window) const;
-  QRect resolveNonOverlappingResize(const QRect &target,
-                                    WorkstationWindow *window) const;
+  // Find the nearest tiled window to a global point, used for the
+  // swap-on-drop gesture.
+  WorkstationWindow *nearestTiledWindow(const QPoint &globalPos,
+                                        WorkstationWindow *ignore) const;
 
   void watchFile(const QString &absolutePath);
   void unwatchFile(const QString &absolutePath);
@@ -120,19 +121,13 @@ private:
   QHash<QString, WorkstationWindow *> m_byPath;
 
   WorkstationWindow *m_focusedWindow = nullptr;
+  WorkstationWindow *m_dropTarget = nullptr;
 
-  // Watch every open file for changes on disk. When the file changes
-  // and the in-memory document has no unsaved edits, reload it. When
-  // it has unsaved edits, show a conflict banner in the window.
   QFileSystemWatcher m_fileWatcher;
-
-  // Files whose on-disk change we have already suppressed because we
-  // wrote them ourselves. Cleared on the next event-loop turn.
   QSet<QString> m_ignoreNextChange;
 
   int m_zCounter = 0;
 
   static constexpr int kGap = 12;
   static constexpr int kMargin = 12;
-  static constexpr int kMinGap = 6;
 };

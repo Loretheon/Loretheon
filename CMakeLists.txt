@@ -377,6 +377,16 @@ add_executable(Episteme
         include/overseer/MarkdownView.h
         src/overseer/WorkstationBar.cpp
         include/overseer/WorkstationBar.h
+        include/overseer/AutoHideDock.cpp
+        include/overseer/AutoHideDock.h
+        src/overseer/DockReservation.cpp
+        src/overseer/DockReservation.h
+        src/overseer/OpenFileTool.cpp
+        src/overseer/OpenFileTool.h
+        src/overseer/CloseFileTool.cpp
+        src/overseer/CloseFileTool.h
+        include/overseer/EditWorkstationFileTool.cpp
+        include/overseer/EditWorkstationFileTool.h
 )
 
 add_dependencies(Episteme

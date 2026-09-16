@@ -1,21 +1,26 @@
 #include "../../include/overseer/OverseerPage.h"
 
-#include "../../include/overseer/OverseerSession.h"
-#include "../../include/overseer/OverseerSessionList.h"
-#include "../../include/overseer/OverseerSidePanel.h"
-#include "../../include/overseer/OverseerStorage.h"
-#include "../../include/overseer/OverseerWidget.h"
-#include "../../include/overseer/OverviewPanel.h"
-#include "../../include/overseer/PathUtils.h"
-#include "../../include/overseer/TranscriptPanel.h"
-#include "../../include/overseer/Workstation.h"
-#include "../../include/overseer/WorkstationBar.h"
+#include "AutoHideDock.h"
+#include "DockReservation.h"
+#include "OverseerSession.h"
+#include "OverseerSessionList.h"
+#include "OverseerSidePanel.h"
+#include "OverseerStorage.h"
+#include "OverseerWidget.h"
+#include "OverviewPanel.h"
+#include "PathUtils.h"
+#include "TranscriptPanel.h"
+#include "Workstation.h"
+#include "WorkstationBar.h"
+#include "WorkstationWindow.h"
+#include "TextEdit.h"
 
 #include "DocumentArea.h"
 #include "DocumentManager.h"
 #include "FileWidget.h"
 #include "Settings.h"
 #include "TextDocument.h"
+#include "TextWidget.h"
 
 #include "../../include/ai/edit/EditSession.h"
 
@@ -26,9 +31,17 @@
 #include <QEvent>
 #include <QFile>
 #include <QFileInfo>
+#include <QHBoxLayout>
 #include <QMessageBox>
 #include <QSplitter>
 #include <QVBoxLayout>
+
+namespace {
+
+constexpr auto LegacyLayoutFilename = "workstation.json";
+constexpr auto SessionsDirname = "Sessions";
+
+} // namespace
 
 OverseerPage::OverseerPage(InferenceService *inferenceService,
                            EditSession *editSession, QWidget *parent)
@@ -110,6 +123,44 @@ OverseerPage::OverseerPage(InferenceService *inferenceService,
             m_workstation->openFile(absolutePath);
           });
 
+  connect(m_overseer, &OverseerWidget::fileOpenRequested, this,
+        [this](const QString &absolutePath) {
+          if (!m_workstation)
+            return;
+
+          if (m_currentOutputFolder.isEmpty())
+            return;
+
+          if (!PathUtils::isUnder(absolutePath, m_currentOutputFolder))
+            return;
+
+          m_workstation->openFile(absolutePath);
+        });
+
+  connect(m_overseer, &OverseerWidget::fileCloseRequested, this,
+          [this](const QString &absolutePath) {
+            if (!m_workstation)
+              return;
+
+            m_workstation->closeFile(absolutePath);
+          });
+
+  connect(m_workstation, &Workstation::currentFileChanged, this,
+        &OverseerPage::onFocusedFileChanged);
+
+  connect(m_overseer, &OverseerWidget::scopedEditRequested, this,
+          &OverseerPage::onScopedEditRequested);
+
+
+  connect(m_workstation, &Workstation::rewriteRequested, this,
+          [this](WorkstationWindow *window) {
+            Q_UNUSED(window);
+
+            emit statusMessage(
+                tr("Scoped rewrite is not yet wired to the Workstation."),
+                4000);
+          });
+
   if (auto *op = m_overseer->sidePanel()->overviewPanel()) {
     connect(op, &OverviewPanel::openRequested, this,
             [this](const QString &relativePath) {
@@ -145,12 +196,36 @@ OverseerPage::OverseerPage(InferenceService *inferenceService,
     });
   }
 
-  // Left column: session list + session output tree.
-  auto *leftColumn = new QSplitter(Qt::Vertical, this);
-  leftColumn->addWidget(m_overseer->sessionListPanel());
-  leftColumn->addWidget(m_fileWidget);
+  // --- Left rail content -------------------------------------------------
 
-  // Center column: Workstation bar + Workstation on top, transcript below.
+  auto *leftContent = new QWidget(this);
+  auto *leftLayout = new QVBoxLayout(leftContent);
+  leftLayout->setContentsMargins(0, 0, 0, 0);
+  leftLayout->setSpacing(0);
+
+  auto *leftSplitter = new QSplitter(Qt::Vertical, leftContent);
+  leftSplitter->addWidget(m_overseer->sessionListPanel());
+  leftSplitter->addWidget(m_fileWidget);
+
+  leftLayout->addWidget(leftSplitter);
+
+  m_leftDock = new AutoHideDock(AutoHideDock::Edge::Left, this);
+  m_leftDock->setContent(leftContent);
+
+  // --- Right rail content ------------------------------------------------
+
+  auto *rightContent = new QWidget(this);
+  auto *rightLayout = new QVBoxLayout(rightContent);
+  rightLayout->setContentsMargins(0, 0, 0, 0);
+  rightLayout->setSpacing(0);
+
+  rightLayout->addWidget(m_overseer->sidePanel());
+
+  m_rightDock = new AutoHideDock(AutoHideDock::Edge::Right, this);
+  m_rightDock->setContent(rightContent);
+
+  // --- Center column -----------------------------------------------------
+
   auto *workstationColumn = new QWidget(this);
   auto *workstationLayout = new QVBoxLayout(workstationColumn);
   workstationLayout->setContentsMargins(0, 0, 0, 0);
@@ -174,20 +249,64 @@ OverseerPage::OverseerPage(InferenceService *inferenceService,
   centerColumn->setStretchFactor(0, 3);
   centerColumn->setStretchFactor(1, 1);
 
-  m_mainSplitter = new QSplitter(Qt::Horizontal, this);
-  m_mainSplitter->addWidget(leftColumn);
-  m_mainSplitter->addWidget(centerColumn);
-  m_mainSplitter->addWidget(m_overseer->sidePanel());
-  m_mainSplitter->setStretchFactor(0, 0);
-  m_mainSplitter->setStretchFactor(1, 1);
-  m_mainSplitter->setStretchFactor(2, 0);
+  // --- Reservations ------------------------------------------------------
+
+  auto *leftReservation = new DockReservation(m_leftDock, this);
+  auto *rightReservation = new DockReservation(m_rightDock, this);
+
+  // --- Three-column horizontal layout -----------------------------------
+
+  auto *columns = new QWidget(this);
+  auto *columnsLayout = new QHBoxLayout(columns);
+  columnsLayout->setContentsMargins(0, 0, 0, 0);
+  columnsLayout->setSpacing(0);
+
+  columnsLayout->addWidget(leftReservation, 0);
+  columnsLayout->addWidget(centerColumn, 1);
+  columnsLayout->addWidget(rightReservation, 0);
 
   auto *root = new QVBoxLayout(this);
   root->setContentsMargins(0, 0, 0, 0);
-  root->addWidget(m_mainSplitter);
+  root->addWidget(columns);
+
+  migrateLegacyLayoutFiles();
 }
 
 OverseerPage::~OverseerPage() = default;
+
+void OverseerPage::migrateLegacyLayoutFiles() {
+  const QString root =
+      QDir(OverseerStorage::rootPath()).filePath(SessionsDirname);
+
+  QDir sessionsDir(root);
+
+  if (!sessionsDir.exists())
+    return;
+
+  const QStringList sessionNames =
+      sessionsDir.entryList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name);
+
+  for (const QString &name : sessionNames) {
+    const QString sessionFolder = sessionsDir.filePath(name);
+
+    const QString legacyPath =
+        QDir(sessionFolder)
+            .filePath(QStringLiteral("output/%1").arg(LegacyLayoutFilename));
+
+    if (!QFileInfo::exists(legacyPath))
+      continue;
+
+    const QString newPath =
+        QDir(sessionFolder).filePath(LegacyLayoutFilename);
+
+    if (QFileInfo::exists(newPath)) {
+      QFile::remove(legacyPath);
+      continue;
+    }
+
+    QFile::rename(legacyPath, newPath);
+  }
+}
 
 void OverseerPage::setThemeTokens(const ThemeTokens &tokens) {
   if (m_documentArea)
@@ -263,14 +382,11 @@ void OverseerPage::reloadSession(const QString &name) {
     return;
   }
 
-  // 1. Destroy workstation windows synchronously.
   if (m_workstation)
     m_workstation->closeAll();
 
-  // 2. Flush any deferred deletes so bodies are gone.
   QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
 
-  // 3. Now close documents safely.
   closeAllSessionDocuments();
 
   m_currentSessionName = name;
@@ -363,3 +479,62 @@ void OverseerPage::stageFileInSession(const QString &absolutePath) {
   emit statusMessage(tr("Staged %1 in the session.").arg(info.fileName()),
                      3000);
 }
+
+
+void OverseerPage::onFocusedFileChanged(const QString &absolutePath) {
+  if (!m_overseer)
+    return;
+
+  m_overseer->setFocusedFilePath(absolutePath);
+
+  if (absolutePath.isEmpty()) {
+    m_overseer->setFocusedDocument(nullptr, nullptr);
+    return;
+  }
+
+  // Locate the TextDocument and TextEdit for this file. The Workstation
+  // owns the window; we look up the document in the DocumentManager and
+  // the editor through the window's body.
+  TextDocument *document = nullptr;
+
+  for (TextDocument *candidate : m_documentManager->openDocuments()) {
+    if (candidate->filePath() == absolutePath) {
+      document = candidate;
+      break;
+    }
+  }
+
+  // Find the focused window's body widget and cast to TextWidget to get
+  // at its TextEdit.
+  TextEdit *editor = nullptr;
+
+  if (m_workstation) {
+    WorkstationWindow *window = m_workstation->focusedWindow();
+
+    if (window) {
+      if (auto *textWidget = qobject_cast<TextWidget *>(window->body())) {
+        editor = textWidget->editor();
+      }
+    }
+  }
+
+  m_overseer->setFocusedDocument(document, editor);
+}
+
+void OverseerPage::onScopedEditRequested(TextEdit *editor,
+                                         TextDocument *document,
+                                         const QString &instruction) {
+  Q_UNUSED(document);
+
+  if (!editor || instruction.isEmpty())
+    return;
+
+  // The scoped-edit session is managed by OverseerWidget's plan flow.
+  // Here we just signal that the request was received; the actual
+  // EditPlanner call happens inside OverseerWidget's scoped edit
+  // handler.
+  emit statusMessage(
+      tr("Scoped edit session started: \"%1\"").arg(instruction.left(60)),
+      3000);
+}
+
