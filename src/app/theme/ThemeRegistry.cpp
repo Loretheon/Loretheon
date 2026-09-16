@@ -61,6 +61,36 @@ QColor lookup(const QHash<QString, QString> &decls,
   return fallback;
 }
 
+QColor fieldFor(const ThemeTokens &t, const QString &field) {
+  if (field == QStringLiteral("base")) return t.base;
+  if (field == QStringLiteral("mantle")) return t.mantle;
+  if (field == QStringLiteral("crust")) return t.crust;
+  if (field == QStringLiteral("surface0")) return t.surface0;
+  if (field == QStringLiteral("surface1")) return t.surface1;
+  if (field == QStringLiteral("surface2")) return t.surface2;
+  if (field == QStringLiteral("overlay0")) return t.overlay0;
+  if (field == QStringLiteral("overlay1")) return t.overlay1;
+  if (field == QStringLiteral("overlay2")) return t.overlay2;
+  if (field == QStringLiteral("text")) return t.text;
+  if (field == QStringLiteral("subtext0")) return t.subtext0;
+  if (field == QStringLiteral("subtext1")) return t.subtext1;
+  if (field == QStringLiteral("blue")) return t.blue;
+  if (field == QStringLiteral("lavender")) return t.lavender;
+  if (field == QStringLiteral("sapphire")) return t.sapphire;
+  if (field == QStringLiteral("sky")) return t.sky;
+  if (field == QStringLiteral("teal")) return t.teal;
+  if (field == QStringLiteral("green")) return t.green;
+  if (field == QStringLiteral("yellow")) return t.yellow;
+  if (field == QStringLiteral("peach")) return t.peach;
+  if (field == QStringLiteral("maroon")) return t.maroon;
+  if (field == QStringLiteral("red")) return t.red;
+  if (field == QStringLiteral("mauve")) return t.mauve;
+  if (field == QStringLiteral("pink")) return t.pink;
+  if (field == QStringLiteral("flamingo")) return t.flamingo;
+  if (field == QStringLiteral("rosewater")) return t.rosewater;
+  return t.overlay0;
+}
+
 } // namespace
 
 ThemeRegistry &ThemeRegistry::instance() {
@@ -186,7 +216,8 @@ ThemeRegistry::ThemeRegistry() {
   registerTokens("macchiato", macchiato);
   registerTokens("mocha", mocha);
 
-  m_default = "mocha";
+  m_default = QStringLiteral("mocha");
+  m_active = m_default;
 }
 
 QStringList ThemeRegistry::names() const {
@@ -263,4 +294,49 @@ bool ThemeRegistry::registerFromStylesheet(const QString &name,
 
 QString ThemeRegistry::defaultName() const {
   return m_default;
+}
+
+void ThemeRegistry::setActiveTheme(const QString &name) {
+  if (name.isEmpty() || name == m_active) return;
+  m_active = name;
+  emit activeThemeChanged(m_active);
+}
+
+QColor ThemeRegistry::color(const QString &role) const {
+  static const QHash<QString, QString> roleToField = {
+      {"event.user", "blue"},
+      {"event.assistant", "mauve"},
+      {"event.tool.ok", "teal"},
+      {"event.tool.error", "red"},
+      {"event.proposal", "lavender"},
+      {"event.stage", "yellow"},
+      {"event.promotion", "green"},
+      {"event.error", "red"},
+      {"event.notice", "overlay1"},
+
+      {"reference.present", "green"},
+      {"reference.missing", "red"},
+
+      {"badge.ai", "mauve"},
+      {"badge.staged", "yellow"},
+      {"badge.promoted", "green"},
+      {"badge.missing", "red"},
+      {"badge.editor", "blue"},
+
+      {"accent", "blue"},
+      {"muted", "overlay0"},
+      {"muted.strong", "overlay1"},
+      {"surface", "surface0"},
+      {"surface.alt", "mantle"},
+  };
+
+  const ThemeTokens t = tokens(m_active);
+
+  const auto it = roleToField.constFind(role);
+
+  if (it == roleToField.constEnd()) {
+    return t.overlay0;
+  }
+
+  return fieldFor(t, it.value());
 }

@@ -14,63 +14,92 @@
 
 namespace {
 
+// Resolves a model-supplied relative path against the output folder.
+//
+// Rules:
+//   - Empty, ".", and "./" resolve to the output folder itself.
+//   - Absolute paths are rejected.
+//   - Paths containing ".." (as a segment or prefix) are rejected.
+//   - Parent directories that do not exist yet are allowed; the closest
+//     existing ancestor is canonicalized and verified to be inside the
+//     output folder. Intermediate segments are trusted because they are
+//     relative and free of "..".
+//
+// Returns the absolute path, or an empty string if the path escapes the
+// output folder or is otherwise invalid.
 QString safeResolve(const QString &relative, const QString &outputFolder) {
-  // Empty, ".", and "./" all refer to the output folder itself. Earlier
-  // versions only handled the empty case, which caused the model's
-  // "." and "./" arguments to be rejected.
   if (relative.isEmpty() || relative == QStringLiteral(".") ||
       relative == QStringLiteral("./")) {
     return outputFolder;
   }
 
-  QDir output(outputFolder);
-
   if (QFileInfo(relative).isAbsolute()) {
     return {};
   }
 
-  QString cleaned = QDir::cleanPath(relative);
+  const QString cleaned = QDir::cleanPath(relative);
 
   if (cleaned == QStringLiteral(".") || cleaned.isEmpty()) {
     return outputFolder;
   }
 
-  if (cleaned.startsWith(QStringLiteral("..")) ||
+  if (cleaned == QStringLiteral("..") ||
+      cleaned.startsWith(QStringLiteral("../")) ||
       cleaned.contains(QStringLiteral("/../")) ||
       cleaned.endsWith(QStringLiteral("/.."))) {
     return {};
   }
 
-  const QString absolute = output.absoluteFilePath(cleaned);
+  QDir output(outputFolder);
 
   const QString canonicalOutput = output.canonicalPath();
 
-  QFileInfo info(absolute);
-
-  QString canonicalParent;
-
-  if (info.exists()) {
-    canonicalParent = info.canonicalPath();
-  } else {
-    QDir parent(info.absolutePath());
-    canonicalParent = parent.canonicalPath();
-  }
-
-  if (canonicalOutput.isEmpty() || canonicalParent.isEmpty()) {
+  if (canonicalOutput.isEmpty()) {
     return {};
   }
 
-  if (canonicalParent != canonicalOutput &&
-      !canonicalParent.startsWith(canonicalOutput + QChar('/'))) {
+  const QString absolute = output.absoluteFilePath(cleaned);
+
+  // Walk up the hierarchy until we find an existing directory, then
+  // canonicalize that and verify it is inside the output folder.
+  QString existingAncestor = QFileInfo(absolute).absolutePath();
+
+  while (!existingAncestor.isEmpty() &&
+         !QFileInfo::exists(existingAncestor) &&
+         existingAncestor != outputFolder) {
+    const QString parent = QFileInfo(existingAncestor).absolutePath();
+
+    if (parent == existingAncestor) {
+      // Reached the filesystem root without finding an existing
+      // ancestor. This cannot happen for a relative path under an
+      // existing output folder, but guard anyway.
+      return {};
+    }
+
+    existingAncestor = parent;
+  }
+
+  if (!QFileInfo::exists(existingAncestor)) {
+    return {};
+  }
+
+  const QString canonicalAncestor =
+      QDir(existingAncestor).canonicalPath();
+
+  if (canonicalAncestor.isEmpty()) {
+    return {};
+  }
+
+  if (canonicalAncestor != canonicalOutput &&
+      !canonicalAncestor.startsWith(canonicalOutput + QChar('/'))) {
     return {};
   }
 
   return absolute;
 }
 
-// Resolves a model-supplied path against the notes root. Unlike
-// safeResolve, this does not restrict to a subfolder, but it does
-// reject anything that escapes the notes root via symlinks or .. .
+// Resolves a model-supplied path against the notes root. Rejects
+// anything outside the notes root, including via symlinks or "..".
 QString safeResolveNotes(const QString &path, const QString &notesRoot) {
   if (path.isEmpty()) {
     return {};
@@ -122,6 +151,19 @@ OverseerTool::Result makeOk(const QString &output) {
   return result;
 }
 
+QString describeRejection(const QString &relative) {
+  return QStringLiteral(
+             "Path rejected: \"%1\".\n"
+             "Reason: paths passed to tools must be relative to the "
+             "session output folder. They must not start with a slash "
+             "(absolute paths are not allowed), must not start with a "
+             "drive letter, and must not contain \"..\".\n"
+             "Correct form: \"outline.md\" or \"manuscript/01-chapter-one.md\".\n"
+             "Incorrect form: \"/home/user/notes/outline.md\", "
+             "\"../outline.md\", \"output/outline.md\".")
+      .arg(relative);
+}
+
 } // namespace
 
 QString ListDirectoryTool::description() const {
@@ -157,8 +199,7 @@ ListDirectoryTool::execute(const QJsonObject &arguments,
   const QString absolute = safeResolve(relative, context.outputFolder);
 
   if (absolute.isEmpty()) {
-    return makeError(QStringLiteral(
-        "Path is outside the output folder or invalid."));
+    return makeError(describeRejection(relative));
   }
 
   QFileInfo info(absolute);
@@ -224,8 +265,7 @@ ReadFileTool::execute(const QJsonObject &arguments,
   const QString absolute = safeResolve(relative, context.outputFolder);
 
   if (absolute.isEmpty()) {
-    return makeError(QStringLiteral(
-        "Path is outside the output folder or invalid."));
+    return makeError(describeRejection(relative));
   }
 
   QFileInfo info(absolute);
@@ -296,8 +336,13 @@ ReadNotesFileTool::execute(const QJsonObject &arguments,
   const QString absolute = safeResolveNotes(requested, context.notesRoot);
 
   if (absolute.isEmpty()) {
-    return makeError(QStringLiteral(
-        "Path is outside the notes root or does not exist."));
+    return makeError(
+        QStringLiteral("Path rejected: \"%1\".\n"
+                       "Reason: the file must exist and be inside the "
+                       "notes root. Pass either a notes-root-relative path "
+                       "(e.g. \"foo.md\") or an absolute path inside the "
+                       "notes root.")
+            .arg(requested));
   }
 
   QFileInfo info(absolute);
@@ -371,8 +416,7 @@ WriteFileTool::execute(const QJsonObject &arguments,
   const QString absolute = safeResolve(relative, context.outputFolder);
 
   if (absolute.isEmpty()) {
-    return makeError(QStringLiteral(
-        "Path is outside the output folder or invalid."));
+    return makeError(describeRejection(relative));
   }
 
   QFileInfo info(absolute);
@@ -439,8 +483,7 @@ CreateDirectoryTool::execute(const QJsonObject &arguments,
   const QString absolute = safeResolve(relative, context.outputFolder);
 
   if (absolute.isEmpty()) {
-    return makeError(QStringLiteral(
-        "Path is outside the output folder or invalid."));
+    return makeError(describeRejection(relative));
   }
 
   if (!QDir().mkpath(absolute)) {
@@ -457,7 +500,5 @@ void OverseerTools::installAll(OverseerToolRegistry &registry) {
   registry.registerTool(std::make_unique<WriteFileTool>());
   registry.registerTool(std::make_unique<CreateDirectoryTool>());
   registry.registerTool(std::make_unique<ProposeMemoryFactTool>());
-  registry.registerTool(std::make_unique<ProposeMemoryFactTool>());
   registry.registerTool(std::make_unique<EditNoteTool>());
-  registry.registerTool(std::make_unique<ProposeMemoryFactTool>());
 }

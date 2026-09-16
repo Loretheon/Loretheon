@@ -315,8 +315,6 @@ add_executable(Episteme
         include/overseer/OverseerStorage.h
         src/overseer/OverseerWidget.cpp
         include/overseer/OverseerWidget.h
-        src/overseer/OverseerDock.cpp
-        include/overseer/OverseerDock.h
         src/overseer/OverseerTool.cpp
         include/overseer/OverseerTool.h
         src/overseer/OverseerToolRegistry.cpp
@@ -331,16 +329,54 @@ add_executable(Episteme
         include/overseer/ProposeMemoryFactTool.h
         src/ui/LlmSettingsPanel.cpp
         include/ui/LlmSettingsPanel.h
-        include/overseer/MemoryProposalCard.cpp
+        src/overseer/MemoryProposalCard.cpp
         include/overseer/MemoryProposalCard.h
-        include/overseer/MemoryProposalToast.cpp
+        src/overseer/MemoryProposalToast.cpp
         include/overseer/MemoryProposalToast.h
-        include/overseer/ToastStack.cpp
+        src/overseer/ToastStack.cpp
         include/overseer/ToastStack.h
-        include/overseer/EditNoteTool.cpp
+        src/overseer/EditNoteTool.cpp
         include/overseer/EditNoteTool.h
-        include/overseer/EditNoteReviewDialog.cpp
+        src/overseer/EditNoteReviewDialog.cpp
         include/overseer/EditNoteReviewDialog.h
+        src/overseer/WorkstationBodyFactory.cpp
+        include/overseer/WorkstationBodyFactory.h
+        src/overseer/WorkstationWindow.cpp
+        include/overseer/WorkstationWindow.h
+        src/overseer/Workstation.cpp
+        include/overseer/Workstation.h
+        src/overseer/OverseerSessionList.cpp
+        include/overseer/OverseerSessionList.h
+        src/overseer/OverseerSidePanel.cpp
+        include/overseer/OverseerSidePanel.h
+        src/overseer/OverseerPage.cpp
+        include/overseer/OverseerPage.h
+        src/overseer/TranscriptEvent.cpp
+        include/overseer/TranscriptEvent.h
+        src/overseer/TranscriptStore.cpp
+        include/overseer/TranscriptStore.h
+        src/overseer/CardWidget.cpp
+        include/overseer/CardWidget.h
+        src/overseer/TranscriptEventCard.cpp
+        include/overseer/TranscriptEventCard.h
+        src/overseer/TranscriptRibbon.cpp
+        include/overseer/TranscriptRibbon.h
+        src/overseer/TranscriptPanel.cpp
+        include/overseer/TranscriptPanel.h
+        src/overseer/PathUtils.cpp
+        include/overseer/PathUtils.h
+        src/overseer/MemoryFactCard.cpp
+        include/overseer/MemoryFactCard.h
+        src/overseer/MemoryPanel.cpp
+        include/overseer/MemoryPanel.h
+        src/overseer/OverseerReferenceCard.cpp
+        include/overseer/OverseerReferenceCard.h
+        src/overseer/OverviewPanel.cpp
+        include/overseer/OverviewPanel.h
+        src/overseer/MarkdownView.cpp
+        include/overseer/MarkdownView.h
+        src/overseer/WorkstationBar.cpp
+        include/overseer/WorkstationBar.h
 )
 
 add_dependencies(Episteme

@@ -22,8 +22,6 @@ public:
   static LlmSettings getLlmSettings();
   static void setLlmSettings(const LlmSettings &settings);
 
-  // How long a memory-proposal toast stays on screen before fading out.
-  // Default 8000 ms. Bounded to [1000, 60000].
   static int getOverseerToastDurationMs();
   static void setOverseerToastDurationMs(int ms);
 };

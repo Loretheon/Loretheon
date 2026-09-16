@@ -1,24 +1,23 @@
 #include "MainWindow.h"
-#include "LlmSettingsPanel.h"
-#include "ChatWidget.h"
-#include "OverseerDock.h"
-#include "OverseerWidget.h"
-#include "TextEdit.h"
-#include "app/QfPaths.h"
-#include "OverseerDock.h"
-#include "OverseerWidget.h"
-#include "inference/InferenceService.h"
-#include "ui/ModelDialog.h"
 
+#include "ChatWidget.h"
 #include "DocumentArea.h"
 #include "EditSession.h"
 #include "FileWidget.h"
+#include "LlmSettingsPanel.h"
+#include "OverseerPage.h"
 #include "Settings.h"
+#include "TextEdit.h"
 #include "TextWidget.h"
+#include "app/QfPaths.h"
+#include "ThemeTokens.h"
+#include "inference/InferenceService.h"
+#include "ui/ModelDialog.h"
 
 #include <QAction>
 #include <QActionGroup>
 #include <QApplication>
+#include <QCloseEvent>
 #include <QDir>
 #include <QFile>
 #include <QFileDialog>
@@ -31,11 +30,20 @@
 #include <QScreen>
 #include <QSettings>
 #include <QSplitter>
+#include <QStackedWidget>
 #include <QStatusBar>
+#include <QToolBar>
+#include <QToolButton>
 #include <QVBoxLayout>
 #include <QWidget>
 
-static InferenceService::LlmConfig configuredLlm() {
+namespace {
+
+constexpr auto NormalThemeKey = "theme";
+constexpr auto OverseerThemeKey = "overseer/theme";
+constexpr auto ModeKey = "overseer/mode";
+
+InferenceService::LlmConfig configuredLlm() {
   InferenceService::LlmConfig config;
 
   const Settings::LlmSettings stored = Settings::getLlmSettings();
@@ -56,274 +64,474 @@ static InferenceService::LlmConfig configuredLlm() {
   return config;
 }
 
-void MainWindow::openLlmSettings() {
-  if (!llmSettingsPanel) {
-    llmSettingsPanel = new LlmSettingsPanel(inferenceService, this);
-  }
-
-  llmSettingsPanel->show();
-  llmSettingsPanel->raise();
-  llmSettingsPanel->activateWindow();
-}
-
-
+} // namespace
 
 MainWindow::MainWindow() {
-  QWidget *widget = new QWidget;
-
-  setCentralWidget(widget);
-
   setCorner(Qt::TopLeftCorner, Qt::LeftDockWidgetArea);
   setCorner(Qt::BottomLeftCorner, Qt::LeftDockWidgetArea);
   setCorner(Qt::TopRightCorner, Qt::RightDockWidgetArea);
   setCorner(Qt::BottomRightCorner, Qt::RightDockWidgetArea);
 
-  themeManager = new ThemeManager(this);
+  m_normalThemeManager = new ThemeManager(this);
+  m_overseerThemeManager = new ThemeManager(this);
 
-  fileWidget = new FileWidget(widget);
-  documentManager = new DocumentManager(this);
-  inferenceService = new InferenceService(this);
+  m_inferenceService = new InferenceService(this);
 
-  const auto llmConfig = configuredLlm();
-
-  inferenceService->initialize(
+  m_inferenceService->initialize(
       LlamaManager::Backend::Vulkan, QFPaths::sttModelsDir(),
-      InferenceService::SttModel::Nemotron35, llmConfig);
+      InferenceService::SttModel::Nemotron35, configuredLlm());
 
-  documentArea = new DocumentArea(documentManager, widget);
+  m_editSession = new EditSession(nullptr, this);
 
-  editSession = new EditSession(nullptr, this);
-  chatWidget = new ChatWidget(inferenceService, editSession, this);
+  buildNormalPage();
+  buildOverseerPage();
 
-  documentArea->setEditSession(editSession);
+  m_centralStack = new QStackedWidget(this);
+  m_centralStack->addWidget(m_normalPage);
+  m_centralStack->addWidget(m_overseerPage);
 
-  overseerDock = new OverseerDock(inferenceService, this);
-  overseerDock->hide();
-
-  addDockWidget(Qt::RightDockWidgetArea, overseerDock);
-
-  connect(chatWidget, &ChatWidget::contextScopesChanged, documentArea,
-          [this](const QStringList &scopeIds) {
-            auto *editor = documentArea->currentEditor();
-            if (!editor) {
-              return;
-            }
-            if (scopeIds.isEmpty()) {
-              editor->clearHighlightedScopes();
-            } else {
-              editor->setHighlightedScopes(scopeIds);
-            }
-          });
-
-  connect(chatWidget, &ChatWidget::previewActivationRequested, documentArea,
-          [this](bool active) {
-            auto *textWidget = documentArea->currentTextWidget();
-            if (textWidget) {
-              textWidget->activatePreview(active);
-            }
-          });
-
-
-  connect(documentArea, &DocumentArea::currentEditorChanged, this,
-          &MainWindow::bindCurrentEditor, Qt::QueuedConnection);
-
-  connect(documentArea, &DocumentArea::openDocumentRequested, documentManager,
-          &DocumentManager::openFile);
-
-  connect(documentArea, &DocumentArea::statusMessage, this,
-          [this](const QString &text, int timeoutMs) {
-            statusBar()->showMessage(text, timeoutMs);
-          });
-
-  connect(fileWidget, &FileWidget::fileSelected, documentManager,
-          &DocumentManager::openFile);
-
-  connect(fileWidget, &FileWidget::addToOverseerRequested, this,
-        [this](const QStringList &paths) {
-          if (paths.isEmpty()) {
-            return;
-          }
-
-          if (!overseerDock) {
-            return;
-          }
-
-          overseerDock->setVisible(true);
-
-          if (auto *panel = overseerDock->overseerWidget()) {
-            panel->addOverviewReferences(paths);
-          }
-        });
-
-  connect(fileWidget, &FileWidget::newNoteRequested, documentManager,
-          &DocumentManager::newMarkdownFileIn);
-
-  connect(fileWidget, &FileWidget::newFolderRequested, documentManager,
-          &DocumentManager::newFolderIn);
-
-  connect(fileWidget, &FileWidget::deleteRequested, documentManager,
-          &DocumentManager::deleteFile);
-
-  connect(fileWidget, &FileWidget::convertToMarkdownRequested, documentManager,
-          &DocumentManager::convertToMarkdown);
-
-  connect(fileWidget, &FileWidget::convertToTextRequested, documentManager,
-          &DocumentManager::convertToText);
-
-  connect(fileWidget, &FileWidget::convertToPlantUmlRequested, documentManager,
-          &DocumentManager::convertToPlantUml);
-
-  connect(fileWidget, &FileWidget::convertToDotRequested, documentManager,
-          &DocumentManager::convertToDot);
-
-  connect(documentManager, &DocumentManager::documentCreated, fileWidget,
-          &FileWidget::beginEditingPath);
-
-  connect(documentManager, &DocumentManager::fileConverted, fileWidget,
-          &FileWidget::beginEditingPath);
-
-  connect(fileWidget, &FileWidget::renameRequested, documentManager,
-          &DocumentManager::renameFile);
-
-  connect(documentManager, &DocumentManager::currentDocumentChanged, fileWidget,
-          [this](TextDocument *document) {
-            fileWidget->setActivePath(document ? document->filePath()
-                                               : QString());
-            fileWidget->setModifiedPaths(modifiedPaths());
-          });
-
-  connect(documentManager, &DocumentManager::currentDocumentChanged, this,
-          [this](TextDocument *document) {
-            auto *textWidget = documentArea->currentTextWidget();
-            if (!textWidget) {
-              return;
-            }
-            const QString root =
-                document && !document->filePath().isEmpty()
-                    ? QFileInfo(document->filePath()).absolutePath()
-                    : QString();
-            textWidget->setProjectRoot(root);
-          });
-
-  connect(documentManager, &DocumentManager::currentDocumentChanged, this,
-          [this](TextDocument *) {
-            auto *editor = documentArea->currentEditor();
-            if (editor && editSession) {
-              editSession->setEditor(editor);
-            }
-            if (chatWidget && documentArea->currentEditor()) {
-              chatWidget->setActiveEditor(documentArea->currentEditor());
-            }
-          });
-
-  connect(themeManager, &ThemeManager::themeChanged, this,
-          [this](const QString &name, const ThemeTokens &tokens) {
-            currentTheme = name;
-            applyThemeToPalette(tokens);
-            propagateTheme(tokens);
-          });
-
-  QSplitter *mainSplitter = new QSplitter(Qt::Horizontal, widget);
-
-  mainSplitter->addWidget(fileWidget);
-
-  QSplitter *rightSplitter = new QSplitter(Qt::Vertical, mainSplitter);
-
-  rightSplitter->addWidget(documentArea);
-  rightSplitter->addWidget(chatWidget);
-
-  mainSplitter->setSizes({240, 960});
-  rightSplitter->setSizes({650, 300});
-
-  QVBoxLayout *layout = new QVBoxLayout(widget);
-
-  layout->setContentsMargins(5, 5, 5, 5);
-  layout->addWidget(mainSplitter);
-
-  setLayout(layout);
+  setCentralWidget(m_centralStack);
 
   createActions();
+  createToolbar();
   createMenus();
 
   QSettings settings;
-  currentTheme = settings.value("theme", ThemeRegistry::instance().defaultName())
-                     .toString();
-  loadTheme(currentTheme);
+
+  m_currentNormalTheme =
+      settings.value(NormalThemeKey, ThemeRegistry::instance().defaultName())
+          .toString();
+
+  m_currentOverseerTheme =
+      settings.value(OverseerThemeKey, QString()).toString();
+
+  if (m_currentOverseerTheme.isEmpty()) {
+    m_currentOverseerTheme = m_currentNormalTheme;
+  }
+
+  const bool overseerMode = settings.value(ModeKey, false).toBool();
+
+  m_centralStack->setCurrentIndex(overseerMode ? 1 : 0);
+
+  applyNormalTheme(m_currentNormalTheme);
+  applyOverseerTheme(m_currentOverseerTheme);
+
+  ThemeRegistry::instance().setActiveTheme(
+      overseerMode ? m_currentOverseerTheme : m_currentNormalTheme);
+
+  if (m_toggleModeAct) {
+    QSignalBlocker blocker(m_toggleModeAct);
+    m_toggleModeAct->setChecked(overseerMode);
+  }
 
   setWindowTitle(tr("Episteme"));
   setMinimumSize(800, 800);
 
   QScreen *screen = QGuiApplication::primaryScreen();
+  if (screen)
+    setGeometry(screen->availableGeometry());
+}
 
-  if (screen) setGeometry(screen->availableGeometry());
+void MainWindow::buildNormalPage() {
+  m_normalPage = new QWidget(this);
+
+  m_fileWidget = new FileWidget(m_normalPage);
+  m_documentManager = new DocumentManager(this);
+
+  m_documentArea = new DocumentArea(m_documentManager, m_normalPage);
+  m_documentArea->setEditSession(m_editSession);
+
+  m_chatWidget = new ChatWidget(m_inferenceService, m_editSession,
+                                m_normalPage);
+
+  connect(m_chatWidget, &ChatWidget::contextScopesChanged, m_documentArea,
+          [this](const QStringList &scopeIds) {
+            auto *editor = m_documentArea->currentEditor();
+            if (!editor)
+              return;
+            if (scopeIds.isEmpty())
+              editor->clearHighlightedScopes();
+            else
+              editor->setHighlightedScopes(scopeIds);
+          });
+
+  connect(m_chatWidget, &ChatWidget::previewActivationRequested,
+          m_documentArea, [this](bool active) {
+            auto *tw = m_documentArea->currentTextWidget();
+            if (tw)
+              tw->activatePreview(active);
+          });
+
+  connect(m_documentArea, &DocumentArea::currentEditorChanged, this,
+          &MainWindow::bindCurrentEditor, Qt::QueuedConnection);
+
+  connect(m_documentArea, &DocumentArea::openDocumentRequested,
+          m_documentManager, &DocumentManager::openFile);
+
+  connect(m_documentArea, &DocumentArea::statusMessage, this,
+          [this](const QString &text, int timeoutMs) {
+            statusBar()->showMessage(text, timeoutMs);
+          });
+
+  connect(m_fileWidget, &FileWidget::fileSelected, m_documentManager,
+          &DocumentManager::openFile);
+
+  connect(m_fileWidget, &FileWidget::newNoteRequested, m_documentManager,
+          &DocumentManager::newMarkdownFileIn);
+
+  connect(m_fileWidget, &FileWidget::newFolderRequested, m_documentManager,
+          &DocumentManager::newFolderIn);
+
+  connect(m_fileWidget, &FileWidget::deleteRequested, m_documentManager,
+          &DocumentManager::deleteFile);
+
+  connect(m_fileWidget, &FileWidget::convertToMarkdownRequested,
+          m_documentManager, &DocumentManager::convertToMarkdown);
+
+  connect(m_fileWidget, &FileWidget::convertToTextRequested, m_documentManager,
+          &DocumentManager::convertToText);
+
+  connect(m_fileWidget, &FileWidget::convertToPlantUmlRequested,
+          m_documentManager, &DocumentManager::convertToPlantUml);
+
+  connect(m_fileWidget, &FileWidget::convertToDotRequested, m_documentManager,
+          &DocumentManager::convertToDot);
+
+  connect(m_documentManager, &DocumentManager::documentCreated, m_fileWidget,
+          &FileWidget::beginEditingPath);
+
+  connect(m_documentManager, &DocumentManager::fileConverted, m_fileWidget,
+          &FileWidget::beginEditingPath);
+
+  connect(m_fileWidget, &FileWidget::renameRequested, m_documentManager,
+          &DocumentManager::renameFile);
+
+  connect(m_documentManager, &DocumentManager::currentDocumentChanged,
+          m_fileWidget, [this](TextDocument *document) {
+            m_fileWidget->setActivePath(document ? document->filePath()
+                                                 : QString());
+            m_fileWidget->setModifiedPaths(modifiedPaths());
+          });
+
+  connect(m_documentManager, &DocumentManager::currentDocumentChanged, this,
+          [this](TextDocument *document) {
+            auto *tw = m_documentArea->currentTextWidget();
+            if (!tw)
+              return;
+            const QString root =
+                document && !document->filePath().isEmpty()
+                    ? QFileInfo(document->filePath()).absolutePath()
+                    : QString();
+            tw->setProjectRoot(root);
+          });
+
+  connect(m_documentManager, &DocumentManager::currentDocumentChanged, this,
+          [this](TextDocument *) {
+            auto *editor = m_documentArea->currentEditor();
+            if (editor && m_editSession)
+              m_editSession->setEditor(editor);
+            if (m_chatWidget && editor)
+              m_chatWidget->setActiveEditor(editor);
+          });
+
+  auto *mainSplitter = new QSplitter(Qt::Horizontal, m_normalPage);
+  mainSplitter->addWidget(m_fileWidget);
+
+  auto *rightSplitter = new QSplitter(Qt::Vertical, mainSplitter);
+  rightSplitter->addWidget(m_documentArea);
+  rightSplitter->addWidget(m_chatWidget);
+  rightSplitter->setSizes({650, 300});
+
+  mainSplitter->setSizes({240, 960});
+
+  auto *layout = new QVBoxLayout(m_normalPage);
+  layout->setContentsMargins(5, 5, 5, 5);
+  layout->addWidget(mainSplitter);
+}
+
+void MainWindow::buildOverseerPage() {
+  m_overseerPage =
+      new OverseerPage(m_inferenceService, m_editSession, this);
+
+  connect(m_overseerPage, &OverseerPage::statusMessage, this,
+          [this](const QString &text, int timeoutMs) {
+            statusBar()->showMessage(text, timeoutMs);
+          });
+
+  connect(m_overseerPage, &OverseerPage::openFileInNormalEditorRequested,
+          this, [this](const QString &absolutePath) {
+            if (m_documentManager)
+              m_documentManager->openFile(absolutePath);
+
+            if (m_centralStack)
+              m_centralStack->setCurrentIndex(0);
+
+            if (m_toggleModeAct) {
+              QSignalBlocker blocker(m_toggleModeAct);
+              m_toggleModeAct->setChecked(false);
+            }
+          });
 }
 
 void MainWindow::bindCurrentEditor(TextEdit *editor) {
-  if (!editor) {
+  if (!editor)
     return;
-  }
 
-  if (editSession) {
-    editSession->setEditor(editor);
-  }
+  if (m_editSession)
+    m_editSession->setEditor(editor);
 
-  if (chatWidget) {
-    chatWidget->setActiveEditor(editor);
-  }
+  if (m_chatWidget)
+    m_chatWidget->setActiveEditor(editor);
 }
 
-void MainWindow::about() {
-  QMessageBox::about(this, tr("About Episteme"),
-                     tr("The <b>Episteme</b> document editor."));
+void MainWindow::createActions() {
+  auto getSafeIcon = [](const QString &themeIcon,
+                        const QString &fallbackPath = "") -> QIcon {
+    QIcon icon = QIcon::fromTheme(themeIcon);
+    if (icon.isNull() && !fallbackPath.isEmpty())
+      icon = QIcon(fallbackPath);
+    return icon;
+  };
+
+  m_newTextAct =
+      new QAction(getSafeIcon("document-new", ":/icons/document-new.png"),
+                  tr("&Text File"), this);
+  m_newTextAct->setShortcuts(QKeySequence::New);
+  connect(m_newTextAct, &QAction::triggered, m_documentManager,
+          &DocumentManager::newTextFile);
+
+  m_newMarkdownAct =
+      new QAction(getSafeIcon("document-new", ":/icons/document-new.png"),
+                  tr("&Markdown File"), this);
+  connect(m_newMarkdownAct, &QAction::triggered, m_documentManager,
+          &DocumentManager::newMarkdownFile);
+
+  m_newPlantUmlAct =
+      new QAction(getSafeIcon("document-new", ":/icons/document-new.png"),
+                  tr("&PlantUML Diagram"), this);
+  connect(m_newPlantUmlAct, &QAction::triggered, m_documentManager,
+          &DocumentManager::newPlantUmlFile);
+
+  m_openAct =
+      new QAction(getSafeIcon("document-open", ":/icons/document-open.png"),
+                  tr("&Open..."), this);
+  m_openAct->setShortcuts(QKeySequence::Open);
+  connect(m_openAct, &QAction::triggered, this, [this]() {
+    const QString path =
+        QFileDialog::getOpenFileName(this, tr("Open File"), QString(),
+                                     tr("All Files (*)"));
+    if (!path.isEmpty())
+      m_documentManager->openFile(path);
+  });
+
+  m_saveAct =
+      new QAction(getSafeIcon("document-save", ":/icons/document-save.png"),
+                  tr("&Save"), this);
+  m_saveAct->setShortcuts(QKeySequence::Save);
+  connect(m_saveAct, &QAction::triggered, this, [this]() {
+    if (m_centralStack->currentIndex() == 1) {
+      if (m_overseerPage)
+        m_overseerPage->saveAll();
+    } else {
+      m_documentManager->save();
+    }
+  });
+
+  m_saveAllAct = new QAction(tr("Save A&ll"), this);
+  m_saveAllAct->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_S));
+  connect(m_saveAllAct, &QAction::triggered, this, [this]() {
+    if (m_centralStack->currentIndex() == 1) {
+      if (m_overseerPage)
+        m_overseerPage->saveAll();
+    } else {
+      for (TextDocument *doc : m_documentManager->openDocuments()) {
+        if (doc && doc->isModified())
+          m_documentManager->saveDocument(doc);
+      }
+    }
+  });
+
+  m_exitAct = new QAction(
+      getSafeIcon("application-exit", ":/icons/application-exit.png"),
+      tr("E&xit"), this);
+  m_exitAct->setShortcuts(QKeySequence::Quit);
+  connect(m_exitAct, &QAction::triggered, this, &QWidget::close);
+
+  m_manageModelsAct = new QAction(tr("&Manage Models..."), this);
+  connect(m_manageModelsAct, &QAction::triggered, this,
+          &MainWindow::manageModels);
+
+  m_llmSettingsAct = new QAction(tr("LLM &Settings..."), this);
+  connect(m_llmSettingsAct, &QAction::triggered, this,
+          &MainWindow::openLlmSettings);
+
+  m_toggleModeAct = new QAction(tr("&Overseer Mode"), this);
+  m_toggleModeAct->setCheckable(true);
+  m_toggleModeAct->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_O));
+  m_toggleModeAct->setStatusTip(tr("Switch between normal and Overseer mode"));
+  connect(m_toggleModeAct, &QAction::toggled, this,
+          &MainWindow::onModeToggled);
+
+  m_aboutAct = new QAction(getSafeIcon("help-about", ":/icons/help-about.png"),
+                           tr("&About"), this);
+  connect(m_aboutAct, &QAction::triggered, this, &MainWindow::about);
+
+  m_aboutQtAct = new QAction(tr("About &Qt"), this);
+  connect(m_aboutQtAct, &QAction::triggered, this, &MainWindow::aboutQt);
+
+  connect(m_documentManager, &DocumentManager::currentDocumentChanged, this,
+          [this](TextDocument *) {
+            m_fileWidget->setModifiedPaths(modifiedPaths());
+          });
 }
 
-void MainWindow::aboutQt() { QMessageBox::aboutQt(this, tr("About Qt")); }
+void MainWindow::createToolbar() {
+  m_topToolBar = addToolBar(tr("Main"));
+  m_topToolBar->setObjectName(QStringLiteral("mainToolBar"));
+  m_topToolBar->setMovable(false);
+  m_topToolBar->setFloatable(false);
+  m_topToolBar->setIconSize(QSize(18, 18));
+  m_topToolBar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
 
-void MainWindow::manageModels() {
-  if (!modelDialog) {
-    modelDialog = new ModelDialog(inferenceService, this);
+  m_modeButton = new QToolButton(m_topToolBar);
+  m_modeButton->setObjectName(QStringLiteral("overseerModeButton"));
+  m_modeButton->setDefaultAction(m_toggleModeAct);
+  m_modeButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+  m_modeButton->setIcon(QIcon::fromTheme(QStringLiteral("view-grid")));
+  m_modeButton->setText(tr("Overseer"));
+
+  m_topToolBar->addWidget(m_modeButton);
+}
+
+void MainWindow::createMenus() {
+  m_fileMenu = menuBar()->addMenu(tr("&File"));
+
+  m_newMenu = m_fileMenu->addMenu(tr("&New"));
+  m_newMenu->addAction(m_newTextAct);
+  m_newMenu->addAction(m_newMarkdownAct);
+  m_newMenu->addAction(m_newPlantUmlAct);
+
+  m_fileMenu->addAction(m_openAct);
+  m_fileMenu->addAction(m_saveAct);
+  m_fileMenu->addAction(m_saveAllAct);
+  m_fileMenu->addSeparator();
+  m_fileMenu->addAction(m_exitAct);
+
+  m_viewMenu = menuBar()->addMenu(tr("&View"));
+  m_viewMenu->addAction(m_toggleModeAct);
+
+  m_toolsMenu = menuBar()->addMenu(tr("&Tools"));
+  m_toolsMenu->addAction(m_llmSettingsAct);
+  m_toolsMenu->addSeparator();
+  m_toolsMenu->addAction(m_manageModelsAct);
+
+  m_themeMenu = menuBar()->addMenu(tr("&Theme"));
+
+  auto *normalThemeMenu = m_themeMenu->addMenu(tr("Normal"));
+  QActionGroup *normalGroup = new QActionGroup(this);
+  normalGroup->setExclusive(true);
+
+  for (const QString &theme : ThemeRegistry::instance().names()) {
+    QAction *a = normalThemeMenu->addAction(theme);
+    a->setCheckable(true);
+    normalGroup->addAction(a);
+
+    if (theme == m_currentNormalTheme)
+      a->setChecked(true);
+
+    connect(a, &QAction::triggered, this,
+            [this, theme]() { onThemeSelected(theme); });
   }
 
-  modelDialog->show();
-  modelDialog->raise();
-  modelDialog->activateWindow();
-}
+  auto *overseerThemeMenu = m_themeMenu->addMenu(tr("Overseer"));
+  QActionGroup *overseerGroup = new QActionGroup(this);
+  overseerGroup->setExclusive(true);
 
-void MainWindow::toggleOverseer(bool visible) {
-  if (!overseerDock) {
-    return;
+  for (const QString &theme : ThemeRegistry::instance().names()) {
+    QAction *a = overseerThemeMenu->addAction(theme);
+    a->setCheckable(true);
+    overseerGroup->addAction(a);
+
+    if (theme == m_currentOverseerTheme)
+      a->setChecked(true);
+
+    connect(a, &QAction::triggered, this,
+            [this, theme]() { onOverseerThemeSelected(theme); });
   }
 
-  overseerDock->setVisible(visible);
+  m_helpMenu = menuBar()->addMenu(tr("&Help"));
+  m_helpMenu->addAction(m_aboutAct);
+  m_helpMenu->addAction(m_aboutQtAct);
 }
 
-void MainWindow::loadTheme(const QString &themeName) {
+void MainWindow::applyNormalTheme(const QString &name) {
   const QString resourcePath =
-      QString(":/catppuccin-%1/stylesheet.qss").arg(themeName);
+      QString(":/catppuccin-%1/stylesheet.qss").arg(name);
 
   QFile file(resourcePath);
 
   if (!file.open(QFile::ReadOnly | QFile::Text)) {
-    qDebug() << "Failed to load theme:" << themeName << "-"
-             << file.errorString();
     return;
   }
 
-  const QString stylesheet = QString::fromUtf8(file.readAll());
+  const QString qss = QString::fromUtf8(file.readAll());
   file.close();
 
-  qApp->setStyleSheet(stylesheet);
+  m_normalThemeManager->loadTheme(name, qss);
 
-  themeManager->loadTheme(themeName, stylesheet);
+  const ThemeTokens tokens = m_normalThemeManager->currentTokens();
+
+  m_normalPage->setStyleSheet(qss);
+  m_normalPage->setPalette(paletteForTokens(tokens));
+
+  if (m_documentArea)
+    m_documentArea->setThemeTokens(tokens);
+
+  m_currentNormalTheme = name;
 
   QSettings settings;
-  settings.setValue("theme", themeName);
+  settings.setValue(NormalThemeKey, name);
+
+  if (m_centralStack && m_centralStack->currentIndex() == 0) {
+    ThemeRegistry::instance().setActiveTheme(name);
+  }
 }
 
-void MainWindow::onThemeSelected(const QString &theme) { loadTheme(theme); }
+void MainWindow::applyOverseerTheme(const QString &name) {
+  const QString resourcePath =
+      QString(":/catppuccin-%1/stylesheet.qss").arg(name);
 
-void MainWindow::applyThemeToPalette(const ThemeTokens &tokens) {
-  QPalette pal = qApp->palette();
+  QFile file(resourcePath);
+
+  if (!file.open(QFile::ReadOnly | QFile::Text)) {
+    return;
+  }
+
+  const QString qss = QString::fromUtf8(file.readAll());
+  file.close();
+
+  m_overseerThemeManager->loadTheme(name, qss);
+
+  const ThemeTokens tokens = m_overseerThemeManager->currentTokens();
+
+  m_overseerPage->setStyleSheet(qss);
+  m_overseerPage->setPalette(paletteForTokens(tokens));
+
+  if (m_overseerPage)
+    m_overseerPage->setThemeTokens(tokens);
+
+  m_currentOverseerTheme = name;
+
+  QSettings settings;
+  settings.setValue(OverseerThemeKey, name);
+
+  if (m_centralStack && m_centralStack->currentIndex() == 1) {
+    ThemeRegistry::instance().setActiveTheme(name);
+  }
+}
+
+QPalette MainWindow::paletteForTokens(const ThemeTokens &tokens) const {
+  QPalette pal = QApplication::style()->standardPalette();
 
   pal.setColor(QPalette::Window, tokens.base);
   pal.setColor(QPalette::WindowText, tokens.text);
@@ -346,210 +554,156 @@ void MainWindow::applyThemeToPalette(const ThemeTokens &tokens) {
   pal.setColor(QPalette::Mid, tokens.overlay0);
   pal.setColor(QPalette::Shadow, tokens.crust);
 
-  qApp->setPalette(pal);
+  return pal;
 }
 
-void MainWindow::propagateTheme(const ThemeTokens &tokens) {
-  if (documentArea) {
-    documentArea->setThemeTokens(tokens);
+void MainWindow::onModeToggled(bool overseerMode) {
+  const int targetIndex = overseerMode ? 1 : 0;
+
+  if (m_centralStack->currentIndex() == targetIndex)
+    return;
+
+  if (targetIndex == 1) {
+    if (!confirmDiscardChanges(tr("Normal mode"))) {
+      QSignalBlocker blocker(m_toggleModeAct);
+      m_toggleModeAct->setChecked(false);
+      return;
+    }
+  } else {
+    if (m_overseerPage && !confirmDiscardChanges(tr("Overseer mode"))) {
+      QSignalBlocker blocker(m_toggleModeAct);
+      m_toggleModeAct->setChecked(true);
+      return;
+    }
   }
+
+  m_centralStack->setCurrentIndex(targetIndex);
+
+  ThemeRegistry::instance().setActiveTheme(
+      overseerMode ? m_currentOverseerTheme : m_currentNormalTheme);
+
+  if (m_modeButton) {
+    m_modeButton->setText(overseerMode ? tr("Normal") : tr("Overseer"));
+    m_modeButton->setIcon(
+        QIcon::fromTheme(overseerMode ? QStringLiteral("go-home")
+                                      : QStringLiteral("view-grid")));
+  }
+
+  QSettings settings;
+  settings.setValue(ModeKey, overseerMode);
+}
+
+bool MainWindow::confirmDiscardChanges(const QString &areaName) {
+  DocumentManager *manager = nullptr;
+
+  if (areaName == tr("Normal mode"))
+    manager = m_documentManager;
+  else if (m_overseerPage)
+    manager = m_overseerPage->documentManager();
+
+  if (!manager)
+    return true;
+
+  QList<TextDocument *> dirty;
+
+  for (TextDocument *doc : manager->openDocuments()) {
+    if (doc && doc->isModified())
+      dirty.append(doc);
+  }
+
+  if (dirty.isEmpty())
+    return true;
+
+  QMessageBox box(this);
+  box.setIcon(QMessageBox::Question);
+  box.setWindowTitle(tr("Unsaved changes"));
+  box.setText(tr("%n file(s) have unsaved changes.", "", dirty.size()));
+  box.setInformativeText(tr("Save before switching modes?"));
+  box.setStandardButtons(QMessageBox::SaveAll | QMessageBox::Discard |
+                         QMessageBox::Cancel);
+  box.setDefaultButton(QMessageBox::SaveAll);
+
+  const int result = box.exec();
+
+  if (result == QMessageBox::Cancel)
+    return false;
+
+  if (result == QMessageBox::Discard) {
+    for (TextDocument *doc : std::as_const(dirty))
+      doc->setModified(false);
+    return true;
+  }
+
+  for (TextDocument *doc : std::as_const(dirty)) {
+    if (!manager->saveDocument(doc))
+      return false;
+  }
+
+  return true;
+}
+
+void MainWindow::onThemeSelected(const QString &theme) {
+  applyNormalTheme(theme);
+}
+
+void MainWindow::onOverseerThemeSelected(const QString &theme) {
+  applyOverseerTheme(theme);
+}
+
+void MainWindow::openLlmSettings() {
+  if (!m_llmSettingsPanel) {
+    m_llmSettingsPanel = new LlmSettingsPanel(m_inferenceService, this);
+  }
+  m_llmSettingsPanel->show();
+  m_llmSettingsPanel->raise();
+  m_llmSettingsPanel->activateWindow();
+}
+
+void MainWindow::manageModels() {
+  if (!m_modelDialog) {
+    m_modelDialog = new ModelDialog(m_inferenceService, this);
+  }
+  m_modelDialog->show();
+  m_modelDialog->raise();
+  m_modelDialog->activateWindow();
 }
 
 QSet<QString> MainWindow::modifiedPaths() const {
   QSet<QString> paths;
 
-  if (!documentManager) return paths;
+  if (!m_documentManager)
+    return paths;
 
-  for (TextDocument *document : documentManager->openDocuments()) {
-    if (document->isModified() && !document->filePath().isEmpty()) {
-      paths.insert(document->filePath());
-    }
+  for (TextDocument *doc : m_documentManager->openDocuments()) {
+    if (doc && doc->isModified() && !doc->filePath().isEmpty())
+      paths.insert(doc->filePath());
   }
 
   return paths;
 }
 
-void MainWindow::createActions() {
-  auto getSafeIcon = [](const QString &themeIcon,
-                        const QString &fallbackPath = "") -> QIcon {
-    QIcon icon = QIcon::fromTheme(themeIcon);
-
-    if (icon.isNull() && !fallbackPath.isEmpty()) {
-      icon = QIcon(fallbackPath);
-    }
-
-    return icon;
-  };
-
-  newTextAct =
-      new QAction(getSafeIcon("document-new", ":/icons/document-new.png"),
-                  tr("&Text File"), this);
-  newTextAct->setShortcuts(QKeySequence::New);
-  newTextAct->setStatusTip(tr("Create a new plain text file"));
-
-  connect(newTextAct, &QAction::triggered, documentManager,
-          &DocumentManager::newTextFile);
-
-  newMarkdownAct =
-      new QAction(getSafeIcon("document-new", ":/icons/document-new.png"),
-                  tr("&Markdown File"), this);
-  newMarkdownAct->setStatusTip(tr("Create a new markdown file"));
-
-  connect(newMarkdownAct, &QAction::triggered, documentManager,
-          &DocumentManager::newMarkdownFile);
-
-  newPlantUmlAct =
-      new QAction(getSafeIcon("document-new", ":/icons/document-new.png"),
-                  tr("&PlantUML Diagram"), this);
-  newPlantUmlAct->setStatusTip(tr("Create a new PlantUML diagram"));
-
-  connect(newPlantUmlAct, &QAction::triggered, documentManager,
-          &DocumentManager::newPlantUmlFile);
-
-  openAct =
-      new QAction(getSafeIcon("document-open", ":/icons/document-open.png"),
-                  tr("&Open..."), this);
-  openAct->setShortcuts(QKeySequence::Open);
-  openAct->setStatusTip(tr("Open an existing file"));
-
-  connect(openAct, &QAction::triggered, this, [this]() {
-    const QString path =
-        QFileDialog::getOpenFileName(this, tr("Open File"), QString(),
-                                     tr("Text Files (*.txt);;"
-                                        "Markdown Files (*.md);;"
-                                        "PlantUML Files (*.puml *.plantuml);;"
-                                        "Graphviz Files (*.dot *.gv);;"
-                                        "Mermaid Files (*.mmd *.mermaid);;"
-                                        "All Files (*)"));
-
-    if (!path.isEmpty()) {
-      documentManager->openFile(path);
-    }
-  });
-
-  saveAct =
-      new QAction(getSafeIcon("document-save", ":/icons/document-save.png"),
-                  tr("&Save"), this);
-  saveAct->setShortcuts(QKeySequence::Save);
-  saveAct->setStatusTip(tr("Save the document to disk"));
-
-  connect(saveAct, &QAction::triggered, documentManager,
-          &DocumentManager::save);
-
-  connect(documentManager, &DocumentManager::currentDocumentChanged, this,
-          [this](TextDocument *) {
-            fileWidget->setModifiedPaths(modifiedPaths());
-          });
-
-  connect(documentManager, &DocumentManager::documentCreated, this,
-          [this](const QString &) {
-            fileWidget->setModifiedPaths(modifiedPaths());
-          });
-
-  connect(documentManager, &DocumentManager::fileRenamed, this,
-          [this](const QString &, const QString &) {
-            fileWidget->setModifiedPaths(modifiedPaths());
-          });
-
-  connect(documentManager, &DocumentManager::fileConverted, this,
-          [this](const QString &, const QString &) {
-            fileWidget->setModifiedPaths(modifiedPaths());
-          });
-
-  exitAct = new QAction(
-      getSafeIcon("application-exit", ":/icons/application-exit.png"),
-      tr("E&xit"), this);
-  exitAct->setShortcuts(QKeySequence::Quit);
-  exitAct->setStatusTip(tr("Exit the application"));
-
-  connect(exitAct, &QAction::triggered, this, &QWidget::close);
-
-  manageModelsAct = new QAction(tr("&Manage Models..."), this);
-  manageModelsAct->setStatusTip(tr("Download or select LLM and speech models"));
-
-  connect(manageModelsAct, &QAction::triggered, this,
-          &MainWindow::manageModels);
-
-  llmSettingsAct = new QAction(tr("LLM &Settings..."), this);
-  llmSettingsAct->setStatusTip(tr("Configure the LLM endpoint and credentials"));
-
-  connect(llmSettingsAct, &QAction::triggered, this,
-          &MainWindow::openLlmSettings);
-
-  toggleOverseerAct = new QAction(tr("Show &Overseer"), this);
-  toggleOverseerAct->setCheckable(true);
-  toggleOverseerAct->setChecked(false);
-  toggleOverseerAct->setStatusTip(
-      tr("Toggle the Overseer persistent assistant panel"));
-
-  connect(toggleOverseerAct, &QAction::toggled, this,
-          &MainWindow::toggleOverseer);
-
-  connect(overseerDock, &QDockWidget::visibilityChanged, this,
-          [this](bool visible) {
-            if (toggleOverseerAct) {
-              QSignalBlocker blocker(toggleOverseerAct);
-              toggleOverseerAct->setChecked(visible);
-            }
-          });
-
-  aboutAct = new QAction(getSafeIcon("help-about", ":/icons/help-about.png"),
-                         tr("&About"), this);
-  aboutAct->setStatusTip(tr("Show the application's About box"));
-
-  connect(aboutAct, &QAction::triggered, this, &MainWindow::about);
-
-  aboutQtAct = new QAction(tr("About &Qt"), this);
-  aboutQtAct->setStatusTip(tr("Show the Qt library's About box"));
-
-  connect(aboutQtAct, &QAction::triggered, this, &MainWindow::aboutQt);
+void MainWindow::about() {
+  QMessageBox::about(this, tr("About Episteme"),
+                     tr("The <b>Episteme</b> document editor."));
 }
 
-void MainWindow::createMenus() {
-  fileMenu = menuBar()->addMenu(tr("&File"));
+void MainWindow::aboutQt() { QMessageBox::aboutQt(this, tr("About Qt")); }
 
-  newMenu = fileMenu->addMenu(tr("&New"));
-
-  newMenu->addAction(newTextAct);
-  newMenu->addAction(newMarkdownAct);
-  newMenu->addAction(newPlantUmlAct);
-
-  fileMenu->addAction(openAct);
-  fileMenu->addAction(saveAct);
-
-  fileMenu->addSeparator();
-
-  fileMenu->addAction(exitAct);
-
-  viewMenu = menuBar()->addMenu(tr("&View"));
-  viewMenu->addAction(toggleOverseerAct);
-
-  toolsMenu = menuBar()->addMenu(tr("&Tools"));
-
-  toolsMenu->addAction(llmSettingsAct);
-  toolsMenu->addSeparator();
-  toolsMenu->addAction(manageModelsAct);
-
-  themeMenu = menuBar()->addMenu(tr("&Theme"));
-
-  QActionGroup *themeGroup = new QActionGroup(this);
-  themeGroup->setExclusive(true);
-
-  const QStringList themes = ThemeRegistry::instance().names();
-
-  for (const QString &theme : themes) {
-    QAction *themeAction = themeMenu->addAction(theme);
-    themeAction->setCheckable(true);
-    themeGroup->addAction(themeAction);
-
-    if (theme == currentTheme) themeAction->setChecked(true);
-
-    connect(themeAction, &QAction::triggered, this,
-            [this, theme]() { onThemeSelected(theme); });
+void MainWindow::closeEvent(QCloseEvent *event) {
+  if (!confirmDiscardChanges(tr("Normal mode"))) {
+    event->ignore();
+    return;
   }
 
-  helpMenu = menuBar()->addMenu(tr("&Help"));
+  if (m_overseerPage && m_overseerPage->hasUnsavedChanges()) {
+    if (!confirmDiscardChanges(tr("Overseer mode"))) {
+      event->ignore();
+      return;
+    }
+  }
 
-  helpMenu->addAction(aboutAct);
-  helpMenu->addAction(aboutQtAct);
+  QSettings settings;
+  settings.setValue(ModeKey, m_centralStack->currentIndex() == 1);
+
+  event->accept();
 }

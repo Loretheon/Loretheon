@@ -1,7 +1,7 @@
 #include "../../include/overseer/ToastStack.h"
 
-#include "../../include/overseer/MemoryProposalToast.h"
 #include "../../include/app/Settings.h"
+#include "../../include/overseer/MemoryProposalToast.h"
 
 #include <QEvent>
 #include <QPropertyAnimation>

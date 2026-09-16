@@ -3,9 +3,8 @@
 OverseerToolRegistry::OverseerToolRegistry() = default;
 
 void OverseerToolRegistry::registerTool(std::unique_ptr<OverseerTool> tool) {
-  if (!tool) {
+  if (!tool)
     return;
-  }
 
   const QString toolName = tool->name();
 
@@ -23,11 +22,8 @@ QJsonArray OverseerToolRegistry::schemas() const {
   QJsonArray result;
 
   for (const auto &tool : m_tools) {
-    if (!tool) {
-      continue;
-    }
-
-    result.append(tool->toSchema());
+    if (tool)
+      result.append(tool->toSchema());
   }
 
   return result;
@@ -35,11 +31,9 @@ QJsonArray OverseerToolRegistry::schemas() const {
 
 OverseerTool *OverseerToolRegistry::find(const QString &name) const {
   for (const auto &tool : m_tools) {
-    if (tool && tool->name() == name) {
+    if (tool && tool->name() == name)
       return tool.get();
-    }
   }
-
   return nullptr;
 }
 
@@ -57,4 +51,9 @@ OverseerToolRegistry::execute(const QString &name,
   }
 
   return tool->execute(arguments, context);
+}
+
+QString OverseerToolRegistry::categoryFor(const QString &name) const {
+  OverseerTool *tool = find(name);
+  return tool ? tool->category() : QStringLiteral("other");
 }

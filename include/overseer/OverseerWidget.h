@@ -3,6 +3,7 @@
 #include "OverseerTool.h"
 #include "OverseerToolRegistry.h"
 #include "ThemeAware.h"
+#include "TranscriptEvent.h"
 
 #include "inference/InferenceService.h"
 
@@ -12,10 +13,12 @@
 #include <QWidget>
 
 class MemoryProposalCard;
-class OverseerOverviewEditor;
 class OverseerSession;
-class TextBrowser;
+class OverseerSessionList;
+class OverseerSidePanel;
 class ToastStack;
+class TranscriptPanel;
+class TranscriptStore;
 
 class QComboBox;
 class QLabel;
@@ -23,7 +26,6 @@ class QLineEdit;
 class QListWidget;
 class QPlainTextEdit;
 class QPushButton;
-class QScrollArea;
 class QSpinBox;
 class QSplitter;
 class QTabWidget;
@@ -40,67 +42,56 @@ public:
 
   void setThemeTokens(const ThemeTokens &tokens) override;
 
+  OverseerSessionList *sessionListPanel() const { return m_sessionListPanel; }
+  OverseerSidePanel *sidePanel() const { return m_sidePanel; }
+  TranscriptPanel *transcriptPanel() const { return m_transcriptPanel; }
+  TranscriptStore *transcriptStore() const { return m_transcriptStore; }
+
+  OverseerSession *currentSession() const { return m_currentSession; }
+
+  signals:
+  void fileWritten(const QString &absolutePath);
+
+
 public slots:
   void addOverviewReference(const QString &path);
   void addOverviewReferences(const QStringList &paths);
 
+  void openSessionByName(const QString &name);
+
 private slots:
-  void onNewSessionRequested();
-  void onSessionSelected();
+  void onSessionSelected(const QString &name);
+  void onSessionCleared();
   void onSendClicked();
-  void onSaveMemoryClicked();
-  void onRefreshOverviewClicked();
-  void onAddOverviewReferenceClicked();
-  void onSessionChangedExternally();
+  void onNewSessionRequested();
   void onToolCallDepthChanged(int value);
-  void onOverviewFilesDropped(const QStringList &paths);
-  void onMissingReferencesChanged(const QStringList &missing);
-  void onRemoveMissingReferencesClicked();
+
+  void onProposalAccepted(const QString &key);
+  void onProposalRejected(const QString &key);
 
 private:
   struct MemoryProposal {
     QString key;
     QString fact;
     QString rationale;
-    QString status;   // "pending", "accepted", "rejected"
+    QString status;
   };
 
   void rebuildSessionList();
   void openSession(OverseerSession *session);
   void closeSession();
 
-  void loadMemoryIntoEditor();
-  void loadOverviewIntoEditor();
-
-  void appendTranscriptEntry(const QString &role, const QString &text);
-  void appendAssistantChunk(const QString &text);
-  void finishAssistantBlock();
-
-  void renderTranscript();
+  void appendEvent(const TranscriptEvent &event);
 
   QString buildSystemPrompt() const;
 
   void dispatchChatRequest();
 
-  // Handles a tool-call batch that belongs to m_activeToken.
   void handleToolCalls(const QJsonArray &toolCalls);
-
   void executeToolCalls(const QJsonArray &toolCalls);
 
   OverseerTool::Context currentToolContext() const;
 
-  void logToolHumanReadable(const QString &toolName,
-                            const QJsonObject &arguments,
-                            const OverseerTool::Result &result);
-
-  void logToolDetailed(const QString &toolName,
-                       const QJsonObject &arguments,
-                       const OverseerTool::Result &result,
-                       qint64 durationMs);
-
-  void appendOverviewPaths(const QStringList &paths);
-
-  // Memory proposal plumbing.
   QString recordProposal(const QString &fact, const QString &rationale);
   void setProposalStatus(const QString &key, const QString &status);
   QString proposalsSidecarPath() const;
@@ -108,41 +99,18 @@ private:
   void saveProposals();
   void appendFactToMemory(const QString &fact);
 
-  void rebuildUserActionsTab();
-  void updateUserActionsTabTitle();
-
-  QPushButton *m_removeMissingButton = nullptr;
-  QLabel *m_missingReferencesLabel = nullptr;
-
   InferenceService *m_inferenceService = nullptr;
 
-  QListWidget *m_sessionList = nullptr;
-  QPushButton *m_newSessionButton = nullptr;
+  OverseerSessionList *m_sessionListPanel = nullptr;
+  OverseerSidePanel *m_sidePanel = nullptr;
+  TranscriptPanel *m_transcriptPanel = nullptr;
 
-  TextBrowser *m_transcript = nullptr;
-  QLineEdit *m_input = nullptr;
-  QPushButton *m_sendButton = nullptr;
-
-  QPlainTextEdit *m_memoryEditor = nullptr;
-  QPushButton *m_saveMemoryButton = nullptr;
-
-  OverseerOverviewEditor *m_overviewEditor = nullptr;
-  QPushButton *m_refreshOverviewButton = nullptr;
-  QPushButton *m_addOverviewButton = nullptr;
-
-  QTextEdit *m_toolLog = nullptr;
+  TranscriptStore *m_transcriptStore = nullptr;
 
   QSpinBox *m_toolCallDepthSpin = nullptr;
 
-  QTabWidget *m_sideTabs = nullptr;
-  QSplitter *m_mainSplitter = nullptr;
-
-  // "User actions needed" tab.
-  QWidget *m_userActionsPage = nullptr;
-  QScrollArea *m_userActionsScroll = nullptr;
-  QWidget *m_userActionsContent = nullptr;
-  QVBoxLayout *m_userActionsLayout = nullptr;
-  QLabel *m_userActionsEmptyLabel = nullptr;
+  QLineEdit *m_input = nullptr;
+  QPushButton *m_sendButton = nullptr;
 
   ToastStack *m_toastStack = nullptr;
 
@@ -154,15 +122,12 @@ private:
 
   QJsonArray m_turnMessages;
 
-  // Token of the currently active assistant request. Every llm* signal is
-  // filtered against it. Null when idle.
   InferenceService::RequestToken m_activeToken;
 
   int m_toolCallDepth = 0;
   int m_toolCallDepthLimit = 16;
 
   QString m_assistantRawText;
-  QString m_lastRenderedText;
 
   QList<MemoryProposal> m_proposals;
 };

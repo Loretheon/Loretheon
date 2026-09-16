@@ -3,6 +3,7 @@
 
 #include <QColor>
 #include <QHash>
+#include <QObject>
 #include <QString>
 #include <QStringList>
 
@@ -47,7 +48,9 @@ struct ThemeTokens {
   QColor titleFill() const { return subtext1; }
 };
 
-class ThemeRegistry {
+class ThemeRegistry : public QObject {
+  Q_OBJECT
+
 public:
   static ThemeRegistry &instance();
 
@@ -60,12 +63,27 @@ public:
 
   QString defaultName() const;
 
+  // Active theme for semantic role lookups. Set by MainWindow when the
+  // visible page's theme changes. Widgets that need a themed color
+  // without receiving ThemeTokens explicitly call color(role).
+  void setActiveTheme(const QString &name);
+  QString activeTheme() const { return m_active; }
+
+  // Semantic role lookup. Roles are dotted names like "event.user",
+  // "badge.promoted". Unknown roles return a neutral fallback derived
+  // from the active theme, never a hardcoded hex.
+  QColor color(const QString &role) const;
+
+signals:
+  void activeThemeChanged(const QString &name);
+
 private:
   ThemeRegistry();
 
   QHash<QString, ThemeTokens> m_tokens;
   QStringList m_order;
   QString m_default;
+  QString m_active;
 };
 
 #endif // THEMETOKENS_H

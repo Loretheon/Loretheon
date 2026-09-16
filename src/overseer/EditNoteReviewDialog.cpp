@@ -1,8 +1,8 @@
 #include "../../include/overseer/EditNoteReviewDialog.h"
 
+#include "../../include/ai/edit/EditPlanner.h"
 #include "../../include/ai/edit/EditSession.h"
 #include "../../include/ai/edit/EditSessionWidget.h"
-#include "../../include/ai/edit/EditPlanner.h"
 
 #include "inference/InferenceService.h"
 

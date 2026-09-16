@@ -311,3 +311,13 @@ void FileWidget::setActivePath(const QString &path) {
 void FileWidget::setModifiedPaths(const QSet<QString> &paths) {
   fileSystemModel->setModifiedPaths(paths);
 }
+
+void FileWidget::setRootPath(const QString &path) {
+  if (path.isEmpty() || !QDir(path).exists())
+    return;
+
+  const QModelIndex rootIndex = fileSystemModel->setRootPath(path);
+  fileSystemView->setRootIndex(rootIndex);
+  fileSystemView->clearSelection();
+  pendingEditPath.clear();
+}

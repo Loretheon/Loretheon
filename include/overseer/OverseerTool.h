@@ -18,15 +18,6 @@ public:
     QString outputFolder;
     QString notesRoot;
 
-    // Called by tools that want to open a review surface for an edit to a
-    // referenced note. The tool copies the note into outputFolder first and
-    // then invokes this callback with:
-    //   copyPath      - the session-local copy that was created
-    //   originalPath  - the original note path (read-only for the tool)
-    //   instruction   - the natural-language edit instruction
-    //
-    // The callback may be empty; if so, the tool should report failure to
-    // the LLM (there is nowhere to send the request).
     std::function<void(const QString &copyPath,
                        const QString &originalPath,
                        const QString &instruction)>
@@ -38,6 +29,10 @@ public:
   virtual QString name() const = 0;
 
   virtual QString description() const = 0;
+
+  // Category drives filtering in the transcript UI.
+  // Standard categories: "read", "write", "edit", "proposal", "stage".
+  virtual QString category() const { return QStringLiteral("other"); }
 
   virtual QJsonObject parametersSchema() const = 0;
 

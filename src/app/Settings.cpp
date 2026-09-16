@@ -14,10 +14,11 @@ constexpr auto LlmEndpointKey = "llm/endpoint";
 constexpr auto LlmModelKey = "llm/model";
 constexpr auto LlmApiKeyKey = "llm/apiKey";
 constexpr auto LlmAuthTypeKey = "llm/authType";
-
 constexpr auto LlmSeededKey = "llm/seededFromEnv";
+
 constexpr auto OverseerToastDurationKey = "overseer/toastDurationMs";
 constexpr int DefaultToastDurationMs = 8000;
+
 } // namespace
 
 QString Settings::getRootDirectory() {
@@ -36,10 +37,8 @@ void Settings::setRootDirectory(const QString &newRoot) {
 
 int Settings::getOverseerToolCallDepthLimit() {
   QSettings settings;
-  const int value = settings.value(OverseerToolCallDepthKey,
-                                    DefaultToolCallDepth)
-                        .toInt();
-
+  const int value =
+      settings.value(OverseerToolCallDepthKey, DefaultToolCallDepth).toInt();
   return qBound(1, value, 64);
 }
 
@@ -56,14 +55,10 @@ Settings::LlmSettings Settings::getLlmSettings() {
   const bool alreadySeeded = settings.value(LlmSeededKey, false).toBool();
 
   if (!alreadySeeded) {
-    // First launch with the settings-based config. Seed from the old
-    // environment variables so existing users keep working, then write
-    // them to QSettings so we never look at env again.
     result.mode =
         qEnvironmentVariable("TALOS_LLM_MODE").trimmed().toLower();
-    if (result.mode.isEmpty()) {
+    if (result.mode.isEmpty())
       result.mode = QStringLiteral("local");
-    }
 
     result.endpoint = qEnvironmentVariable("TALOS_LLM_URL").trimmed();
     result.model = qEnvironmentVariable("TALOS_LLM_MODEL").trimmed();
@@ -71,9 +66,8 @@ Settings::LlmSettings Settings::getLlmSettings() {
 
     result.authType =
         qEnvironmentVariable("TALOS_LLM_AUTH").trimmed().toLower();
-    if (result.authType.isEmpty()) {
+    if (result.authType.isEmpty())
       result.authType = QStringLiteral("bearer");
-    }
 
     settings.setValue(LlmModeKey, result.mode);
     settings.setValue(LlmEndpointKey, result.endpoint);
@@ -89,19 +83,18 @@ Settings::LlmSettings Settings::getLlmSettings() {
   result.endpoint = settings.value(LlmEndpointKey, QString()).toString();
   result.model = settings.value(LlmModelKey, QString()).toString();
   result.apiKey = settings.value(LlmApiKeyKey, QString()).toString();
-  result.authType =
-      settings.value(LlmAuthTypeKey, "bearer").toString();
+  result.authType = settings.value(LlmAuthTypeKey, "bearer").toString();
 
   return result;
 }
 
-void Settings::setLlmSettings(const LlmSettings &settingsValue) {
+void Settings::setLlmSettings(const LlmSettings &value) {
   QSettings settings;
-  settings.setValue(LlmModeKey, settingsValue.mode);
-  settings.setValue(LlmEndpointKey, settingsValue.endpoint);
-  settings.setValue(LlmModelKey, settingsValue.model);
-  settings.setValue(LlmApiKeyKey, settingsValue.apiKey);
-  settings.setValue(LlmAuthTypeKey, settingsValue.authType);
+  settings.setValue(LlmModeKey, value.mode);
+  settings.setValue(LlmEndpointKey, value.endpoint);
+  settings.setValue(LlmModelKey, value.model);
+  settings.setValue(LlmApiKeyKey, value.apiKey);
+  settings.setValue(LlmAuthTypeKey, value.authType);
   settings.setValue(LlmSeededKey, true);
 }
 
@@ -109,7 +102,6 @@ int Settings::getOverseerToastDurationMs() {
   QSettings settings;
   const int value =
       settings.value(OverseerToastDurationKey, DefaultToastDurationMs).toInt();
-
   return qBound(1000, value, 60000);
 }
 

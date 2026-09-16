@@ -21,7 +21,7 @@ public slots:
   void beginEditingPath(const QString &path);
   void setActivePath(const QString &path);
   void setModifiedPaths(const QSet<QString> &paths);
-
+  void setRootPath(const QString &path);
   signals:
     void fileSelected(const QString &path);
   void renameRequested(const QString &oldPath, const QString &newPath);
