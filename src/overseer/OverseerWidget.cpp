@@ -1,10 +1,12 @@
 #include "OverseerWidget.h"
 
+#include "MemoryProposalCard.h"
 #include "OverseerOverviewEditor.h"
 #include "OverseerSession.h"
 #include "OverseerStorage.h"
 #include "OverseerTools.h"
 #include "Settings.h"
+#include "ToastStack.h"
 
 #include "TextBrowser.h"
 #include "inference/InferenceService.h"
@@ -12,9 +14,10 @@
 #include <QComboBox>
 #include <QDateTime>
 #include <QDebug>
-#include <QDesktopServices>
 #include <QDir>
+#include <QFile>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QFontDatabase>
 #include <QFormLayout>
 #include <QHBoxLayout>
@@ -28,14 +31,13 @@
 #include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QPushButton>
-#include <QRegularExpression>
+#include <QScrollArea>
 #include <QSpinBox>
 #include <QSplitter>
 #include <QTabWidget>
 #include <QTextCursor>
 #include <QTextDocument>
 #include <QTextEdit>
-#include <QUrlQuery>
 #include <QVBoxLayout>
 
 namespace {
@@ -46,7 +48,7 @@ QString humanReadableToolAction(const QString &toolName,
   const QString path = arguments.value(QStringLiteral("path")).toString();
 
   const QString verb = result.ok ? QStringLiteral("✓")
-                                  : QStringLiteral("✗");
+                                 : QStringLiteral("✗");
 
   if (toolName == QStringLiteral("write_file")) {
     return QStringLiteral("%1 Writing %2").arg(verb, path);
@@ -65,6 +67,10 @@ QString humanReadableToolAction(const QString &toolName,
 
   if (toolName == QStringLiteral("create_directory")) {
     return QStringLiteral("%1 Creating %2").arg(verb, path);
+  }
+
+  if (toolName == QStringLiteral("propose_memory_fact")) {
+    return QStringLiteral("%1 propose_memory_fact").arg(verb);
   }
 
   return QStringLiteral("%1 %2").arg(verb, toolName);
@@ -140,7 +146,7 @@ OverseerWidget::OverseerWidget(InferenceService *inferenceService,
   inputRow->addWidget(m_sendButton);
   centerLayout->addLayout(inputRow);
 
-  // --- Right: memory, overview, tools log --------------------------------
+  // --- Right: memory, overview, tools log, user actions ------------------
 
   m_sideTabs = new QTabWidget(this);
 
@@ -189,6 +195,45 @@ OverseerWidget::OverseerWidget(InferenceService *inferenceService,
 
   m_sideTabs->addTab(m_toolLog, tr("Tools"));
 
+  // --- User actions needed tab -------------------------------------------
+
+  m_userActionsPage = new QWidget(m_sideTabs);
+  auto *userActionsLayout = new QVBoxLayout(m_userActionsPage);
+  userActionsLayout->setContentsMargins(6, 6, 6, 6);
+  userActionsLayout->setSpacing(6);
+
+  m_userActionsScroll = new QScrollArea(m_userActionsPage);
+  m_userActionsScroll->setWidgetResizable(true);
+  m_userActionsScroll->setFrameShape(QFrame::NoFrame);
+
+  m_userActionsContent = new QWidget;
+  m_userActionsLayout = new QVBoxLayout(m_userActionsContent);
+  m_userActionsLayout->setContentsMargins(0, 0, 0, 0);
+  m_userActionsLayout->setSpacing(8);
+  m_userActionsLayout->setAlignment(Qt::AlignTop);
+
+  m_userActionsEmptyLabel =
+      new QLabel(tr("Nothing needs your attention."), m_userActionsContent);
+  m_userActionsEmptyLabel->setAlignment(Qt::AlignCenter);
+  {
+    QFont small = m_userActionsEmptyLabel->font();
+    small.setItalic(true);
+    m_userActionsEmptyLabel->setFont(small);
+  }
+
+  m_userActionsLayout->addWidget(m_userActionsEmptyLabel);
+  m_userActionsLayout->addStretch(1);
+
+  m_userActionsScroll->setWidget(m_userActionsContent);
+
+  userActionsLayout->addWidget(m_userActionsScroll, 1);
+
+  m_sideTabs->addTab(m_userActionsPage, tr("User actions needed"));
+
+  // --- Toast stack (floating, top-right) ---------------------------------
+
+  m_toastStack = new ToastStack(this);
+
   // --- Splitter ----------------------------------------------------------
 
   m_mainSplitter = new QSplitter(Qt::Horizontal, this);
@@ -229,9 +274,6 @@ OverseerWidget::OverseerWidget(InferenceService *inferenceService,
 
   connect(m_overviewEditor, &OverseerOverviewEditor::filesDropped, this,
           &OverseerWidget::onOverviewFilesDropped);
-
-  connect(m_transcript, &QTextBrowser::anchorClicked, this,
-        &OverseerWidget::onTranscriptAnchorClicked);
 
   connect(m_toolCallDepthSpin,
           QOverload<int>::of(&QSpinBox::valueChanged), this,
@@ -274,6 +316,7 @@ OverseerWidget::OverseerWidget(InferenceService *inferenceService,
 
   rebuildSessionList();
   loadMemoryIntoEditor();
+  rebuildUserActionsTab();
 
   m_input->setEnabled(false);
   m_sendButton->setEnabled(false);
@@ -369,6 +412,7 @@ void OverseerWidget::openSession(OverseerSession *session) {
   m_lastRenderedText.clear();
   loadProposals();
   renderTranscript();
+  rebuildUserActionsTab();
 
   loadOverviewIntoEditor();
 
@@ -379,6 +423,10 @@ void OverseerWidget::openSession(OverseerSession *session) {
 void OverseerWidget::closeSession() {
   if (!m_currentSession) {
     return;
+  }
+
+  if (m_toastStack) {
+    m_toastStack->dismissAll();
   }
 
   disconnect(m_currentSession, nullptr, this, nullptr);
@@ -395,9 +443,12 @@ void OverseerWidget::closeSession() {
   m_turnMessages = QJsonArray();
   m_toolCallDepth = 0;
 
+  rebuildUserActionsTab();
+
   m_input->setEnabled(false);
   m_sendButton->setEnabled(false);
 }
+
 void OverseerWidget::onSessionChangedExternally() {
   if (!m_currentSession) {
     return;
@@ -437,89 +488,20 @@ void OverseerWidget::renderTranscript() {
     text += QChar('\n');
   }
 
-  // Build a stable cache key that also includes proposal state, so that
-  // accepting a proposal re-renders.
-  QString proposalsKey;
-  for (const MemoryProposal &p : std::as_const(m_proposals)) {
-    proposalsKey += p.key;
-    proposalsKey += QChar(':');
-    proposalsKey += p.status;
-    proposalsKey += QChar('|');
-  }
-
-  const QString cacheKey = text + QStringLiteral("\n<<<") + proposalsKey;
-
-  if (cacheKey == m_lastRenderedText) {
+  if (text == m_lastRenderedText) {
     return;
   }
 
-  m_lastRenderedText = cacheKey;
+  m_lastRenderedText = text;
 
   m_transcript->setMarkdown(text);
 
-  if (!m_proposals.isEmpty()) {
-    QTextCursor cursor = m_transcript->textCursor();
-    cursor.movePosition(QTextCursor::End);
-
-    QString html;
-
-    for (const MemoryProposal &p : std::as_const(m_proposals)) {
-      const QString fact = p.fact.toHtmlEscaped();
-      const QString rationale = p.rationale.toHtmlEscaped();
-
-      QString statusBadge;
-      QString actions;
-
-      if (p.status == QStringLiteral("pending")) {
-        statusBadge = QStringLiteral(
-            "<span style=\"opacity:0.7;font-size:smaller;\">"
-            "Awaiting review</span>");
-
-        actions = QStringLiteral(
-            "<a href=\"episteme:memory-accept?key=%1\">&#10003;</a>"
-            "&nbsp;&nbsp;"
-            "<a href=\"episteme:memory-reject?key=%1\">&#10007;</a>")
-            .arg(p.key);
-      } else if (p.status == QStringLiteral("accepted")) {
-        statusBadge = QStringLiteral(
-            "<span style=\"color:#a6e3a1;font-size:smaller;\">"
-            "&#10003; Accepted</span>");
-        actions = QStringLiteral("&nbsp;");
-      } else {
-        statusBadge = QStringLiteral(
-            "<span style=\"color:#f38ba8;font-size:smaller;\">"
-            "&#10007; Rejected</span>");
-        actions = QStringLiteral("&nbsp;");
-      }
-
-      html += QStringLiteral(
-                  "<div style=\"border-left:3px solid #89b4fa;"
-                  "padding:6px 10px;margin:8px 0;\">"
-                  "<b>Memory proposal</b><br>"
-                  "<div>%1</div>")
-                  .arg(fact);
-
-      if (!rationale.isEmpty()) {
-        html += QStringLiteral(
-                    "<div style=\"opacity:0.7;font-size:smaller;\">"
-                    "%1</div>")
-                    .arg(rationale);
-      }
-
-      html += QStringLiteral("<div style=\"margin-top:4px;\">%1&nbsp;&nbsp;%2</div>"
-                             "</div>")
-                  .arg(actions, statusBadge);
-    }
-
-    cursor.insertHtml(html);
-    m_transcript->setTextCursor(cursor);
-  }
-
-  QTextCursor endCursor = m_transcript->textCursor();
-  endCursor.movePosition(QTextCursor::End);
-  m_transcript->setTextCursor(endCursor);
+  QTextCursor cursor = m_transcript->textCursor();
+  cursor.movePosition(QTextCursor::End);
+  m_transcript->setTextCursor(cursor);
   m_transcript->ensureCursorVisible();
 }
+
 void OverseerWidget::appendTranscriptEntry(const QString &role,
                                            const QString &text) {
   if (!m_currentSession) {
@@ -572,6 +554,10 @@ QString OverseerWidget::buildSystemPrompt() const {
       "\n"
       "You also have read_notes_file, which can read any file under the "
       "user's notes root. Use it for referenced files. It is read-only.\n"
+      "\n"
+      "You have propose_memory_fact. Use it sparingly for facts that should "
+      "persist across sessions. The user will review each proposal and "
+      "either accept or reject it.\n"
       "\n"
       "When your task is complete, reply with a short summary of what you "
       "did. Do not call more tools after that.\n\n");
@@ -709,7 +695,8 @@ void OverseerWidget::executeToolCalls(const QJsonArray &toolCalls) {
 
     logToolDetailed(name, arguments, result, durationMs);
 
-
+    // If the tool was a memory proposal and it succeeded, record it,
+    // append a readable line to the transcript, and spawn a toast.
     if (name == QStringLiteral("propose_memory_fact") && result.ok) {
       const QString fact =
           arguments.value(QStringLiteral("fact")).toString().trimmed();
@@ -718,9 +705,16 @@ void OverseerWidget::executeToolCalls(const QJsonArray &toolCalls) {
 
       if (!fact.isEmpty()) {
         recordProposal(fact, rationale);
+
+        appendTranscriptEntry(
+            QStringLiteral("proposal"),
+            tr("Memory proposal pending review — \"%1\".").arg(fact));
+
+        if (m_toastStack) {
+          m_toastStack->showProposalToast(fact, rationale);
+        }
       }
     }
-
 
     QJsonObject assistantFunction;
     assistantFunction.insert(QStringLiteral("name"), name);
@@ -760,8 +754,6 @@ void OverseerWidget::onLlmToolCalls(const QJsonArray &toolCalls) {
     finishAssistantBlock();
   }
 
-  // Inspect the batch: if every call is a proposal, skip the depth
-  // check entirely. A proposal is not a side-effecting action.
   bool onlyProposals = !toolCalls.isEmpty();
 
   for (const QJsonValue &value : toolCalls) {
@@ -914,6 +906,9 @@ void OverseerWidget::onToolCallDepthChanged(int value) {
   Settings::setOverseerToolCallDepthLimit(m_toolCallDepthLimit);
 }
 
+// ---------------------------------------------------------------------------
+// Memory proposal plumbing
+// ---------------------------------------------------------------------------
 
 QString OverseerWidget::proposalsSidecarPath() const {
   if (!m_currentSession) {
@@ -999,18 +994,17 @@ void OverseerWidget::saveProposals() {
   file.write(QJsonDocument(arr).toJson(QJsonDocument::Indented));
 }
 
-void OverseerWidget::recordProposal(const QString &fact,
-                                    const QString &rationale) {
+QString OverseerWidget::recordProposal(const QString &fact,
+                                       const QString &rationale) {
   if (fact.isEmpty()) {
-    return;
+    return {};
   }
 
-  // Deduplicate: same fact pending or accepted already is a no-op.
   for (const MemoryProposal &p : std::as_const(m_proposals)) {
     if (p.fact == fact &&
         (p.status == QStringLiteral("pending") ||
          p.status == QStringLiteral("accepted"))) {
-      return;
+      return p.key;
     }
   }
 
@@ -1018,13 +1012,14 @@ void OverseerWidget::recordProposal(const QString &fact,
   proposal.fact = fact;
   proposal.rationale = rationale;
   proposal.status = QStringLiteral("pending");
-  proposal.key =
-      QString::number(qHash(fact + QChar('|') + rationale));
+  proposal.key = QString::number(qHash(fact + QChar('|') + rationale));
 
   m_proposals.append(proposal);
 
   saveProposals();
-  renderTranscript();
+  rebuildUserActionsTab();
+
+  return proposal.key;
 }
 
 void OverseerWidget::setProposalStatus(const QString &key,
@@ -1042,8 +1037,7 @@ void OverseerWidget::setProposalStatus(const QString &key,
   }
 
   saveProposals();
-  m_lastRenderedText.clear();
-  renderTranscript();
+  rebuildUserActionsTab();
 }
 
 void OverseerWidget::appendFactToMemory(const QString &fact) {
@@ -1063,7 +1057,6 @@ void OverseerWidget::appendFactToMemory(const QString &fact) {
     memory += QChar('\n');
   }
 
-  // Ensure the accepted-proposals section exists exactly once.
   const QString sectionHeader =
       QStringLiteral("## Accepted proposals\n");
 
@@ -1080,32 +1073,79 @@ void OverseerWidget::appendFactToMemory(const QString &fact) {
   loadMemoryIntoEditor();
 }
 
+// ---------------------------------------------------------------------------
+// User actions needed tab
+// ---------------------------------------------------------------------------
 
-
-void OverseerWidget::onTranscriptAnchorClicked(const QUrl &url) {
-  if (!url.isValid()) {
+void OverseerWidget::rebuildUserActionsTab() {
+  if (!m_userActionsLayout) {
     return;
   }
 
-  if (url.scheme() != QStringLiteral("episteme")) {
+  // Remove all existing cards (but keep the empty label and the stretch).
+  const QList<MemoryProposalCard *> existing =
+      m_userActionsContent->findChildren<MemoryProposalCard *>();
+
+  for (MemoryProposalCard *card : existing) {
+    m_userActionsLayout->removeWidget(card);
+    card->deleteLater();
+  }
+
+  int pendingCount = 0;
+
+  for (const MemoryProposal &p : std::as_const(m_proposals)) {
+    if (p.status != QStringLiteral("pending")) {
+      continue;
+    }
+
+    auto *card = new MemoryProposalCard(p.key, p.fact, p.rationale,
+                                        m_userActionsContent);
+
+    connect(card, &MemoryProposalCard::accepted, this,
+            [this](const QString &key) {
+              setProposalStatus(key, QStringLiteral("accepted"));
+            });
+
+    connect(card, &MemoryProposalCard::rejected, this,
+            [this](const QString &key) {
+              setProposalStatus(key, QStringLiteral("rejected"));
+            });
+
+    // Insert before the empty label so ordering is stable.
+    m_userActionsLayout->insertWidget(pendingCount, card);
+    ++pendingCount;
+  }
+
+  if (m_userActionsEmptyLabel) {
+    m_userActionsEmptyLabel->setVisible(pendingCount == 0);
+  }
+
+  updateUserActionsTabTitle();
+}
+
+void OverseerWidget::updateUserActionsTabTitle() {
+  if (!m_sideTabs || !m_userActionsPage) {
     return;
   }
 
-  const QString path = url.path();
-  const QString action = path.startsWith(QChar('/'))
-                             ? path.mid(1)
-                             : path;
+  int pendingCount = 0;
 
-  const QString key =
-      QUrlQuery(url).queryItemValue(QStringLiteral("key"));
+  for (const MemoryProposal &p : std::as_const(m_proposals)) {
+    if (p.status == QStringLiteral("pending")) {
+      ++pendingCount;
+    }
+  }
 
-  if (key.isEmpty()) {
+  const int index = m_sideTabs->indexOf(m_userActionsPage);
+
+  if (index < 0) {
     return;
   }
 
-  if (action == QStringLiteral("memory-accept")) {
-    setProposalStatus(key, QStringLiteral("accepted"));
-  } else if (action == QStringLiteral("memory-reject")) {
-    setProposalStatus(key, QStringLiteral("rejected"));
+  if (pendingCount == 0) {
+    m_sideTabs->setTabText(index, tr("User actions needed"));
+  } else {
+    m_sideTabs->setTabText(index,
+                           tr("User actions needed (%1)").arg(pendingCount));
   }
 }

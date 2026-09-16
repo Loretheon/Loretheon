@@ -6,11 +6,11 @@
 class Settings {
 public:
   struct LlmSettings {
-    QString mode;      // "local" or "remote"
+    QString mode;
     QString endpoint;
     QString model;
     QString apiKey;
-    QString authType;  // "none" or "bearer"
+    QString authType;
   };
 
   static QString getRootDirectory();
@@ -19,11 +19,13 @@ public:
   static int getOverseerToolCallDepthLimit();
   static void setOverseerToolCallDepthLimit(int limit);
 
-  // LLM configuration. On first read, if the settings keys are absent,
-  // they are seeded from the legacy TALOS_LLM_* environment variables and
-  // written back. Later reads never consult the environment again.
   static LlmSettings getLlmSettings();
   static void setLlmSettings(const LlmSettings &settings);
+
+  // How long a memory-proposal toast stays on screen before fading out.
+  // Default 8000 ms. Bounded to [1000, 60000].
+  static int getOverseerToastDurationMs();
+  static void setOverseerToastDurationMs(int ms);
 };
 
 #endif // EPISTEME_SETTINGS_H

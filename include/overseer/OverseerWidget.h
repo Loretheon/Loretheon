@@ -9,9 +9,11 @@
 #include <QStringList>
 #include <QWidget>
 
+class MemoryProposalCard;
 class OverseerOverviewEditor;
 class OverseerSession;
 class TextBrowser;
+class ToastStack;
 
 class InferenceService;
 
@@ -21,11 +23,13 @@ class QLineEdit;
 class QListWidget;
 class QPlainTextEdit;
 class QPushButton;
+class QScrollArea;
 class QSpinBox;
 class QSplitter;
 class QTabWidget;
 class QTextEdit;
 class QUrl;
+class QVBoxLayout;
 
 class OverseerWidget : public QWidget, public ThemeAware {
   Q_OBJECT
@@ -53,14 +57,12 @@ private slots:
 
   void onLlmToolCalls(const QJsonArray &toolCalls);
 
-  void onTranscriptAnchorClicked(const QUrl &url);
-
 private:
   struct MemoryProposal {
-    QString key;        // stable id
+    QString key;
     QString fact;
     QString rationale;
-    QString status;     // "pending", "accepted", "rejected"
+    QString status;   // "pending", "accepted", "rejected"
   };
 
   void rebuildSessionList();
@@ -96,12 +98,15 @@ private:
   void appendOverviewPaths(const QStringList &paths);
 
   // Memory proposal plumbing.
-  void recordProposal(const QString &fact, const QString &rationale);
+  QString recordProposal(const QString &fact, const QString &rationale);
   void setProposalStatus(const QString &key, const QString &status);
   QString proposalsSidecarPath() const;
   void loadProposals();
   void saveProposals();
   void appendFactToMemory(const QString &fact);
+
+  void rebuildUserActionsTab();
+  void updateUserActionsTabTitle();
 
   InferenceService *m_inferenceService = nullptr;
 
@@ -125,6 +130,15 @@ private:
 
   QTabWidget *m_sideTabs = nullptr;
   QSplitter *m_mainSplitter = nullptr;
+
+  // "User actions needed" tab.
+  QWidget *m_userActionsPage = nullptr;
+  QScrollArea *m_userActionsScroll = nullptr;
+  QWidget *m_userActionsContent = nullptr;
+  QVBoxLayout *m_userActionsLayout = nullptr;
+  QLabel *m_userActionsEmptyLabel = nullptr;
+
+  ToastStack *m_toastStack = nullptr;
 
   OverseerSession *m_currentSession = nullptr;
 

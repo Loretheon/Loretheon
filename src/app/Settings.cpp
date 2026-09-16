@@ -16,7 +16,8 @@ constexpr auto LlmApiKeyKey = "llm/apiKey";
 constexpr auto LlmAuthTypeKey = "llm/authType";
 
 constexpr auto LlmSeededKey = "llm/seededFromEnv";
-
+constexpr auto OverseerToastDurationKey = "overseer/toastDurationMs";
+constexpr int DefaultToastDurationMs = 8000;
 } // namespace
 
 QString Settings::getRootDirectory() {
@@ -102,4 +103,17 @@ void Settings::setLlmSettings(const LlmSettings &settingsValue) {
   settings.setValue(LlmApiKeyKey, settingsValue.apiKey);
   settings.setValue(LlmAuthTypeKey, settingsValue.authType);
   settings.setValue(LlmSeededKey, true);
+}
+
+int Settings::getOverseerToastDurationMs() {
+  QSettings settings;
+  const int value =
+      settings.value(OverseerToastDurationKey, DefaultToastDurationMs).toInt();
+
+  return qBound(1000, value, 60000);
+}
+
+void Settings::setOverseerToastDurationMs(int ms) {
+  QSettings settings;
+  settings.setValue(OverseerToastDurationKey, qBound(1000, ms, 60000));
 }

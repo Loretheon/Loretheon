@@ -456,4 +456,5 @@ void OverseerTools::installAll(OverseerToolRegistry &registry) {
   registry.registerTool(std::make_unique<WriteFileTool>());
   registry.registerTool(std::make_unique<CreateDirectoryTool>());
   registry.registerTool(std::make_unique<ProposeMemoryFactTool>());
+  registry.registerTool(std::make_unique<ProposeMemoryFactTool>());
 }

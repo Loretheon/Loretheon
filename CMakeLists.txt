@@ -331,6 +331,12 @@ add_executable(Episteme
         include/overseer/ProposeMemoryFactTool.h
         include/ui/LlmSettingsPanel.cpp
         include/ui/LlmSettingsPanel.h
+        include/overseer/MemoryProposalCard.cpp
+        include/overseer/MemoryProposalCard.h
+        include/overseer/MemoryProposalToast.cpp
+        include/overseer/MemoryProposalToast.h
+        include/overseer/ToastStack.cpp
+        include/overseer/ToastStack.h
 )
 
 add_dependencies(Episteme
