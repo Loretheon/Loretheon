@@ -5,8 +5,18 @@
 #include <QStandardPaths>
 
 namespace {
+
 constexpr auto OverseerToolCallDepthKey = "overseer/toolCallDepthLimit";
 constexpr int DefaultToolCallDepth = 16;
+
+constexpr auto LlmModeKey = "llm/mode";
+constexpr auto LlmEndpointKey = "llm/endpoint";
+constexpr auto LlmModelKey = "llm/model";
+constexpr auto LlmApiKeyKey = "llm/apiKey";
+constexpr auto LlmAuthTypeKey = "llm/authType";
+
+constexpr auto LlmSeededKey = "llm/seededFromEnv";
+
 } // namespace
 
 QString Settings::getRootDirectory() {
@@ -35,4 +45,61 @@ int Settings::getOverseerToolCallDepthLimit() {
 void Settings::setOverseerToolCallDepthLimit(int limit) {
   QSettings settings;
   settings.setValue(OverseerToolCallDepthKey, qBound(1, limit, 64));
+}
+
+Settings::LlmSettings Settings::getLlmSettings() {
+  QSettings settings;
+
+  LlmSettings result;
+
+  const bool alreadySeeded = settings.value(LlmSeededKey, false).toBool();
+
+  if (!alreadySeeded) {
+    // First launch with the settings-based config. Seed from the old
+    // environment variables so existing users keep working, then write
+    // them to QSettings so we never look at env again.
+    result.mode =
+        qEnvironmentVariable("TALOS_LLM_MODE").trimmed().toLower();
+    if (result.mode.isEmpty()) {
+      result.mode = QStringLiteral("local");
+    }
+
+    result.endpoint = qEnvironmentVariable("TALOS_LLM_URL").trimmed();
+    result.model = qEnvironmentVariable("TALOS_LLM_MODEL").trimmed();
+    result.apiKey = qEnvironmentVariable("TALOS_LLM_API_KEY").trimmed();
+
+    result.authType =
+        qEnvironmentVariable("TALOS_LLM_AUTH").trimmed().toLower();
+    if (result.authType.isEmpty()) {
+      result.authType = QStringLiteral("bearer");
+    }
+
+    settings.setValue(LlmModeKey, result.mode);
+    settings.setValue(LlmEndpointKey, result.endpoint);
+    settings.setValue(LlmModelKey, result.model);
+    settings.setValue(LlmApiKeyKey, result.apiKey);
+    settings.setValue(LlmAuthTypeKey, result.authType);
+    settings.setValue(LlmSeededKey, true);
+
+    return result;
+  }
+
+  result.mode = settings.value(LlmModeKey, "local").toString();
+  result.endpoint = settings.value(LlmEndpointKey, QString()).toString();
+  result.model = settings.value(LlmModelKey, QString()).toString();
+  result.apiKey = settings.value(LlmApiKeyKey, QString()).toString();
+  result.authType =
+      settings.value(LlmAuthTypeKey, "bearer").toString();
+
+  return result;
+}
+
+void Settings::setLlmSettings(const LlmSettings &settingsValue) {
+  QSettings settings;
+  settings.setValue(LlmModeKey, settingsValue.mode);
+  settings.setValue(LlmEndpointKey, settingsValue.endpoint);
+  settings.setValue(LlmModelKey, settingsValue.model);
+  settings.setValue(LlmApiKeyKey, settingsValue.apiKey);
+  settings.setValue(LlmAuthTypeKey, settingsValue.authType);
+  settings.setValue(LlmSeededKey, true);
 }

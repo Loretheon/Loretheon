@@ -1,6 +1,7 @@
 #include "../../include/overseer/OverseerTools.h"
 
 #include "../../include/overseer/OverseerToolRegistry.h"
+#include "ProposeMemoryFactTool.h"
 
 #include <QDir>
 #include <QFile>
@@ -454,4 +455,5 @@ void OverseerTools::installAll(OverseerToolRegistry &registry) {
   registry.registerTool(std::make_unique<ReadNotesFileTool>());
   registry.registerTool(std::make_unique<WriteFileTool>());
   registry.registerTool(std::make_unique<CreateDirectoryTool>());
+  registry.registerTool(std::make_unique<ProposeMemoryFactTool>());
 }

@@ -1,5 +1,5 @@
 #include "MainWindow.h"
-
+#include "LlmSettingsPanel.h"
 #include "ChatWidget.h"
 #include "OverseerDock.h"
 #include "OverseerWidget.h"
@@ -13,6 +13,7 @@
 #include "DocumentArea.h"
 #include "EditSession.h"
 #include "FileWidget.h"
+#include "Settings.h"
 #include "TextWidget.h"
 
 #include <QAction>
@@ -37,28 +38,35 @@
 static InferenceService::LlmConfig configuredLlm() {
   InferenceService::LlmConfig config;
 
-  const QString mode =
-      qEnvironmentVariable("TALOS_LLM_MODE").trimmed().toLower();
+  const Settings::LlmSettings stored = Settings::getLlmSettings();
 
-  if (mode == QStringLiteral("remote")) {
+  if (stored.mode == QStringLiteral("remote")) {
     config.mode = InferenceService::LlmMode::Remote;
-    config.endpoint = qEnvironmentVariable("TALOS_LLM_URL").trimmed();
-    config.model = qEnvironmentVariable("TALOS_LLM_MODEL").trimmed();
-    config.apiKey = qEnvironmentVariable("TALOS_LLM_API_KEY").trimmed();
-
-    const QString auth =
-        qEnvironmentVariable("TALOS_LLM_AUTH").trimmed().toLower();
-
-    config.authType = auth == QStringLiteral("none")
-                          ? InferenceService::LlmAuthType::None
-                          : InferenceService::LlmAuthType::Bearer;
-
+    config.endpoint = stored.endpoint;
+    config.model = stored.model;
+    config.apiKey = stored.apiKey;
+    config.authType =
+        stored.authType == QStringLiteral("none")
+            ? InferenceService::LlmAuthType::None
+            : InferenceService::LlmAuthType::Bearer;
   } else {
     config.mode = InferenceService::LlmMode::Local;
   }
 
   return config;
 }
+
+void MainWindow::openLlmSettings() {
+  if (!llmSettingsPanel) {
+    llmSettingsPanel = new LlmSettingsPanel(inferenceService, this);
+  }
+
+  llmSettingsPanel->show();
+  llmSettingsPanel->raise();
+  llmSettingsPanel->activateWindow();
+}
+
+
 
 MainWindow::MainWindow() {
   QWidget *widget = new QWidget;
@@ -461,6 +469,12 @@ void MainWindow::createActions() {
   connect(manageModelsAct, &QAction::triggered, this,
           &MainWindow::manageModels);
 
+  llmSettingsAct = new QAction(tr("LLM &Settings..."), this);
+  llmSettingsAct->setStatusTip(tr("Configure the LLM endpoint and credentials"));
+
+  connect(llmSettingsAct, &QAction::triggered, this,
+          &MainWindow::openLlmSettings);
+
   toggleOverseerAct = new QAction(tr("Show &Overseer"), this);
   toggleOverseerAct->setCheckable(true);
   toggleOverseerAct->setChecked(false);
@@ -511,6 +525,8 @@ void MainWindow::createMenus() {
 
   toolsMenu = menuBar()->addMenu(tr("&Tools"));
 
+  toolsMenu->addAction(llmSettingsAct);
+  toolsMenu->addSeparator();
   toolsMenu->addAction(manageModelsAct);
 
   themeMenu = menuBar()->addMenu(tr("&Theme"));

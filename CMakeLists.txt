@@ -327,6 +327,10 @@ add_executable(Episteme
         include/overseer/OverseerOverviewEditor.h
         include/text/DocumentArea.cpp
         include/text/DocumentArea.h
+        src/overseer/ProposeMemoryFactTool.cpp
+        include/overseer/ProposeMemoryFactTool.h
+        include/ui/LlmSettingsPanel.cpp
+        include/ui/LlmSettingsPanel.h
 )
 
 add_dependencies(Episteme
@@ -355,6 +359,7 @@ target_include_directories(Episteme PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include/file
         ${CMAKE_CURRENT_SOURCE_DIR}/include/file/model
         ${CMAKE_CURRENT_SOURCE_DIR}/include/ai
+        ${CMAKE_CURRENT_SOURCE_DIR}/include/ui
         ${CMAKE_CURRENT_SOURCE_DIR}/include/ai/context
         ${CMAKE_CURRENT_SOURCE_DIR}/include/ai/history
         ${CMAKE_CURRENT_SOURCE_DIR}/include/ai/chat

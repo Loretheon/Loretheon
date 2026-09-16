@@ -12,6 +12,7 @@
 #include <QComboBox>
 #include <QDateTime>
 #include <QDebug>
+#include <QDesktopServices>
 #include <QDir>
 #include <QFileDialog>
 #include <QFontDatabase>
@@ -27,12 +28,14 @@
 #include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QSpinBox>
 #include <QSplitter>
 #include <QTabWidget>
 #include <QTextCursor>
 #include <QTextDocument>
 #include <QTextEdit>
+#include <QUrlQuery>
 #include <QVBoxLayout>
 
 namespace {
@@ -124,7 +127,8 @@ OverseerWidget::OverseerWidget(InferenceService *inferenceService,
   centerLayout->addWidget(m_sessionHeader);
 
   m_transcript = new TextBrowser(centerPanel);
-  m_transcript->setOpenExternalLinks(true);
+  m_transcript->setOpenLinks(false);
+  m_transcript->setOpenExternalLinks(false);
   m_transcript->setObjectName(QStringLiteral("overseerTranscript"));
   centerLayout->addWidget(m_transcript, 1);
 
@@ -225,6 +229,9 @@ OverseerWidget::OverseerWidget(InferenceService *inferenceService,
 
   connect(m_overviewEditor, &OverseerOverviewEditor::filesDropped, this,
           &OverseerWidget::onOverviewFilesDropped);
+
+  connect(m_transcript, &QTextBrowser::anchorClicked, this,
+        &OverseerWidget::onTranscriptAnchorClicked);
 
   connect(m_toolCallDepthSpin,
           QOverload<int>::of(&QSpinBox::valueChanged), this,
@@ -360,6 +367,7 @@ void OverseerWidget::openSession(OverseerSession *session) {
   m_sessionHeader->setText(tr("Session: %1").arg(session->name()));
 
   m_lastRenderedText.clear();
+  loadProposals();
   renderTranscript();
 
   loadOverviewIntoEditor();
@@ -383,13 +391,13 @@ void OverseerWidget::closeSession() {
   m_overviewEditor->clear();
 
   m_lastRenderedText.clear();
+  m_proposals.clear();
   m_turnMessages = QJsonArray();
   m_toolCallDepth = 0;
 
   m_input->setEnabled(false);
   m_sendButton->setEnabled(false);
 }
-
 void OverseerWidget::onSessionChangedExternally() {
   if (!m_currentSession) {
     return;
@@ -429,20 +437,89 @@ void OverseerWidget::renderTranscript() {
     text += QChar('\n');
   }
 
-  if (text == m_lastRenderedText) {
+  // Build a stable cache key that also includes proposal state, so that
+  // accepting a proposal re-renders.
+  QString proposalsKey;
+  for (const MemoryProposal &p : std::as_const(m_proposals)) {
+    proposalsKey += p.key;
+    proposalsKey += QChar(':');
+    proposalsKey += p.status;
+    proposalsKey += QChar('|');
+  }
+
+  const QString cacheKey = text + QStringLiteral("\n<<<") + proposalsKey;
+
+  if (cacheKey == m_lastRenderedText) {
     return;
   }
 
-  m_lastRenderedText = text;
+  m_lastRenderedText = cacheKey;
 
   m_transcript->setMarkdown(text);
 
-  QTextCursor cursor = m_transcript->textCursor();
-  cursor.movePosition(QTextCursor::End);
-  m_transcript->setTextCursor(cursor);
+  if (!m_proposals.isEmpty()) {
+    QTextCursor cursor = m_transcript->textCursor();
+    cursor.movePosition(QTextCursor::End);
+
+    QString html;
+
+    for (const MemoryProposal &p : std::as_const(m_proposals)) {
+      const QString fact = p.fact.toHtmlEscaped();
+      const QString rationale = p.rationale.toHtmlEscaped();
+
+      QString statusBadge;
+      QString actions;
+
+      if (p.status == QStringLiteral("pending")) {
+        statusBadge = QStringLiteral(
+            "<span style=\"opacity:0.7;font-size:smaller;\">"
+            "Awaiting review</span>");
+
+        actions = QStringLiteral(
+            "<a href=\"episteme:memory-accept?key=%1\">&#10003;</a>"
+            "&nbsp;&nbsp;"
+            "<a href=\"episteme:memory-reject?key=%1\">&#10007;</a>")
+            .arg(p.key);
+      } else if (p.status == QStringLiteral("accepted")) {
+        statusBadge = QStringLiteral(
+            "<span style=\"color:#a6e3a1;font-size:smaller;\">"
+            "&#10003; Accepted</span>");
+        actions = QStringLiteral("&nbsp;");
+      } else {
+        statusBadge = QStringLiteral(
+            "<span style=\"color:#f38ba8;font-size:smaller;\">"
+            "&#10007; Rejected</span>");
+        actions = QStringLiteral("&nbsp;");
+      }
+
+      html += QStringLiteral(
+                  "<div style=\"border-left:3px solid #89b4fa;"
+                  "padding:6px 10px;margin:8px 0;\">"
+                  "<b>Memory proposal</b><br>"
+                  "<div>%1</div>")
+                  .arg(fact);
+
+      if (!rationale.isEmpty()) {
+        html += QStringLiteral(
+                    "<div style=\"opacity:0.7;font-size:smaller;\">"
+                    "%1</div>")
+                    .arg(rationale);
+      }
+
+      html += QStringLiteral("<div style=\"margin-top:4px;\">%1&nbsp;&nbsp;%2</div>"
+                             "</div>")
+                  .arg(actions, statusBadge);
+    }
+
+    cursor.insertHtml(html);
+    m_transcript->setTextCursor(cursor);
+  }
+
+  QTextCursor endCursor = m_transcript->textCursor();
+  endCursor.movePosition(QTextCursor::End);
+  m_transcript->setTextCursor(endCursor);
   m_transcript->ensureCursorVisible();
 }
-
 void OverseerWidget::appendTranscriptEntry(const QString &role,
                                            const QString &text) {
   if (!m_currentSession) {
@@ -632,6 +709,19 @@ void OverseerWidget::executeToolCalls(const QJsonArray &toolCalls) {
 
     logToolDetailed(name, arguments, result, durationMs);
 
+
+    if (name == QStringLiteral("propose_memory_fact") && result.ok) {
+      const QString fact =
+          arguments.value(QStringLiteral("fact")).toString().trimmed();
+      const QString rationale =
+          arguments.value(QStringLiteral("rationale")).toString().trimmed();
+
+      if (!fact.isEmpty()) {
+        recordProposal(fact, rationale);
+      }
+    }
+
+
     QJsonObject assistantFunction;
     assistantFunction.insert(QStringLiteral("name"), name);
     assistantFunction.insert(QStringLiteral("arguments"), rawArguments);
@@ -670,17 +760,41 @@ void OverseerWidget::onLlmToolCalls(const QJsonArray &toolCalls) {
     finishAssistantBlock();
   }
 
-  if (m_toolCallDepth >= m_toolCallDepthLimit) {
-    appendTranscriptEntry(
-        tr("error"),
-        tr("Tool call depth limit reached (%1). Stopping.")
-            .arg(m_toolCallDepthLimit));
-    m_turnMessages = QJsonArray();
-    m_toolCallDepth = 0;
-    return;
+  // Inspect the batch: if every call is a proposal, skip the depth
+  // check entirely. A proposal is not a side-effecting action.
+  bool onlyProposals = !toolCalls.isEmpty();
+
+  for (const QJsonValue &value : toolCalls) {
+    if (!value.isObject()) {
+      onlyProposals = false;
+      break;
+    }
+
+    const QJsonObject call = value.toObject();
+    const QJsonObject function =
+        call.value(QStringLiteral("function")).toObject();
+    const QString name =
+        function.value(QStringLiteral("name")).toString();
+
+    if (name != QStringLiteral("propose_memory_fact")) {
+      onlyProposals = false;
+      break;
+    }
   }
 
-  ++m_toolCallDepth;
+  if (!onlyProposals) {
+    if (m_toolCallDepth >= m_toolCallDepthLimit) {
+      appendTranscriptEntry(
+          tr("error"),
+          tr("Tool call depth limit reached (%1). Stopping.")
+              .arg(m_toolCallDepthLimit));
+      m_turnMessages = QJsonArray();
+      m_toolCallDepth = 0;
+      return;
+    }
+
+    ++m_toolCallDepth;
+  }
 
   executeToolCalls(toolCalls);
 
@@ -798,4 +912,200 @@ void OverseerWidget::onToolCallDepthChanged(int value) {
   m_toolCallDepthLimit = qBound(1, value, 64);
 
   Settings::setOverseerToolCallDepthLimit(m_toolCallDepthLimit);
+}
+
+
+QString OverseerWidget::proposalsSidecarPath() const {
+  if (!m_currentSession) {
+    return {};
+  }
+
+  return QDir(m_currentSession->folderPath())
+      .filePath(QStringLiteral("proposals.json"));
+}
+
+void OverseerWidget::loadProposals() {
+  m_proposals.clear();
+
+  const QString path = proposalsSidecarPath();
+
+  if (path.isEmpty() || !QFileInfo::exists(path)) {
+    return;
+  }
+
+  QFile file(path);
+
+  if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+    return;
+  }
+
+  const QByteArray raw = file.readAll();
+
+  const QJsonDocument doc = QJsonDocument::fromJson(raw);
+
+  if (!doc.isArray()) {
+    return;
+  }
+
+  const QJsonArray arr = doc.array();
+
+  for (const QJsonValue &value : arr) {
+    if (!value.isObject()) {
+      continue;
+    }
+
+    const QJsonObject obj = value.toObject();
+
+    MemoryProposal proposal;
+    proposal.key = obj.value(QStringLiteral("key")).toString();
+    proposal.fact = obj.value(QStringLiteral("fact")).toString();
+    proposal.rationale = obj.value(QStringLiteral("rationale")).toString();
+    proposal.status =
+        obj.value(QStringLiteral("status")).toString(QStringLiteral("pending"));
+
+    if (proposal.key.isEmpty()) {
+      continue;
+    }
+
+    m_proposals.append(proposal);
+  }
+}
+
+void OverseerWidget::saveProposals() {
+  const QString path = proposalsSidecarPath();
+
+  if (path.isEmpty()) {
+    return;
+  }
+
+  QJsonArray arr;
+
+  for (const MemoryProposal &p : std::as_const(m_proposals)) {
+    QJsonObject obj;
+    obj.insert(QStringLiteral("key"), p.key);
+    obj.insert(QStringLiteral("fact"), p.fact);
+    obj.insert(QStringLiteral("rationale"), p.rationale);
+    obj.insert(QStringLiteral("status"), p.status);
+    arr.append(obj);
+  }
+
+  QFile file(path);
+
+  if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate |
+                 QIODevice::Text)) {
+    return;
+  }
+
+  file.write(QJsonDocument(arr).toJson(QJsonDocument::Indented));
+}
+
+void OverseerWidget::recordProposal(const QString &fact,
+                                    const QString &rationale) {
+  if (fact.isEmpty()) {
+    return;
+  }
+
+  // Deduplicate: same fact pending or accepted already is a no-op.
+  for (const MemoryProposal &p : std::as_const(m_proposals)) {
+    if (p.fact == fact &&
+        (p.status == QStringLiteral("pending") ||
+         p.status == QStringLiteral("accepted"))) {
+      return;
+    }
+  }
+
+  MemoryProposal proposal;
+  proposal.fact = fact;
+  proposal.rationale = rationale;
+  proposal.status = QStringLiteral("pending");
+  proposal.key =
+      QString::number(qHash(fact + QChar('|') + rationale));
+
+  m_proposals.append(proposal);
+
+  saveProposals();
+  renderTranscript();
+}
+
+void OverseerWidget::setProposalStatus(const QString &key,
+                                       const QString &status) {
+  for (MemoryProposal &p : m_proposals) {
+    if (p.key == key) {
+      p.status = status;
+
+      if (status == QStringLiteral("accepted")) {
+        appendFactToMemory(p.fact);
+      }
+
+      break;
+    }
+  }
+
+  saveProposals();
+  m_lastRenderedText.clear();
+  renderTranscript();
+}
+
+void OverseerWidget::appendFactToMemory(const QString &fact) {
+  const QString trimmed = fact.trimmed();
+
+  if (trimmed.isEmpty()) {
+    return;
+  }
+
+  QString memory = OverseerStorage::readMemory();
+
+  if (memory.isEmpty()) {
+    memory = QStringLiteral("# Memory\n\n");
+  }
+
+  if (!memory.endsWith(QChar('\n'))) {
+    memory += QChar('\n');
+  }
+
+  // Ensure the accepted-proposals section exists exactly once.
+  const QString sectionHeader =
+      QStringLiteral("## Accepted proposals\n");
+
+  if (!memory.contains(sectionHeader)) {
+    memory += QChar('\n');
+    memory += sectionHeader;
+    memory += QChar('\n');
+  }
+
+  memory += QStringLiteral("- %1\n").arg(trimmed);
+
+  OverseerStorage::writeMemory(memory);
+
+  loadMemoryIntoEditor();
+}
+
+
+
+void OverseerWidget::onTranscriptAnchorClicked(const QUrl &url) {
+  if (!url.isValid()) {
+    return;
+  }
+
+  if (url.scheme() != QStringLiteral("episteme")) {
+    return;
+  }
+
+  const QString path = url.path();
+  const QString action = path.startsWith(QChar('/'))
+                             ? path.mid(1)
+                             : path;
+
+  const QString key =
+      QUrlQuery(url).queryItemValue(QStringLiteral("key"));
+
+  if (key.isEmpty()) {
+    return;
+  }
+
+  if (action == QStringLiteral("memory-accept")) {
+    setProposalStatus(key, QStringLiteral("accepted"));
+  } else if (action == QStringLiteral("memory-reject")) {
+    setProposalStatus(key, QStringLiteral("rejected"));
+  }
 }

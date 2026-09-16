@@ -25,6 +25,7 @@ class QSpinBox;
 class QSplitter;
 class QTabWidget;
 class QTextEdit;
+class QUrl;
 
 class OverseerWidget : public QWidget, public ThemeAware {
   Q_OBJECT
@@ -52,7 +53,16 @@ private slots:
 
   void onLlmToolCalls(const QJsonArray &toolCalls);
 
+  void onTranscriptAnchorClicked(const QUrl &url);
+
 private:
+  struct MemoryProposal {
+    QString key;        // stable id
+    QString fact;
+    QString rationale;
+    QString status;     // "pending", "accepted", "rejected"
+  };
+
   void rebuildSessionList();
   void openSession(OverseerSession *session);
   void closeSession();
@@ -84,6 +94,14 @@ private:
                        qint64 durationMs);
 
   void appendOverviewPaths(const QStringList &paths);
+
+  // Memory proposal plumbing.
+  void recordProposal(const QString &fact, const QString &rationale);
+  void setProposalStatus(const QString &key, const QString &status);
+  QString proposalsSidecarPath() const;
+  void loadProposals();
+  void saveProposals();
+  void appendFactToMemory(const QString &fact);
 
   InferenceService *m_inferenceService = nullptr;
 
@@ -123,4 +141,6 @@ private:
 
   QString m_assistantRawText;
   QString m_lastRenderedText;
+
+  QList<MemoryProposal> m_proposals;
 };

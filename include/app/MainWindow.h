@@ -17,6 +17,7 @@ class ChatWidget;
 class EditSession;
 class ModelDialog;
 class OverseerDock;
+class LlmSettingsPanel;
 
 class MainWindow : public QMainWindow {
   Q_OBJECT
@@ -28,6 +29,7 @@ private slots:
   void about();
   void aboutQt();
   void manageModels();
+  void openLlmSettings();
   void loadTheme(const QString &themeName);
   void onThemeSelected(const QString &theme);
   void toggleOverseer(bool visible);
@@ -48,6 +50,7 @@ private:
   EditSession *editSession = nullptr;
   ChatWidget *chatWidget = nullptr;
   ModelDialog *modelDialog = nullptr;
+  LlmSettingsPanel *llmSettingsPanel = nullptr;
   ThemeManager *themeManager = nullptr;
   OverseerDock *overseerDock = nullptr;
 
@@ -65,6 +68,7 @@ private:
   QAction *saveAct = nullptr;
   QAction *exitAct = nullptr;
   QAction *manageModelsAct = nullptr;
+  QAction *llmSettingsAct = nullptr;
   QAction *toggleOverseerAct = nullptr;
   QAction *aboutAct = nullptr;
   QAction *aboutQtAct = nullptr;
