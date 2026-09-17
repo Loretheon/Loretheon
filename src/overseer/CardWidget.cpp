@@ -94,9 +94,7 @@ void CardWidget::setStatusDot(const QString &colorHex) {
   m_statusDot->show();
 }
 
-void CardWidget::clearStatusDot() {
-  m_statusDot->hide();
-}
+void CardWidget::clearStatusDot() { m_statusDot->hide(); }
 
 void CardWidget::setLeadingIcon(const QString &iconName) {
   m_leadingIcon->setText(iconName);

@@ -1,6 +1,6 @@
 #include "../../include/overseer/TranscriptStore.h"
 
-#include "../../include/overseer/OverseerSession.h"
+#include "OverseerSession.h"
 
 #include <QDateTime>
 #include <QDir>
@@ -13,14 +13,6 @@
 
 namespace {
 
-// Block separator used inside transcript.md. ASCII Record Separator is
-// chosen because it cannot appear in user text, LLM output, or markdown.
-// A block is:
-//
-//   ## <type> | <iso8601> | <json>
-//   <body>
-//
-// followed by the separator on a line of its own.
 constexpr QChar kBlockSeparator(0x1E);
 
 QString serializeEvent(const TranscriptEvent &event) {
@@ -49,6 +41,26 @@ QString serializeEvent(const TranscriptEvent &event) {
                    event.proposalRationale);
   if (!event.proposalStatus.isEmpty())
     payload.insert(QStringLiteral("proposalStatus"), event.proposalStatus);
+  if (!event.proposalScope.isEmpty())
+    payload.insert(QStringLiteral("proposalScope"), event.proposalScope);
+  if (!event.proposalAcceptedScope.isEmpty())
+    payload.insert(QStringLiteral("proposalAcceptedScope"),
+                   event.proposalAcceptedScope);
+  if (!event.proposalContext.isEmpty())
+    payload.insert(QStringLiteral("proposalContext"), event.proposalContext);
+
+  if (!event.planId.isEmpty())
+    payload.insert(QStringLiteral("planId"), event.planId);
+  if (!event.planFilePath.isEmpty())
+    payload.insert(QStringLiteral("planFilePath"), event.planFilePath);
+  if (!event.planInstruction.isEmpty())
+    payload.insert(QStringLiteral("planInstruction"), event.planInstruction);
+  if (!event.planCommands.isEmpty())
+    payload.insert(QStringLiteral("planCommands"), event.planCommands);
+  if (!event.planStatus.isEmpty())
+    payload.insert(QStringLiteral("planStatus"), event.planStatus);
+  if (!event.planResult.isEmpty())
+    payload.insert(QStringLiteral("planResult"), event.planResult);
 
   if (!event.filePath.isEmpty())
     payload.insert(QStringLiteral("filePath"), event.filePath);
@@ -105,20 +117,16 @@ bool parseHeader(const QString &line, TranscriptEvent &event) {
     return false;
 
   const int firstPipe = line.indexOf(QChar('|'));
-
   if (firstPipe < 0)
     return false;
 
   const int secondPipe = line.indexOf(QChar('|'), firstPipe + 1);
-
   if (secondPipe < 0)
     return false;
 
   const QString typeString = line.mid(3, firstPipe - 3).trimmed();
-
   const QString timestampString =
       line.mid(firstPipe + 1, secondPipe - firstPipe - 1).trimmed();
-
   const QString json = line.mid(secondPipe + 1).trimmed();
 
   event.id = QUuid::createUuid();
@@ -161,36 +169,45 @@ bool parseHeader(const QString &line, TranscriptEvent &event) {
   if (payload.contains(QStringLiteral("proposalStatus")))
     event.proposalStatus =
         payload.value(QStringLiteral("proposalStatus")).toString();
+  if (payload.contains(QStringLiteral("proposalScope")))
+    event.proposalScope =
+        payload.value(QStringLiteral("proposalScope")).toString();
+  if (payload.contains(QStringLiteral("proposalAcceptedScope")))
+    event.proposalAcceptedScope =
+        payload.value(QStringLiteral("proposalAcceptedScope")).toString();
+  if (payload.contains(QStringLiteral("proposalContext")))
+    event.proposalContext =
+        payload.value(QStringLiteral("proposalContext")).toString();
+
+  if (payload.contains(QStringLiteral("planId")))
+    event.planId = payload.value(QStringLiteral("planId")).toString();
+  if (payload.contains(QStringLiteral("planFilePath")))
+    event.planFilePath =
+        payload.value(QStringLiteral("planFilePath")).toString();
+  if (payload.contains(QStringLiteral("planInstruction")))
+    event.planInstruction =
+        payload.value(QStringLiteral("planInstruction")).toString();
+  if (payload.contains(QStringLiteral("planCommands")))
+    event.planCommands =
+        payload.value(QStringLiteral("planCommands")).toArray();
+  if (payload.contains(QStringLiteral("planStatus")))
+    event.planStatus = payload.value(QStringLiteral("planStatus")).toString();
+  if (payload.contains(QStringLiteral("planResult")))
+    event.planResult = payload.value(QStringLiteral("planResult")).toString();
 
   if (payload.contains(QStringLiteral("filePath")))
     event.filePath = payload.value(QStringLiteral("filePath")).toString();
 
   if (payload.contains(QStringLiteral("inputTokens")))
-    event.inputTokens =
-        payload.value(QStringLiteral("inputTokens")).toInt();
+    event.inputTokens = payload.value(QStringLiteral("inputTokens")).toInt();
   if (payload.contains(QStringLiteral("outputTokens")))
-    event.outputTokens =
-        payload.value(QStringLiteral("outputTokens")).toInt();
+    event.outputTokens = payload.value(QStringLiteral("outputTokens")).toInt();
 
   event.role = TranscriptEvent::typeToString(event.type);
 
   return true;
 }
 
-// Parses a legacy transcript that predates the \x1e separator. Each
-// event was written as:
-//
-//   ## <type> | <timestamp> | <json>
-//   <body possibly containing blank lines>
-//   <blank line>
-//
-// The problem is that a body containing blank lines is ambiguous: there
-// is no way to tell "blank line inside body" from "blank line between
-// events" purely by looking at separators. But we do know every event
-// starts with a line matching "## <type> | <timestamp> | <json>". So
-// we scan for those header lines and treat everything up to the next
-// header as the body of the current event. That correctly handles
-// markdown bodies with arbitrary blank lines.
 QList<TranscriptEvent> parseLegacyFormat(const QString &text) {
   QList<TranscriptEvent> result;
 
@@ -204,7 +221,6 @@ QList<TranscriptEvent> parseLegacyFormat(const QString &text) {
 
   int currentStart = -1;
   TranscriptEvent currentEvent;
-  bool currentIsLegacy = false;
 
   auto flush = [&]() {
     if (currentStart < 0)
@@ -213,7 +229,6 @@ QList<TranscriptEvent> parseLegacyFormat(const QString &text) {
     QString body;
 
     for (int i = currentStart + 1; i < lines.size(); ++i) {
-      // Stop at the next header. This is the body boundary.
       const QString trimmed = lines.at(i).trimmed();
 
       if (headerRe.match(trimmed).hasMatch() ||
@@ -236,7 +251,6 @@ QList<TranscriptEvent> parseLegacyFormat(const QString &text) {
 
     currentStart = -1;
     currentEvent = TranscriptEvent();
-    currentIsLegacy = false;
   };
 
   for (int i = 0; i < lines.size(); ++i) {
@@ -256,7 +270,6 @@ QList<TranscriptEvent> parseLegacyFormat(const QString &text) {
         continue;
       }
 
-      currentIsLegacy = false;
       continue;
     }
 
@@ -265,8 +278,7 @@ QList<TranscriptEvent> parseLegacyFormat(const QString &text) {
 
       currentStart = i;
 
-      currentEvent = parseHeaderless(legacy.captured(1).trimmed(),
-                                     QString());
+      currentEvent = parseHeaderless(legacy.captured(1).trimmed(), QString());
 
       const QDateTime ts =
           QDateTime::fromString(legacy.captured(2).trimmed(), Qt::ISODate);
@@ -274,14 +286,11 @@ QList<TranscriptEvent> parseLegacyFormat(const QString &text) {
       if (ts.isValid())
         currentEvent.timestamp = ts;
 
-      currentIsLegacy = true;
       continue;
     }
   }
 
   flush();
-
-  Q_UNUSED(currentIsLegacy);
 
   return result;
 }
@@ -368,7 +377,6 @@ void TranscriptStore::loadFromDisk() {
       }
     }
   } else {
-    // Legacy format: no separator. Scan by header line.
     m_events = parseLegacyFormat(text);
 
     for (int i = 0; i < m_events.size(); ++i)
@@ -379,12 +387,8 @@ void TranscriptStore::loadFromDisk() {
 
   emit eventsReset();
 
-  // If the file was legacy, immediately rewrite it in the modern
-  // format. This is a one-shot migration. Nothing about the user's
-  // content is changed; only the on-disk separator and structure.
-  if (!isModern && !m_events.isEmpty()) {
+  if (!isModern && !m_events.isEmpty())
     rewriteDisk();
-  }
 }
 
 void TranscriptStore::append(const TranscriptEvent &event) {
@@ -415,7 +419,8 @@ void TranscriptStore::append(const TranscriptEvent &event) {
 }
 
 void TranscriptStore::updateProposalStatus(const QString &proposalKey,
-                                           const QString &status) {
+                                           const QString &status,
+                                           const QString &acceptedScope) {
   bool changed = false;
 
   for (int i = 0; i < m_events.size(); ++i) {
@@ -423,6 +428,32 @@ void TranscriptStore::updateProposalStatus(const QString &proposalKey,
       continue;
 
     m_events[i].proposalStatus = status;
+
+    if (!acceptedScope.isEmpty())
+      m_events[i].proposalAcceptedScope = acceptedScope;
+
+    emit eventUpdated(i);
+    changed = true;
+  }
+
+  if (changed)
+    rewriteDisk();
+}
+
+void TranscriptStore::updatePlanStatus(const QString &planId,
+                                       const QString &status,
+                                       const QString &result) {
+  bool changed = false;
+
+  for (int i = 0; i < m_events.size(); ++i) {
+    if (m_events[i].planId != planId)
+      continue;
+
+    m_events[i].planStatus = status;
+
+    if (!result.isEmpty())
+      m_events[i].planResult = result;
+
     emit eventUpdated(i);
     changed = true;
   }

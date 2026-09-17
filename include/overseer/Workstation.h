@@ -47,6 +47,7 @@ public:
 
   QList<WorkstationWindow *> windows() const { return m_windows; }
   WorkstationWindow *focusedWindow() const { return m_focusedWindow; }
+  WorkstationWindow *windowForPath(const QString &absolutePath) const;
 
   void focusWindow(WorkstationWindow *window);
 
@@ -85,7 +86,7 @@ private slots:
   void onDiskConflictOverwrite(WorkstationWindow *window);
 
 private:
-  WorkstationWindow *windowForPath(const QString &absolutePath) const;
+  void destroyWindow(WorkstationWindow *window, bool emitSignals);
 
   int nextZ();
 
@@ -127,6 +128,8 @@ private:
   QSet<QString> m_ignoreNextChange;
 
   int m_zCounter = 0;
+
+  bool m_loading = false;
 
   static constexpr int kGap = 12;
   static constexpr int kMargin = 12;

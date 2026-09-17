@@ -27,8 +27,6 @@ struct SectionInfo {
   int end = 0;
 };
 
-enum class RequestedOperation { Insert, Replace, ReplaceScope, Delete, Unknown };
-
 QString findSectionHeading(const DocumentNode &node,
                            const QString &documentText) {
   const int start = qBound(0, node.start, documentText.size());
@@ -124,12 +122,11 @@ QVector<SectionInfo> collectSections(const DocumentStructure &structure,
 
   collectSections(structure.root(), documentText, sections);
 
-  if (sections.isEmpty()) {
-    const DocumentNode &root = structure.root();
-
-    if (!root.id.isEmpty()) {
-      sections.append(makeDocumentRootSection(root, documentText));
-    }
+  // If the walk produced nothing usable, fall back to the document root
+  // itself. This is the case for files with no markdown headings: .dot,
+  // .puml, .mmd, plain text.
+  if (sections.isEmpty() && !structure.root().id.isEmpty()) {
+    sections.append(makeDocumentRootSection(structure.root(), documentText));
   }
 
   return sections;
@@ -156,35 +153,169 @@ const SectionInfo *findSection(const QVector<SectionInfo> &sections,
   return nullptr;
 }
 
+// Returns the document-root SectionInfo: the entry whose scopeId ends
+// in ":document" or equals "document", or whose range covers the whole
+// document. Null if none.
+const SectionInfo *
+findDocumentRootSection(const QVector<SectionInfo> &sections,
+                        int documentLength) {
+  for (const SectionInfo &section : sections) {
+    if (section.scopeId == QStringLiteral("document") ||
+        section.scopeId.endsWith(QStringLiteral(":document"))) {
+      return &section;
+    }
+  }
+
+  for (const SectionInfo &section : sections) {
+    if (section.start == 0 && section.end == documentLength &&
+        documentLength > 0) {
+      return &section;
+    }
+  }
+
+  return nullptr;
+}
+
+// Returns true if the given scope ID resolves to the document root.
+// Handles the "<language>:document" prefix scheme as well as the plain
+// "document".
+bool isDocumentRootScope(const QString &scopeId,
+                         const QVector<SectionInfo> &sections,
+                         int documentLength) {
+  if (scopeId.isEmpty()) {
+    return false;
+  }
+
+  if (scopeId == QStringLiteral("document") ||
+      scopeId.endsWith(QStringLiteral(":document"))) {
+    return true;
+  }
+
+  const SectionInfo *root = findDocumentRootSection(sections, documentLength);
+
+  if (!root) {
+    return false;
+  }
+
+  return root->scopeId == scopeId;
+}
+
 bool scopeIdsEquivalent(const QString &a, const QString &b,
-                        const QVector<SectionInfo> &sections) {
+                        const QVector<SectionInfo> &sections,
+                        int documentLength) {
   if (a == b) {
     return true;
   }
 
-  const auto isRootSection = [](const SectionInfo &s) {
-    return s.start == 0;
-  };
+  const bool aIsRoot = isDocumentRootScope(a, sections, documentLength);
+  const bool bIsRoot = isDocumentRootScope(b, sections, documentLength);
 
-  if (a.isEmpty()) {
-    for (const SectionInfo &s : sections) {
-      if (s.scopeId == b) {
-        return isRootSection(s);
-      }
-    }
-    return false;
-  }
-
-  if (b.isEmpty()) {
-    for (const SectionInfo &s : sections) {
-      if (s.scopeId == a) {
-        return isRootSection(s);
-      }
-    }
-    return false;
+  if (aIsRoot && bIsRoot) {
+    return true;
   }
 
   return false;
+}
+
+// Split the request into sentence-like fragments. Splits on sentence
+// terminators and newlines. Fragments are non-overlapping and in order.
+QVector<QString> splitSentences(const QString &request) {
+  QVector<QString> result;
+
+  int segmentStart = 0;
+
+  for (int i = 0; i < request.size(); ++i) {
+    const QChar ch = request.at(i);
+
+    const bool isTerminator =
+        ch == QChar('.') || ch == QChar('!') || ch == QChar('?') ||
+        ch == QChar('\n');
+
+    if (!isTerminator)
+      continue;
+
+    const QString segment = request.mid(segmentStart, i - segmentStart);
+
+    if (!segment.trimmed().isEmpty())
+      result.append(segment);
+
+    segmentStart = i + 1;
+  }
+
+  if (segmentStart < request.size()) {
+    const QString segment = request.mid(segmentStart);
+
+    if (!segment.trimmed().isEmpty())
+      result.append(segment);
+  }
+
+  return result;
+}
+
+bool sentenceNegatesMention(const QString &sentence, int headingOffset) {
+  if (headingOffset <= 0)
+    return false;
+
+  const QString prefix = sentence.left(headingOffset).toLower();
+
+  static const QStringList negationKeywords = {
+      QStringLiteral("leave"),
+      QStringLiteral("don't"),
+      QStringLiteral("do not"),
+      QStringLiteral("excluding"),
+      QStringLiteral("except"),
+      QStringLiteral("without"),
+      QStringLiteral("keep"),
+      QStringLiteral("untouched"),
+      QStringLiteral("unchanged"),
+      QStringLiteral("preserve"),
+      QStringLiteral("as-is"),
+      QStringLiteral("as is"),
+  };
+
+  for (const QString &keyword : negationKeywords) {
+    if (prefix.contains(keyword))
+      return true;
+  }
+
+  return false;
+}
+
+bool isCandidateNegated(const QString &request, const SectionInfo &section) {
+  const QVector<QString> sentences = splitSentences(request);
+
+  const QStringList mentions = {section.heading, section.title};
+
+  bool sawMention = false;
+
+  for (const QString &sentence : sentences) {
+    for (const QString &mention : mentions) {
+      if (mention.isEmpty())
+        continue;
+
+      int searchFrom = 0;
+
+      while (true) {
+        const int found =
+            sentence.indexOf(mention, searchFrom, Qt::CaseInsensitive);
+
+        if (found < 0)
+          break;
+
+        sawMention = true;
+
+        if (!sentenceNegatesMention(sentence, found))
+          return false;
+
+        searchFrom = found + mention.size();
+      }
+    }
+  }
+
+  if (!sawMention)
+    return false;
+
+  return true;
 }
 
 QVector<const SectionInfo *>
@@ -229,69 +360,23 @@ resolveRequestedSections(const QString &request,
     }
 
     seen.insert(match.section->scopeId);
+
+    if (isCandidateNegated(request, *match.section)) {
+      continue;
+    }
+
     result.append(match.section);
   }
 
+  // If nothing matched, but the document has exactly one section and it
+  // is the document root (i.e. a file with no headings), treat that root
+  // as the target. Otherwise the LLM would receive an empty target list
+  // and would have to guess a scope.
+  if (result.isEmpty() && sections.size() == 1) {
+    result.append(&sections.first());
+  }
+
   return result;
-}
-
-RequestedOperation requestedOperation(const QString &request) {
-  static const QRegularExpression deletePattern(
-      QStringLiteral(R"(\b(delete|remove|erase|drop)\b)"),
-      QRegularExpression::CaseInsensitiveOption);
-
-  static const QRegularExpression replaceScopePattern(
-      QStringLiteral(
-          R"(\b(replace|rewrite|regenerate)\s+(the\s+)?(entire|whole|complete|full|section|body|content)\b)"),
-      QRegularExpression::CaseInsensitiveOption);
-
-  static const QRegularExpression insertPattern(
-      QStringLiteral(R"(\b(insert|add|append|create)\b)"),
-      QRegularExpression::CaseInsensitiveOption);
-
-  static const QRegularExpression replacePattern(
-      QStringLiteral(
-          R"(\b(replace|rewrite|update|expand|populate|fill|complete|develop|improve|revise)\b)"),
-      QRegularExpression::CaseInsensitiveOption);
-
-  if (deletePattern.match(request).hasMatch()) {
-    return RequestedOperation::Delete;
-  }
-
-  if (replaceScopePattern.match(request).hasMatch()) {
-    return RequestedOperation::ReplaceScope;
-  }
-
-  if (insertPattern.match(request).hasMatch()) {
-    return RequestedOperation::Insert;
-  }
-
-  if (replacePattern.match(request).hasMatch()) {
-    return RequestedOperation::Replace;
-  }
-
-  return RequestedOperation::Unknown;
-}
-
-QString operationName(RequestedOperation operation) {
-  switch (operation) {
-  case RequestedOperation::Insert:
-    return QStringLiteral("insert");
-
-  case RequestedOperation::Replace:
-    return QStringLiteral("replace");
-
-  case RequestedOperation::ReplaceScope:
-    return QStringLiteral("replace_scope");
-
-  case RequestedOperation::Delete:
-    return QStringLiteral("delete");
-
-  case RequestedOperation::Unknown:
-    return QStringLiteral("unknown");
-  }
-
-  return {};
 }
 
 QString operationName(const EditCommand &command) {
@@ -471,8 +556,6 @@ void EditPlanner::start(TextEdit *editor, const QString &userRequest,
   const QVector<const SectionInfo *> targets =
       resolveRequestedSections(m_userRequest, sections);
 
-  const RequestedOperation requestedOp = requestedOperation(m_userRequest);
-
   const QStringList scopeIds = document->structure().scopeIds();
 
   QStringList targetLines;
@@ -533,15 +616,12 @@ void EditPlanner::start(TextEdit *editor, const QString &userRequest,
             "Do not return markdown fences.\n"
             "Do not return explanatory text.\n"
             "\n"
-            "The application has already determined the user's target "
-            "section(s) and requested operation.\n"
-            "You MUST follow those decisions exactly.\n"
+            "The application has resolved the user's target section(s) for "
+            "you. You must choose the operation for each edit yourself, "
+            "based on what the user's request actually asks for.\n"
             "\n"
             "Resolved target(s):\n"
             "%1\n"
-            "\n"
-            "Resolved operation:\n"
-            "%2\n"
             "\n"
             "Rules:\n"
             "- One user intention produces exactly one edit.\n"
@@ -556,34 +636,40 @@ void EditPlanner::start(TextEdit *editor, const QString &userRequest,
             "Each edit MUST contain exactly:\n"
             "operation, scope, position, find, all, instruction.\n"
             "\n"
-            "operation must be one of: insert, replace, delete, replace_scope.\n"
+            "Choose the operation that best matches what the user asked "
+            "for:\n"
             "\n"
-            "For insert:\n"
-            "- find MUST be empty.\n"
-            "- position MUST be before or after.\n"
+            "  - replace: replace a specific substring within the scope. "
+            "Use this whenever the user wants to change, rewrite, update, "
+            "remove-and-replace, or fix part of the scope's existing text, "
+            "even if they say \"delete\" or \"remove\" while also giving "
+            "replacement content. find MUST be the exact substring the "
+            "user wants replaced, and it must be a verbatim substring of "
+            "the scope's current text. find MUST be as short as possible "
+            "while still being unique within the scope. instruction MUST "
+            "describe only what the replacement of that substring should "
+            "look like. position MUST be before or after.\n"
             "\n"
-            "For replace:\n"
-            "- find MUST be the exact substring the user wants replaced. "
-            "It must be a verbatim substring of the scope's current text.\n"
-            "- find MUST be as short as possible while still being unique "
-            "within the scope.\n"
-            "- instruction MUST describe only what the replacement of that "
-            "substring should look like. It must not describe a change to "
-            "the surrounding sentence or paragraph.\n"
-            "- position MUST be before or after.\n"
+            "  - insert: add new content before or after a scope without "
+            "removing anything. find MUST be empty. position MUST be "
+            "before or after. instruction is the content to insert. Write "
+            "the content the user asked for directly into the instruction "
+            "field; do not describe it.\n"
             "\n"
-            "For delete:\n"
-            "- find MUST be the exact substring to delete.\n"
-            "- position MUST be before or after.\n"
+            "  - delete: remove a specific substring within the scope with "
+            "no replacement. Use this only when the user wants content "
+            "gone and nothing put in its place. find MUST be the exact "
+            "substring to delete. position MUST be before or after.\n"
             "\n"
-            "For replace_scope:\n"
-            "- Use this only when the user asks to rewrite or replace the "
-            "ENTIRE body of a section or scope.\n"
-            "- find MUST be empty.\n"
-            "- position MUST be inside.\n"
-            "- all MUST be false.\n"
-            "- Do NOT use replace_scope when only part of the content "
-            "changes; use replace with a find string instead.\n"
+            "  - replace_scope: rewrite the entire body of a section or "
+            "scope. Use this only when the user asks to rewrite or replace "
+            "the ENTIRE body of a section, or when the scope has no "
+            "existing body to anchor a replace against. find MUST be "
+            "empty. position MUST be inside. all MUST be false.\n"
+            "\n"
+            "When the request names a single replacement substring and its "
+            "replacement text, that is a replace, not a delete and not an "
+            "insert.\n"
             "\n"
             "all MUST be false unless the user explicitly requests all, "
             "every, or each occurrence.\n"
@@ -592,18 +678,17 @@ void EditPlanner::start(TextEdit *editor, const QString &userRequest,
             "should accomplish, including all requested details.\n"
             "\n"
             "Scope hierarchy:\n"
-            "%3\n"
+            "%2\n"
             "\n"
             "Document structure:\n"
-            "%4\n"
+            "%3\n"
             "\n"
             "User request:\n"
+            "%4\n"
             "%5\n"
-            "%6\n"
             "Document:\n"
-            "%7")
-            .arg(targetLines.join('\n'), operationName(requestedOp),
-                 hierarchyMap(sections),
+            "%6")
+            .arg(targetLines.join('\n'), hierarchyMap(sections),
                  document->structure().sectionIndexForModel(), m_userRequest,
                  selectionContext, documentText);
   }
@@ -612,13 +697,11 @@ void EditPlanner::start(TextEdit *editor, const QString &userRequest,
       QStringLiteral("EDIT_PLAN_REQUEST"),
       QStringLiteral("Mode: %1\n"
                      "User Request: \"%2\"\n"
-                     "Resolved Operation: %3\n"
-                     "Resolved Targets (%4): %5\n"
-                     "Doc Size: %6 chars | Prompt Size: %7 chars")
+                     "Resolved Targets (%3): %4\n"
+                     "Doc Size: %5 chars | Prompt Size: %6 chars")
           .arg(m_scopeMode == ScopeMode::WholeFile ? QStringLiteral("whole")
                                                     : QStringLiteral("scoped"),
-               m_userRequest, operationName(requestedOp),
-               QString::number(targets.size()),
+               m_userRequest, QString::number(targets.size()),
                targetLines.isEmpty() ? QStringLiteral("None")
                                      : targetLines.join(QStringLiteral(", ")),
                QString::number(documentText.size()),
@@ -774,8 +857,6 @@ void EditPlanner::processStream() {
 
   m_active = false;
 
-  // The stream is complete. Abort the token so InferenceService cleans up
-  // the request slot, and clear our handle.
   if (m_inferenceService && !m_activeToken.isNull()) {
     m_inferenceService->abortChatRequest(m_activeToken);
     m_activeToken = InferenceService::RequestToken();
@@ -815,15 +896,13 @@ void EditPlanner::processStream() {
   const DocumentStructure &structure = textDocument->structure();
 
   const QString documentText = m_editor->toPlainText();
+  const int documentLength = documentText.size();
 
   const QVector<SectionInfo> sections =
       collectSections(structure, documentText);
 
   const QVector<const SectionInfo *> targets =
       resolveRequestedSections(m_userRequest, sections);
-
-  const RequestedOperation expectedOperation =
-      requestedOperation(m_userRequest);
 
   const QJsonArray items = json.array();
 
@@ -935,10 +1014,11 @@ void EditPlanner::processStream() {
       }
     }
 
-    const bool isDocumentRoot = command.scopeId == QStringLiteral("document");
+    const bool isDocumentRoot =
+        isDocumentRootScope(command.scopeId, sections, documentLength);
 
     const SectionInfo *section =
-        isDocumentRoot ? nullptr : findSection(sections, command.scopeId);
+        findSection(sections, command.scopeId);
 
     if (!isDocumentRoot && !section && command.scopeId.isEmpty()) {
       if (command.operation != EditCommand::Operation::Insert) {
@@ -962,19 +1042,6 @@ void EditPlanner::processStream() {
       return;
     }
 
-    if (m_scopeMode == ScopeMode::Scoped) {
-      if (expectedOperation != RequestedOperation::Unknown &&
-          operationName(expectedOperation) != operationName(command) &&
-          !(expectedOperation == RequestedOperation::Replace &&
-            command.operation == EditCommand::Operation::ReplaceScope)) {
-        emit failed(
-            QStringLiteral("The edit planner generated '%1', but "
-                           "the user's request requires '%2'.")
-                .arg(operationName(command), operationName(expectedOperation)));
-        return;
-      }
-    }
-
     if (command.replaceAll && !explicitlyRequestsAll(m_userRequest)) {
       emit failed(
           QStringLiteral("Edit plan item %1 uses all=true without an explicit "
@@ -987,7 +1054,8 @@ void EditPlanner::processStream() {
       bool validTarget = false;
 
       for (const SectionInfo *target : targets) {
-        if (scopeIdsEquivalent(target->scopeId, command.scopeId, sections)) {
+        if (scopeIdsEquivalent(target->scopeId, command.scopeId, sections,
+                               documentLength)) {
           validTarget = true;
           break;
         }
@@ -1083,7 +1151,8 @@ void EditPlanner::processStream() {
       emit failed(
           QStringLiteral(
               "The planner produced %1 edit(s) for %2 requested target(s).")
-              .arg(edits.size(), targets.size()));
+              .arg(static_cast<int>(edits.size()))
+              .arg(static_cast<int>(targets.size())));
       return;
     }
 
@@ -1114,7 +1183,8 @@ void EditPlanner::processStream() {
       bool covered = false;
 
       for (const QString &seen : seenScopes) {
-        if (scopeIdsEquivalent(target->scopeId, seen, sections)) {
+        if (scopeIdsEquivalent(target->scopeId, seen, sections,
+                               documentLength)) {
           covered = true;
           break;
         }

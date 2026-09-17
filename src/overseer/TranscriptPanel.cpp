@@ -98,8 +98,6 @@ TranscriptPanel::TranscriptPanel(TranscriptStore *store, QWidget *parent)
             [this](int) {
               updateRibbonVisibleRange();
 
-              // If the user scrolls away from the bottom, cancel any
-              // pending snap.
               if (m_snapPending && !isScrollbarAtBottom())
                 m_snapPending = false;
             });
@@ -130,7 +128,6 @@ TranscriptPanel::TranscriptPanel(TranscriptStore *store, QWidget *parent)
       snapToBottom();
   });
 
-
   loadPreferences();
   onEventsReset();
 }
@@ -149,7 +146,6 @@ void TranscriptPanel::loadPreferences() {
 
   m_pinToBottom = s.value(PrefPinToBottomKey, false).toBool();
   m_pinToBottomCheck->setChecked(m_pinToBottom);
-
 }
 
 void TranscriptPanel::savePreferences() {
@@ -285,6 +281,18 @@ void TranscriptPanel::rebuildAllCards() {
     connect(card, &TranscriptEventCard::memoryProposalRejected, this,
             &TranscriptPanel::memoryProposalRejected);
 
+    connect(card, &TranscriptEventCard::planEditAccepted, this,
+            &TranscriptPanel::planEditAccepted);
+
+    connect(card, &TranscriptEventCard::planEditRejected, this,
+            &TranscriptPanel::planEditRejected);
+
+    connect(card, &TranscriptEventCard::planApplyRequested, this,
+            &TranscriptPanel::planApplyRequested);
+
+    connect(card, &TranscriptEventCard::planCancelRequested, this,
+            &TranscriptPanel::planCancelRequested);
+
     m_cardsLayout->insertWidget(visible, card);
     m_eventCards.insert(i, card);
 
@@ -317,6 +325,18 @@ void TranscriptPanel::appendCardForEvent(int index) {
   connect(card, &TranscriptEventCard::memoryProposalRejected, this,
           &TranscriptPanel::memoryProposalRejected);
 
+  connect(card, &TranscriptEventCard::planEditAccepted, this,
+          &TranscriptPanel::planEditAccepted);
+
+  connect(card, &TranscriptEventCard::planEditRejected, this,
+          &TranscriptPanel::planEditRejected);
+
+  connect(card, &TranscriptEventCard::planApplyRequested, this,
+          &TranscriptPanel::planApplyRequested);
+
+  connect(card, &TranscriptEventCard::planCancelRequested, this,
+          &TranscriptPanel::planCancelRequested);
+
   const int insertAt = m_cardsLayout->count() - 2;
   m_cardsLayout->insertWidget(qMax(0, insertAt), card);
   m_eventCards.insert(index, card);
@@ -342,9 +362,6 @@ void TranscriptPanel::snapToBottom() {
 
   m_snapPending = true;
 
-  // Fire twice: once after layout settles for this frame, and again one
-  // tick later to catch any secondary relayout triggered by the first
-  // scroll (e.g. a lazily-measured card finally reporting its height).
   QPointer<TranscriptPanel> guard(this);
 
   QTimer::singleShot(0, this, [this, guard]() {
@@ -463,7 +480,6 @@ void TranscriptPanel::updateRibbonVisibleRange() {
   }
 
   if (firstVisible < 0) {
-    // Nothing on screen. Fall back to the top of the events.
     m_ribbon->setVisibleRange(0, 0);
     return;
   }

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QPoint>
 #include <QWidget>
 
 class QLabel;
@@ -7,20 +8,17 @@ class QTimer;
 class QGraphicsOpacityEffect;
 class QPropertyAnimation;
 
-// A non-interactive notification card shown briefly when a new memory
-// proposal arrives. It carries no buttons and accepts no clicks; all
-// interaction happens in the "User actions needed" tab.
-//
-// Lifecycle:
-//   - On construction, sits in place and fades out after lifetimeMs.
-//   - Calling dismiss() skips the remaining lifetime and begins fade-out.
-//   - Emits finished() when fade-out completes; owner should delete it.
+// A notification card shown briefly when a new memory proposal arrives.
+// The card can be dismissed by clicking it, or dragged aside. It carries
+// no buttons; all durable interaction happens in the proposal card in
+// the transcript.
 class MemoryProposalToast : public QWidget {
   Q_OBJECT
 
 public:
   explicit MemoryProposalToast(const QString &fact,
                                const QString &rationale,
+                               const QString &scopeLabel,
                                int lifetimeMs = 8000,
                                QWidget *parent = nullptr);
 
@@ -32,6 +30,7 @@ public:
 protected:
   void paintEvent(QPaintEvent *event) override;
   void mousePressEvent(QMouseEvent *event) override;
+  void mouseMoveEvent(QMouseEvent *event) override;
   void mouseReleaseEvent(QMouseEvent *event) override;
 
 private:
@@ -46,4 +45,9 @@ private:
 
   int m_lifetimeMs = 8000;
   bool m_dismissed = false;
+
+  bool m_dragging = false;
+  QPoint m_dragStartGlobal;
+
+  static constexpr int kDragDismissPx = 40;
 };

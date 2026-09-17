@@ -3,7 +3,6 @@
 #include "../../include/overseer/OverseerToolRegistry.h"
 #include "EditNoteTool.h"
 #include "EditWorkstationFileTool.h"
-#include "ProposeMemoryFactTool.h"
 
 #include <QDir>
 #include <QFile>
@@ -15,19 +14,6 @@
 
 namespace {
 
-// Resolves a model-supplied relative path against the output folder.
-//
-// Rules:
-//   - Empty, ".", and "./" resolve to the output folder itself.
-//   - Absolute paths are rejected.
-//   - Paths containing ".." (as a segment or prefix) are rejected.
-//   - Parent directories that do not exist yet are allowed; the closest
-//     existing ancestor is canonicalized and verified to be inside the
-//     output folder. Intermediate segments are trusted because they are
-//     relative and free of "..".
-//
-// Returns the absolute path, or an empty string if the path escapes the
-// output folder or is otherwise invalid.
 QString safeResolve(const QString &relative, const QString &outputFolder) {
   if (relative.isEmpty() || relative == QStringLiteral(".") ||
       relative == QStringLiteral("./")) {
@@ -61,8 +47,6 @@ QString safeResolve(const QString &relative, const QString &outputFolder) {
 
   const QString absolute = output.absoluteFilePath(cleaned);
 
-  // Walk up the hierarchy until we find an existing directory, then
-  // canonicalize that and verify it is inside the output folder.
   QString existingAncestor = QFileInfo(absolute).absolutePath();
 
   while (!existingAncestor.isEmpty() &&
@@ -96,8 +80,6 @@ QString safeResolve(const QString &relative, const QString &outputFolder) {
   return absolute;
 }
 
-// Resolves a model-supplied path against the notes root. Rejects
-// anything outside the notes root, including via symlinks or "..".
 QString safeResolveNotes(const QString &path, const QString &notesRoot) {
   if (path.isEmpty()) {
     return {};
@@ -162,28 +144,30 @@ QString describeRejection(const QString &relative) {
       .arg(relative);
 }
 
-bool violatesHardFocus(const QString &relative, const QString &outputFolder,
-                       const QString &hardFocusPath) {
-  if (hardFocusPath.isEmpty()) {
-    return false;
-  }
+QJsonObject factRationaleSchema() {
+  QJsonObject fact;
+  fact.insert(QStringLiteral("type"), QStringLiteral("string"));
+  fact.insert(QStringLiteral("description"),
+              QStringLiteral("The durable fact, written as a single "
+                             "sentence in the imperative or declarative."));
 
-  const QString target =
-      QDir(outputFolder).absoluteFilePath(QDir::cleanPath(relative));
+  QJsonObject rationale;
+  rationale.insert(QStringLiteral("type"), QStringLiteral("string"));
+  rationale.insert(QStringLiteral("description"),
+                   QStringLiteral("One sentence explaining why this fact "
+                                  "matters, for the user's benefit."));
 
-  const QString canonicalTarget = QFileInfo(target).absoluteFilePath();
+  QJsonObject properties;
+  properties.insert(QStringLiteral("fact"), fact);
+  properties.insert(QStringLiteral("rationale"), rationale);
 
-  const QString canonicalFocus = QFileInfo(hardFocusPath).absoluteFilePath();
+  QJsonObject schema;
+  schema.insert(QStringLiteral("type"), QStringLiteral("object"));
+  schema.insert(QStringLiteral("properties"), properties);
+  schema.insert(QStringLiteral("required"),
+                QJsonArray{QStringLiteral("fact"), QStringLiteral("rationale")});
 
-  return canonicalTarget != canonicalFocus;
-}
-
-QString hardFocusError(const QString &hardFocusPath) {
-  return QStringLiteral(
-             "Hard focus is active on %1. Only that file may be written "
-             "or edited. Reads remain available. Ask the user to "
-             "disable Lock before writing to other files.")
-      .arg(hardFocusPath);
+  return schema;
 }
 
 } // namespace
@@ -441,7 +425,6 @@ WriteFileTool::execute(const QJsonObject &arguments,
     return makeError(describeRejection(relative));
   }
 
-
   QFileInfo info(absolute);
 
   QDir parent(info.absolutePath());
@@ -508,13 +491,68 @@ CreateDirectoryTool::execute(const QJsonObject &arguments,
   if (absolute.isEmpty()) {
     return makeError(describeRejection(relative));
   }
-  
 
   if (!QDir().mkpath(absolute)) {
     return makeError(QStringLiteral("Could not create directory."));
   }
 
   return makeOk(QStringLiteral("Created directory %1").arg(relative));
+}
+
+QString ProposeGlobalMemoryFactTool::description() const {
+  return QStringLiteral(
+      "Propose a durable fact that should persist across every session. "
+      "Use this for user preferences, standing rules, and anything the "
+      "assistant should always remember, regardless of which session it "
+      "is in. The user accepts or rejects the proposal before it is "
+      "written to global memory.");
+}
+
+QJsonObject ProposeGlobalMemoryFactTool::parametersSchema() const {
+  return factRationaleSchema();
+}
+
+OverseerTool::Result
+ProposeGlobalMemoryFactTool::execute(const QJsonObject &arguments,
+                                     const Context &context) const {
+  Q_UNUSED(context);
+
+  const QString fact =
+      arguments.value(QStringLiteral("fact")).toString().trimmed();
+
+  if (fact.isEmpty()) {
+    return makeError(QStringLiteral("Proposed fact is empty."));
+  }
+
+  return makeOk(QStringLiteral("Proposed global memory fact."));
+}
+
+QString ProposeSessionMemoryFactTool::description() const {
+  return QStringLiteral(
+      "Propose a fact scoped to this session only. Use this for details "
+      "that matter for the current body of work but should not become "
+      "standing rules: local file names, this session's terminology, "
+      "decisions made here. The user accepts or rejects the proposal "
+      "before it is written to session memory.");
+}
+
+QJsonObject ProposeSessionMemoryFactTool::parametersSchema() const {
+  return factRationaleSchema();
+}
+
+OverseerTool::Result
+ProposeSessionMemoryFactTool::execute(const QJsonObject &arguments,
+                                      const Context &context) const {
+  Q_UNUSED(context);
+
+  const QString fact =
+      arguments.value(QStringLiteral("fact")).toString().trimmed();
+
+  if (fact.isEmpty()) {
+    return makeError(QStringLiteral("Proposed fact is empty."));
+  }
+
+  return makeOk(QStringLiteral("Proposed session memory fact."));
 }
 
 void OverseerTools::installAll(OverseerToolRegistry &registry) {
@@ -526,6 +564,7 @@ void OverseerTools::installAll(OverseerToolRegistry &registry) {
   registry.registerTool(std::make_unique<OpenFileTool>());
   registry.registerTool(std::make_unique<CloseFileTool>());
   registry.registerTool(std::make_unique<EditWorkstationFileTool>());
-  registry.registerTool(std::make_unique<ProposeMemoryFactTool>());
+  registry.registerTool(std::make_unique<ProposeGlobalMemoryFactTool>());
+  registry.registerTool(std::make_unique<ProposeSessionMemoryFactTool>());
   registry.registerTool(std::make_unique<EditNoteTool>());
 }

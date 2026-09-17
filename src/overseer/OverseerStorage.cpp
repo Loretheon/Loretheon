@@ -2,6 +2,7 @@
 
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QStandardPaths>
 #include <QTextStream>
 
@@ -63,9 +64,7 @@ QString memoryPath() {
   return QDir(rootPath()).filePath(QString::fromLatin1(MemoryFilename));
 }
 
-QString readMemory() {
-  return readTextFile(memoryPath());
-}
+QString readMemory() { return readTextFile(memoryPath()); }
 
 bool writeMemory(const QString &text) {
   if (!ensureRoot()) {
@@ -73,6 +72,34 @@ bool writeMemory(const QString &text) {
   }
 
   return writeTextFile(memoryPath(), text);
+}
+
+bool appendFactToMemoryFile(const QString &path, const QString &fact) {
+  const QString trimmed = fact.trimmed();
+
+  if (path.isEmpty() || trimmed.isEmpty()) {
+    return false;
+  }
+
+  QString memory = readTextFile(path);
+
+  if (memory.isEmpty())
+    memory = QStringLiteral("# Memory\n\n");
+
+  if (!memory.endsWith(QChar('\n')))
+    memory += QChar('\n');
+
+  const QString sectionHeader = QStringLiteral("## Accepted proposals\n");
+
+  if (!memory.contains(sectionHeader)) {
+    memory += QChar('\n');
+    memory += sectionHeader;
+    memory += QChar('\n');
+  }
+
+  memory += QStringLiteral("- %1\n").arg(trimmed);
+
+  return writeTextFile(path, memory);
 }
 
 bool ensureRoot() {

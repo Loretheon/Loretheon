@@ -387,6 +387,12 @@ add_executable(Episteme
         src/overseer/CloseFileTool.h
         include/overseer/EditWorkstationFileTool.cpp
         include/overseer/EditWorkstationFileTool.h
+        src/overseer/TranscriptEditPlanCard.cpp
+        src/overseer/TranscriptEditPlanCard.h
+        include/overseer/SessionSettings.cpp
+        include/overseer/SessionSettings.h
+        include/overseer/AutomationStrip.cpp
+        include/overseer/AutomationStrip.h
 )
 
 add_dependencies(Episteme

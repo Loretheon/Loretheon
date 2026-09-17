@@ -3,6 +3,7 @@
 #include <QPoint>
 #include <QRect>
 #include <QString>
+#include <QTimer>
 #include <QWidget>
 
 class QLabel;
@@ -31,6 +32,19 @@ public:
     BottomRight,
   };
 
+  enum class Status {
+    Neutral,
+    Modified,
+    Opening,
+    Rewriting,
+    Review,
+    Applied,
+    Failed,
+    ExternalChange,
+    Conflict,
+    Saved,
+  };
+
   WorkstationWindow(TextDocument *document, QWidget *body,
                     const QString &filePath, QWidget *parent);
 
@@ -44,7 +58,15 @@ public:
   void setEditSession(EditSession *session);
   EditSession *editSession() const { return m_editSession; }
 
-  void setStatusText(const QString &status);
+  Status status() const { return m_status; }
+
+  void setStatus(Status status, const QString &text = QString());
+
+  void setTransientStatus(Status status, const QString &text,
+                          int durationMs = 60000);
+
+  void refreshNeutralStatus();
+
   void setAlsoOpenElsewhere(bool alsoOpen);
   void setFocused(bool focused);
   void setDragOverHighlight(bool highlighted);
@@ -65,7 +87,6 @@ public:
 
   void showDiskConflictBanner();
   void hideDiskConflictBanner();
-  void refreshModifiedIndicator();
 
   static constexpr int kMinimumWidth = 240;
   static constexpr int kMinimumHeight = 160;
@@ -92,7 +113,10 @@ signals:
   void rewriteRequested(WorkstationWindow *window);
   void modeChangeRequested(WorkstationWindow *window, Mode mode);
 
+  void statusChanged(const QString &filePath, Status status);
+
 protected:
+  bool eventFilter(QObject *watched, QEvent *event) override;
   void mousePressEvent(QMouseEvent *event) override;
   void mouseMoveEvent(QMouseEvent *event) override;
   void mouseReleaseEvent(QMouseEvent *event) override;
@@ -107,6 +131,8 @@ private:
   QWidget *buildHeader();
   QWidget *buildConflictBanner();
 
+  void installFocusFilter(QWidget *w);
+
   ResizeEdge edgeAt(const QPoint &pos) const;
   void updateCursorForEdge(ResizeEdge edge);
 
@@ -117,6 +143,8 @@ private:
   void applyDrag(const QPoint &globalPos);
   void applyResize(const QPoint &globalPos);
 
+  void applyStatusVisuals();
+
   TextDocument *m_document = nullptr;
   QWidget *m_body = nullptr;
   QString m_filePath;
@@ -125,11 +153,13 @@ private:
 
   QWidget *m_header = nullptr;
   QLabel *m_titleLabel = nullptr;
+  QLabel *m_statusPill = nullptr;
   QPushButton *m_closeButton = nullptr;
 
   QWidget *m_conflictBanner = nullptr;
 
   Mode m_mode = Mode::Tiled;
+  Status m_status = Status::Neutral;
 
   bool m_maximized = false;
   QRect m_restoreGeometry;
@@ -149,7 +179,7 @@ private:
   bool m_dropTargetHighlight = false;
   bool m_alsoOpenElsewhere = false;
 
-  QString m_statusText = QStringLiteral("Editor");
+  QTimer *m_transientTimer = nullptr;
 
   static constexpr int kHeaderHeight = 30;
   static constexpr int kResizeBorder = 6;

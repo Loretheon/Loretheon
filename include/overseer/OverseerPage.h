@@ -54,13 +54,10 @@ private slots:
   void onDocumentChanged();
   void onAddToOverview(const QStringList &paths);
   void onFocusedFileChanged(const QString &absolutePath);
-  void onScopedEditRequested(TextEdit *editor, TextDocument *document,
-                             const QString &instruction);
 
 private:
   void reloadSession(const QString &name);
   void closeAllSessionDocuments();
-
   void migrateLegacyLayoutFiles();
 
   InferenceService *m_inferenceService = nullptr;

@@ -134,7 +134,7 @@ void Workstation::onWindowFocusRequested(WorkstationWindow *window) {
   bringToFront(window);
 }
 
-void Workstation::onWindowCloseRequested(WorkstationWindow *window) {
+void Workstation::destroyWindow(WorkstationWindow *window, bool emitSignals) {
   if (!window)
     return;
 
@@ -155,20 +155,35 @@ void Workstation::onWindowCloseRequested(WorkstationWindow *window) {
   window->setParent(nullptr);
   window->deleteLater();
 
+  if (emitSignals) {
+    emit windowClosed(path);
+    emit windowListChanged();
+  }
+}
+
+void Workstation::onWindowCloseRequested(WorkstationWindow *window) {
+  if (!window)
+    return;
+
+  destroyWindow(window, true);
+
   updateAlsoOpenBadges();
   applyTiling();
   saveLayout();
-
-  emit windowClosed(path);
-  emit windowListChanged();
 }
 
 void Workstation::onWindowGeometryChanged(WorkstationWindow *window) {
+  if (m_loading)
+    return;
+
   Q_UNUSED(window);
   saveLayout();
 }
 
 void Workstation::onWindowResizeFinished(WorkstationWindow *window) {
+  if (m_loading)
+    return;
+
   Q_UNUSED(window);
   saveLayout();
 }
@@ -184,7 +199,6 @@ void Workstation::onWindowDragMoved(WorkstationWindow *window,
     return;
 
   if (window->mode() != WorkstationWindow::Mode::Tiled) {
-    // Floating: no drop target.
     clearDragHighlights();
     return;
   }
@@ -213,9 +227,6 @@ void Workstation::onWindowDragFinished(WorkstationWindow *window,
     WorkstationWindow *nearest = nearestTiledWindow(globalPos, window);
 
     if (nearest && nearest != window) {
-      // Swap their slots in the tiled order. Since tiling is
-      // computed from the list order, swapping the entries in
-      // m_windows changes their positions on the next applyTiling().
       const int a = m_windows.indexOf(window);
       const int b = m_windows.indexOf(nearest);
 
@@ -238,7 +249,6 @@ void Workstation::onWindowModeChangeRequested(WorkstationWindow *window,
   window->setMode(mode);
 
   if (mode == WorkstationWindow::Mode::Tiled) {
-    // Move to end of the tiling order so it occupies the last cell.
     m_windows.removeOne(window);
     m_windows.append(window);
   }
@@ -312,7 +322,8 @@ void Workstation::reloadWindowFromDisk(WorkstationWindow *window) {
   doc->setModified(false);
 
   window->hideDiskConflictBanner();
-  window->refreshModifiedIndicator();
+  window->setTransientStatus(WorkstationWindow::Status::ExternalChange,
+                             tr("Reloaded from disk"));
 }
 
 void Workstation::saveWindowToDisk(WorkstationWindow *window) {
@@ -331,7 +342,7 @@ void Workstation::saveWindowToDisk(WorkstationWindow *window) {
   m_manager->saveDocument(doc);
 
   window->hideDiskConflictBanner();
-  window->refreshModifiedIndicator();
+  window->setTransientStatus(WorkstationWindow::Status::Saved, tr("Saved"));
 }
 
 void Workstation::onDiskConflictReload(WorkstationWindow *window) {
@@ -343,7 +354,7 @@ void Workstation::onDiskConflictKeepMine(WorkstationWindow *window) {
     return;
 
   window->hideDiskConflictBanner();
-  window->refreshModifiedIndicator();
+  window->refreshNeutralStatus();
 }
 
 void Workstation::onDiskConflictOverwrite(WorkstationWindow *window) {
@@ -388,8 +399,6 @@ QList<QRect> Workstation::computeTiledRects(int count) const {
     return result;
   }
 
-  // Column count: favor a roughly square grid that keeps cells close
-  // to a 4:3 aspect ratio.
   int cols = qCeil(qSqrt(static_cast<double>(count) *
                          (static_cast<double>(usableH) /
                           static_cast<double>(usableW))));
@@ -456,8 +465,6 @@ void Workstation::setAllFloating() {
 }
 
 void Workstation::arrangeAll() {
-  // Re-tile every tiled window. Reset each tiled window's stored
-  // geometry to the computed tiling so the "reset" is deterministic.
   applyTiling();
   saveLayout();
 }
@@ -604,11 +611,13 @@ WorkstationWindow *Workstation::openFile(const QString &absolutePath,
 
   updateAlsoOpenBadges();
 
-  // Apply the tiling. Existing tiled windows keep their relative
-  // order; the new one is appended.
   applyTiling();
 
-  saveLayout();
+  if (!m_loading)
+    saveLayout();
+
+  window->setTransientStatus(WorkstationWindow::Status::Opening,
+                             tr("Opened"));
 
   emit windowOpened(absolutePath);
   emit windowListChanged();
@@ -626,33 +635,37 @@ void Workstation::closeFile(const QString &absolutePath) {
 }
 
 void Workstation::closeAll() {
-  QTimer::singleShot(0, this, [this]() {
-    if (m_windows.isEmpty())
-      return;
-
-    const QList<WorkstationWindow *> snapshot = m_windows;
-    m_windows.clear();
-    m_byPath.clear();
-    m_focusedWindow = nullptr;
-    m_dropTarget = nullptr;
-
-    for (WorkstationWindow *w : snapshot) {
-      if (!w)
-        continue;
-
-      unwatchFile(w->filePath());
-
-      w->hide();
-      w->setParent(nullptr);
-      w->deleteLater();
-    }
-
-    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
-
+  if (m_windows.isEmpty()) {
     saveLayout();
+    return;
+  }
 
-    emit windowListChanged();
-  });
+  const QList<WorkstationWindow *> snapshot = m_windows;
+
+  m_windows.clear();
+  m_byPath.clear();
+  m_focusedWindow = nullptr;
+  m_dropTarget = nullptr;
+
+  for (WorkstationWindow *w : snapshot) {
+    if (!w)
+      continue;
+
+    unwatchFile(w->filePath());
+
+    w->hide();
+    w->setParent(nullptr);
+    w->deleteLater();
+  }
+
+  // Force deferred deletions to run now so the next layout load starts
+  // from a clean slate, and so saveLayout below cannot race a pending
+  // open.
+  QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+
+  saveLayout();
+
+  emit windowListChanged();
 }
 
 void Workstation::refreshAlsoOpenBadges() { updateAlsoOpenBadges(); }
@@ -676,16 +689,19 @@ void Workstation::setFileStatus(const QString &absolutePath,
   WorkstationWindow *window = windowForPath(absolutePath);
 
   if (window)
-    window->setStatusText(status);
+    window->setStatus(WorkstationWindow::Status::Neutral, status);
 }
 
 void Workstation::resizeEvent(QResizeEvent *event) {
   QWidget::resizeEvent(event);
 
-  // Tiled windows re-tile on resize.
-  applyTiling();
+  if (event->oldSize() == event->size())
+    return;
 
-  // Floating windows clamp back in if they went off.
+  // Deliberately do NOT re-tile on resize. Tiled windows should keep
+  // their user-arranged positions. Only floating windows are clamped
+  // back into the canvas if they escape.
+
   constexpr int minVisible = 60;
 
   for (WorkstationWindow *w : std::as_const(m_windows)) {
@@ -825,16 +841,8 @@ void Workstation::saveLayout() {
 }
 
 void Workstation::loadLayout() {
-  const QList<WorkstationWindow *> snapshot = m_windows;
-  m_windows.clear();
-  m_byPath.clear();
-  m_focusedWindow = nullptr;
-  m_dropTarget = nullptr;
-
-  for (WorkstationWindow *w : snapshot) {
-    if (w)
-      w->deleteLater();
-  }
+  if (!m_windows.isEmpty())
+    closeAll();
 
   const QString path = layoutPath();
 
@@ -855,6 +863,8 @@ void Workstation::loadLayout() {
 
   const QJsonArray windowsArr =
       root.value(QStringLiteral("windows")).toArray();
+
+  m_loading = true;
 
   for (const QJsonValue &value : windowsArr) {
     if (!value.isObject())
@@ -910,6 +920,8 @@ void Workstation::loadLayout() {
         mode == WorkstationWindow::Mode::Floating)
       window->toggleMaximize();
   }
+
+  m_loading = false;
 
   QList<WorkstationWindow *> ordered = m_windows;
 

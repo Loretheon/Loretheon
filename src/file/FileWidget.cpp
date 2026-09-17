@@ -319,5 +319,13 @@ void FileWidget::setRootPath(const QString &path) {
   const QModelIndex rootIndex = fileSystemModel->setRootPath(path);
   fileSystemView->setRootIndex(rootIndex);
   fileSystemView->clearSelection();
+  fileSystemView->setCurrentIndex(QModelIndex());
+  fileSystemView->scrollToTop();
+
   pendingEditPath.clear();
+
+  // Reset the persisted expansion so paths from a previous root don't
+  // keep matching. The tree will re-populate from the new root.
+  DirectoryExplorerSettings::instance().setExpandedPaths({});
+  DirectoryExplorerSettings::instance().setSelectedPath({});
 }

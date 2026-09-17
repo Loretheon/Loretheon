@@ -20,6 +20,7 @@
 #include <QPushButton>
 #include <QResizeEvent>
 #include <QStyle>
+#include <QTimer>
 #include <QVBoxLayout>
 
 namespace {
@@ -31,6 +32,58 @@ QString shortFileName(const QString &path) {
     return path;
 
   return path.mid(slash + 1);
+}
+
+QString defaultStatusText(WorkstationWindow::Status status) {
+  switch (status) {
+  case WorkstationWindow::Status::Neutral:
+    return QObject::tr("Editor");
+  case WorkstationWindow::Status::Modified:
+    return QObject::tr("Modified");
+  case WorkstationWindow::Status::Opening:
+    return QObject::tr("Opened");
+  case WorkstationWindow::Status::Rewriting:
+    return QObject::tr("Rewriting…");
+  case WorkstationWindow::Status::Review:
+    return QObject::tr("Review");
+  case WorkstationWindow::Status::Applied:
+    return QObject::tr("Applied");
+  case WorkstationWindow::Status::Failed:
+    return QObject::tr("Failed");
+  case WorkstationWindow::Status::ExternalChange:
+    return QObject::tr("Changed on disk");
+  case WorkstationWindow::Status::Conflict:
+    return QObject::tr("Unsaved conflict");
+  case WorkstationWindow::Status::Saved:
+    return QObject::tr("Saved");
+  }
+  return {};
+}
+
+QString statusPropertyFor(WorkstationWindow::Status status) {
+  switch (status) {
+  case WorkstationWindow::Status::Neutral:
+    return QStringLiteral("neutral");
+  case WorkstationWindow::Status::Modified:
+    return QStringLiteral("modified");
+  case WorkstationWindow::Status::Opening:
+    return QStringLiteral("ok");
+  case WorkstationWindow::Status::Rewriting:
+    return QStringLiteral("busy");
+  case WorkstationWindow::Status::Review:
+    return QStringLiteral("busy");
+  case WorkstationWindow::Status::Applied:
+    return QStringLiteral("ok");
+  case WorkstationWindow::Status::Failed:
+    return QStringLiteral("error");
+  case WorkstationWindow::Status::ExternalChange:
+    return QStringLiteral("warn");
+  case WorkstationWindow::Status::Conflict:
+    return QStringLiteral("error");
+  case WorkstationWindow::Status::Saved:
+    return QStringLiteral("ok");
+  }
+  return QStringLiteral("neutral");
 }
 
 } // namespace
@@ -47,8 +100,10 @@ WorkstationWindow::WorkstationWindow(TextDocument *document, QWidget *body,
   setMinimumSize(kMinimumWidth, kMinimumHeight);
   setFocusPolicy(Qt::StrongFocus);
 
-  if (m_body)
+  if (m_body) {
     m_body->setParent(this);
+    installFocusFilter(m_body);
+  }
 
   m_header = buildHeader();
   m_conflictBanner = buildConflictBanner();
@@ -71,13 +126,39 @@ WorkstationWindow::WorkstationWindow(TextDocument *document, QWidget *body,
 
   if (m_document) {
     connect(m_document, &QTextDocument::modificationChanged, this,
-            [this](bool) { refreshModifiedIndicator(); });
+            [this](bool) { refreshNeutralStatus(); });
   }
 
-  refreshModifiedIndicator();
+  m_transientTimer = new QTimer(this);
+  m_transientTimer->setSingleShot(true);
+
+  connect(m_transientTimer, &QTimer::timeout, this,
+          [this]() { refreshNeutralStatus(); });
+
+  refreshNeutralStatus();
 }
 
 WorkstationWindow::~WorkstationWindow() = default;
+
+void WorkstationWindow::installFocusFilter(QWidget *w) {
+  if (!w)
+    return;
+
+  w->installEventFilter(this);
+
+  for (QObject *child : w->children()) {
+    if (auto *cw = qobject_cast<QWidget *>(child))
+      installFocusFilter(cw);
+  }
+}
+
+bool WorkstationWindow::eventFilter(QObject *watched, QEvent *event) {
+  if (event->type() == QEvent::MouseButtonPress) {
+    emit focusRequested(this);
+  }
+
+  return QWidget::eventFilter(watched, event);
+}
 
 QString WorkstationWindow::displayName() const {
   return shortFileName(m_filePath);
@@ -105,6 +186,51 @@ void WorkstationWindow::setMode(Mode mode) {
   emit modeChangeRequested(this, m_mode);
 }
 
+void WorkstationWindow::setStatus(Status status, const QString &text) {
+  m_transientTimer->stop();
+
+  m_status = status;
+
+  if (m_statusPill) {
+    const QString label = text.isEmpty() ? defaultStatusText(status) : text;
+    m_statusPill->setText(label);
+    m_statusPill->setMinimumWidth(0);
+  }
+
+  applyStatusVisuals();
+
+  emit statusChanged(m_filePath, status);
+}
+
+void WorkstationWindow::setTransientStatus(Status status, const QString &text,
+                                           int durationMs) {
+  setStatus(status, text);
+
+  m_transientTimer->start(durationMs);
+}
+
+void WorkstationWindow::refreshNeutralStatus() {
+  if (m_transientTimer && m_transientTimer->isActive())
+    return;
+
+  if (m_document && m_document->isModified())
+    setStatus(Status::Modified);
+  else
+    setStatus(Status::Neutral);
+}
+
+void WorkstationWindow::applyStatusVisuals() {
+  if (!m_statusPill)
+    return;
+
+  m_statusPill->setProperty("state", statusPropertyFor(m_status));
+
+  m_statusPill->style()->unpolish(m_statusPill);
+  m_statusPill->style()->polish(m_statusPill);
+
+  m_statusPill->update();
+}
+
 QSize WorkstationWindow::preferredSize() const {
   return QSize(480, 360);
 }
@@ -120,6 +246,11 @@ QWidget *WorkstationWindow::buildHeader() {
   m_titleLabel->setObjectName(QStringLiteral("workstationWindowTitle"));
   m_titleLabel->setAttribute(Qt::WA_TransparentForMouseEvents, true);
 
+  m_statusPill = new QLabel(header);
+  m_statusPill->setObjectName(QStringLiteral("workstationWindowStatus"));
+  m_statusPill->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+  m_statusPill->setText(defaultStatusText(Status::Neutral));
+
   m_closeButton = new QPushButton(QStringLiteral("\u2715"), header);
   m_closeButton->setObjectName(QStringLiteral("workstationWindowBtn"));
   m_closeButton->setFixedSize(24, 20);
@@ -130,6 +261,7 @@ QWidget *WorkstationWindow::buildHeader() {
   layout->setSpacing(6);
   layout->addWidget(m_titleLabel);
   layout->addStretch(1);
+  layout->addWidget(m_statusPill);
   layout->addWidget(m_closeButton);
 
   connect(m_closeButton, &QPushButton::clicked, this,
@@ -179,30 +311,15 @@ QWidget *WorkstationWindow::buildConflictBanner() {
 void WorkstationWindow::showDiskConflictBanner() {
   if (m_conflictBanner)
     m_conflictBanner->setVisible(true);
+
+  setStatus(Status::Conflict);
 }
 
 void WorkstationWindow::hideDiskConflictBanner() {
   if (m_conflictBanner)
     m_conflictBanner->setVisible(false);
-}
 
-void WorkstationWindow::refreshModifiedIndicator() {
-  if (!m_document)
-    return;
-
-  if (m_document->isModified())
-    setStatusText(tr("Modified"));
-  else
-    setStatusText(tr("Editor"));
-}
-
-void WorkstationWindow::setStatusText(const QString &status) {
-  m_statusText = status;
-
-  setProperty("status", status.toLower());
-  style()->unpolish(this);
-  style()->polish(this);
-  update();
+  refreshNeutralStatus();
 }
 
 void WorkstationWindow::setAlsoOpenElsewhere(bool alsoOpen) {

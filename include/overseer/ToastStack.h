@@ -10,22 +10,21 @@ class QVBoxLayout;
 // small stack of MemoryProposalToast widgets, caps the concurrent count,
 // and repositions itself on parent resize.
 //
-// The stack does not interpret mouse events; the toasts themselves are
-// non-interactive. This widget is purely a positioning/stacking helper.
+// In production this is parented to the OverseerPage, not to the
+// OverseerWidget, so the toasts sit over the whole page rather than over
+// the short input strip. The stack itself does not accept mouse events;
+// individual toasts do, so they can be clicked or dragged away.
 class ToastStack : public QWidget {
   Q_OBJECT
 
 public:
   explicit ToastStack(QWidget *parent);
 
-  // Slide in a new toast. If the stack is at capacity, the oldest toast
-  // is dismissed immediately to make room.
-  void showProposalToast(const QString &fact, const QString &rationale);
+  void showProposalToast(const QString &fact, const QString &rationale,
+                         const QString &scopeLabel);
 
-  // Remove all live toasts. Called when the session changes.
   void dismissAll();
 
-  // Called by the parent widget's resizeEvent, or via the event filter.
   void reposition();
 
 protected:

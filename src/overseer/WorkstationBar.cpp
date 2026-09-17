@@ -4,7 +4,9 @@
 #include "../../include/overseer/WorkstationWindow.h"
 
 #include <QHBoxLayout>
+#include <QLabel>
 #include <QLayoutItem>
+#include <QMenu>
 #include <QScrollArea>
 #include <QStyle>
 #include <QToolButton>
@@ -46,17 +48,14 @@ WorkstationBar::WorkstationBar(Workstation *workstation, QWidget *parent)
 }
 
 void WorkstationBar::rebuild() {
-  // Remove every widget currently in the layout (tool buttons and any
-  // stray children) but keep the trailing stretch.
   while (m_hostLayout->count() > 1) {
     QLayoutItem *item = m_hostLayout->takeAt(0);
 
     if (!item)
       break;
 
-    if (QWidget *w = item->widget()) {
+    if (QWidget *w = item->widget())
       w->deleteLater();
-    }
 
     delete item;
   }
@@ -72,10 +71,24 @@ void WorkstationBar::rebuild() {
   const auto windows = m_workstation->windows();
 
   int index = 0;
+  bool lastWasTiled = true;
+  bool firstEmitted = false;
+
+  auto addSeparator = [&]() {
+    auto *sep = new QLabel(QStringLiteral("·"), m_host);
+    sep->setObjectName(QStringLiteral("workstationBarSeparator"));
+    m_hostLayout->insertWidget(index, sep);
+    ++index;
+  };
 
   for (WorkstationWindow *w : windows) {
     if (!w)
       continue;
+
+    const bool tiled = w->mode() == WorkstationWindow::Mode::Tiled;
+
+    if (firstEmitted && tiled != lastWasTiled)
+      addSeparator();
 
     auto *button = new QToolButton(m_host);
     button->setText(w->displayName());
@@ -84,8 +97,11 @@ void WorkstationBar::rebuild() {
     button->setChecked(w->filePath() == focusedPath);
     button->setAutoRaise(true);
     button->setProperty("focused", w->filePath() == focusedPath);
+    button->setProperty("mode", tiled ? QStringLiteral("tiled")
+                                      : QStringLiteral("floating"));
     button->setToolTip(w->filePath());
     button->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Fixed);
+    button->setContextMenuPolicy(Qt::CustomContextMenu);
 
     connect(button, &QToolButton::clicked, this, [this, w]() {
       if (!m_workstation)
@@ -93,9 +109,32 @@ void WorkstationBar::rebuild() {
       m_workstation->focusWindow(w);
     });
 
+    connect(button, &QToolButton::customContextMenuRequested, this,
+            [this, w, button](const QPoint &pos) {
+              if (!m_workstation)
+                return;
+
+              QMenu menu(button);
+
+              QAction *close = menu.addAction(tr("Close"));
+              QAction *tile = menu.addAction(tr("Tile"));
+              QAction *floatAct = menu.addAction(tr("Float"));
+
+              QAction *chosen = menu.exec(button->mapToGlobal(pos));
+
+              if (chosen == close) {
+                m_workstation->closeFile(w->filePath());
+              } else if (chosen == tile) {
+                w->setMode(WorkstationWindow::Mode::Tiled);
+              } else if (chosen == floatAct) {
+                w->setMode(WorkstationWindow::Mode::Floating);
+              }
+            });
+
     m_hostLayout->insertWidget(index, button);
     ++index;
-  }
 
-  // No placeholder. Empty bar is fine.
+    lastWasTiled = tiled;
+    firstEmitted = true;
+  }
 }

@@ -7,6 +7,7 @@ QString TranscriptEvent::typeToString(Type type) {
   case Type::ToolCall: return QStringLiteral("tool_call");
   case Type::ToolResult: return QStringLiteral("tool_result");
   case Type::MemoryProposal: return QStringLiteral("memory_proposal");
+  case Type::EditPlan: return QStringLiteral("edit_plan");
   case Type::Stage: return QStringLiteral("stage");
   case Type::Promotion: return QStringLiteral("promotion");
   case Type::Error: return QStringLiteral("error");
@@ -21,6 +22,7 @@ TranscriptEvent::Type TranscriptEvent::typeFromString(const QString &value) {
   if (value == QStringLiteral("tool_call")) return Type::ToolCall;
   if (value == QStringLiteral("tool_result")) return Type::ToolResult;
   if (value == QStringLiteral("memory_proposal")) return Type::MemoryProposal;
+  if (value == QStringLiteral("edit_plan")) return Type::EditPlan;
   if (value == QStringLiteral("stage")) return Type::Stage;
   if (value == QStringLiteral("promotion")) return Type::Promotion;
   if (value == QStringLiteral("error")) return Type::Error;

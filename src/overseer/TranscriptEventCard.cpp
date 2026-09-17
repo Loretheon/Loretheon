@@ -2,8 +2,10 @@
 
 #include "../../include/app/theme/ThemeTokens.h"
 #include "../../include/overseer/MarkdownView.h"
+#include "TranscriptEditPlanCard.h"
 
 #include <QClipboard>
+#include <QComboBox>
 #include <QEvent>
 #include <QGuiApplication>
 #include <QHBoxLayout>
@@ -23,6 +25,8 @@ QString formatTimestamp(const QDateTime &ts) {
 
 QString roleForEvent(TranscriptEvent::Type type, bool toolOk) {
   switch (type) {
+  case TranscriptEvent::Type::EditPlan:
+    return QStringLiteral("event.proposal");
   case TranscriptEvent::Type::UserMessage:
     return QStringLiteral("event.user");
   case TranscriptEvent::Type::AssistantMessage:
@@ -43,6 +47,14 @@ QString roleForEvent(TranscriptEvent::Type type, bool toolOk) {
     return QStringLiteral("event.notice");
   }
   return QStringLiteral("event.notice");
+}
+
+QString scopeLabelFor(const QString &scope) {
+  if (scope == QStringLiteral("global"))
+    return QObject::tr("global");
+  if (scope == QStringLiteral("session"))
+    return QObject::tr("session");
+  return {};
 }
 
 } // namespace
@@ -69,8 +81,27 @@ TranscriptEventCard::TranscriptEventCard(const TranscriptEvent &event,
 }
 
 void TranscriptEventCard::updateEvent(const TranscriptEvent &event) {
+  const bool proposalChanged =
+      event.proposalStatus != m_event.proposalStatus ||
+      event.proposalAcceptedScope != m_event.proposalAcceptedScope;
+
   m_event = event;
+
+  setTitle(headerTitleFor(event));
   refreshStatusDot();
+
+  if (proposalChanged) {
+    // In-place update only. The accept/reject buttons and their
+    // connections are left intact; we just show or hide them and set the
+    // status label. This is safe to call from inside the button's own
+    // clicked handler.
+    refreshProposalControls();
+  }
+
+  if (m_planCard && event.type == TranscriptEvent::Type::EditPlan) {
+    m_planCard->setPlanStatus(event.planStatus, event.planResult);
+  }
+
   update();
 }
 
@@ -92,6 +123,8 @@ void TranscriptEventCard::changeEvent(QEvent *event) {
 
 QString TranscriptEventCard::headerTitleFor(const TranscriptEvent &event) const {
   switch (event.type) {
+  case TranscriptEvent::Type::EditPlan:
+    return tr("Edit plan");
   case TranscriptEvent::Type::UserMessage:
     return tr("You");
   case TranscriptEvent::Type::AssistantMessage:
@@ -104,8 +137,11 @@ QString TranscriptEventCard::headerTitleFor(const TranscriptEvent &event) const 
       return QStringLiteral("%1  %2").arg(mark, event.toolName);
     }
     return tr("Tool");
-  case TranscriptEvent::Type::MemoryProposal:
-    return tr("Memory proposal");
+  case TranscriptEvent::Type::MemoryProposal: {
+    const QString scope = scopeLabelFor(event.proposalScope);
+    return scope.isEmpty() ? tr("Memory proposal")
+                           : tr("Memory proposal · %1").arg(scope);
+  }
   case TranscriptEvent::Type::Stage:
     return tr("Staged file");
   case TranscriptEvent::Type::Promotion:
@@ -133,6 +169,9 @@ void TranscriptEventCard::populateBody(QVBoxLayout *bodyLayout) {
   case TranscriptEvent::Type::MemoryProposal:
     buildProposal(bodyLayout);
     break;
+  case TranscriptEvent::Type::EditPlan:
+    buildEditPlan(bodyLayout);
+    break;
   case TranscriptEvent::Type::Stage:
     buildStage(bodyLayout);
     break;
@@ -144,6 +183,26 @@ void TranscriptEventCard::populateBody(QVBoxLayout *bodyLayout) {
     buildNotice(bodyLayout);
     break;
   }
+}
+
+void TranscriptEventCard::buildEditPlan(QVBoxLayout *bodyLayout) {
+  m_planCard = new TranscriptEditPlanCard(
+      m_event.planId, m_event.planFilePath, m_event.planInstruction,
+      m_event.planCommands, m_event.planStatus, m_event.planResult, this);
+
+  connect(m_planCard, &TranscriptEditPlanCard::editAccepted, this,
+          &TranscriptEventCard::planEditAccepted);
+
+  connect(m_planCard, &TranscriptEditPlanCard::editRejected, this,
+          &TranscriptEventCard::planEditRejected);
+
+  connect(m_planCard, &TranscriptEditPlanCard::applyRequested, this,
+          &TranscriptEventCard::planApplyRequested);
+
+  connect(m_planCard, &TranscriptEditPlanCard::cancelRequested, this,
+          &TranscriptEventCard::planCancelRequested);
+
+  bodyLayout->addWidget(m_planCard);
 }
 
 void TranscriptEventCard::buildUserAssistant(TranscriptEvent::Type type,
@@ -194,6 +253,13 @@ void TranscriptEventCard::buildToolResult(QVBoxLayout *bodyLayout) {
 }
 
 void TranscriptEventCard::buildProposal(QVBoxLayout *bodyLayout) {
+  if (!m_event.proposalContext.isEmpty()) {
+    auto *context = new MarkdownView(this);
+    context->setObjectName(QStringLiteral("transcriptProposalContext"));
+    context->setMarkdownText(m_event.proposalContext);
+    bodyLayout->addWidget(context);
+  }
+
   auto *fact = new QLabel(m_event.proposalFact, this);
   fact->setWordWrap(true);
   fact->setObjectName(QStringLiteral("transcriptProposalFact"));
@@ -206,36 +272,94 @@ void TranscriptEventCard::buildProposal(QVBoxLayout *bodyLayout) {
     bodyLayout->addWidget(rationale);
   }
 
-  auto *row = new QHBoxLayout;
+  m_proposalButtonRow = new QWidget(this);
+  auto *row = new QHBoxLayout(m_proposalButtonRow);
+  row->setContentsMargins(0, 0, 0, 0);
+  row->setSpacing(6);
+
+  m_proposalScopeCombo = new QComboBox(m_proposalButtonRow);
+  m_proposalScopeCombo->addItem(tr("Global memory"),
+                                QStringLiteral("global"));
+  m_proposalScopeCombo->addItem(tr("Session memory"),
+                                QStringLiteral("session"));
+
+  {
+    const int index =
+        m_proposalScopeCombo->findData(m_event.proposalScope);
+    if (index >= 0)
+      m_proposalScopeCombo->setCurrentIndex(index);
+  }
+
+  m_proposalAccept =
+      new QPushButton(QStringLiteral("\u2713"), m_proposalButtonRow);
+  m_proposalReject =
+      new QPushButton(QStringLiteral("\u2717"), m_proposalButtonRow);
+
+  m_proposalAccept->setToolTip(tr("Accept into the selected scope"));
+  m_proposalReject->setToolTip(tr("Reject this proposal"));
+
+  connect(m_proposalAccept, &QPushButton::clicked, this, [this]() {
+    const QString scope = m_proposalScopeCombo
+                              ? m_proposalScopeCombo->currentData().toString()
+                              : m_event.proposalScope;
+    emit memoryProposalAccepted(m_event.proposalKey, scope);
+  });
+
+  connect(m_proposalReject, &QPushButton::clicked, this, [this]() {
+    emit memoryProposalRejected(m_event.proposalKey);
+  });
+
+  m_proposalStatusLabel = new QLabel(m_proposalButtonRow);
+  m_proposalStatusLabel->setObjectName(
+      QStringLiteral("transcriptProposalStatus"));
+  m_proposalStatusLabel->setVisible(false);
+
+  row->addWidget(m_proposalScopeCombo);
+  row->addWidget(m_proposalAccept);
+  row->addWidget(m_proposalReject);
+  row->addWidget(m_proposalStatusLabel);
+  row->addStretch(1);
+
+  bodyLayout->addWidget(m_proposalButtonRow);
+
+  refreshProposalControls();
+}
+
+void TranscriptEventCard::refreshProposalControls() {
+  if (!m_proposalButtonRow)
+    return;
 
   const bool pending = m_event.proposalStatus.isEmpty() ||
                        m_event.proposalStatus == QStringLiteral("pending");
 
+  if (m_proposalScopeCombo)
+    m_proposalScopeCombo->setVisible(pending);
+
+  if (m_proposalAccept)
+    m_proposalAccept->setVisible(pending);
+
+  if (m_proposalReject)
+    m_proposalReject->setVisible(pending);
+
+  if (!m_proposalStatusLabel)
+    return;
+
   if (pending) {
-    auto *accept = new QPushButton(QStringLiteral("\u2713"), this);
-    auto *reject = new QPushButton(QStringLiteral("\u2717"), this);
-
-    connect(accept, &QPushButton::clicked, this, [this]() {
-      emit memoryProposalAccepted(m_event.proposalKey);
-    });
-    connect(reject, &QPushButton::clicked, this, [this]() {
-      emit memoryProposalRejected(m_event.proposalKey);
-    });
-
-    row->addWidget(accept);
-    row->addWidget(reject);
-    row->addStretch(1);
-  } else {
-    auto *status = new QLabel(this);
-    status->setObjectName(QStringLiteral("transcriptProposalStatus"));
-    status->setText(m_event.proposalStatus == QStringLiteral("accepted")
-                        ? tr("\u2713 Accepted")
-                        : tr("\u2717 Rejected"));
-    row->addWidget(status);
-    row->addStretch(1);
+    m_proposalStatusLabel->setVisible(false);
+    return;
   }
 
-  bodyLayout->addLayout(row);
+  const QString scope = scopeLabelFor(m_event.proposalAcceptedScope);
+
+  if (m_event.proposalStatus == QStringLiteral("accepted")) {
+    m_proposalStatusLabel->setText(
+        scope.isEmpty() ? tr("\u2713 Accepted")
+                        : tr("\u2713 Accepted into %1").arg(scope));
+  } else {
+    m_proposalStatusLabel->setText(tr("\u2717 Rejected"));
+  }
+
+  m_proposalStatusLabel->setVisible(true);
 }
 
 void TranscriptEventCard::buildStage(QVBoxLayout *bodyLayout) {
@@ -296,11 +420,17 @@ QMenu *TranscriptEventCard::buildContextMenu(QWidget *parent) {
        m_event.proposalStatus == QStringLiteral("pending"))) {
     menu->addSeparator();
 
-    QAction *accept = menu->addAction(tr("Accept proposal"));
+    QAction *acceptGlobal = menu->addAction(tr("Accept into global memory"));
+    QAction *acceptSession = menu->addAction(tr("Accept into session memory"));
     QAction *reject = menu->addAction(tr("Reject proposal"));
 
-    connect(accept, &QAction::triggered, this, [this]() {
-      emit memoryProposalAccepted(m_event.proposalKey);
+    connect(acceptGlobal, &QAction::triggered, this, [this]() {
+      emit memoryProposalAccepted(m_event.proposalKey,
+                                  QStringLiteral("global"));
+    });
+    connect(acceptSession, &QAction::triggered, this, [this]() {
+      emit memoryProposalAccepted(m_event.proposalKey,
+                                  QStringLiteral("session"));
     });
     connect(reject, &QAction::triggered, this, [this]() {
       emit memoryProposalRejected(m_event.proposalKey);
@@ -314,6 +444,23 @@ QMenu *TranscriptEventCard::buildContextMenu(QWidget *parent) {
     QAction *copyPath = menu->addAction(tr("Copy path"));
     connect(copyPath, &QAction::triggered, this, [this]() {
       QGuiApplication::clipboard()->setText(m_event.filePath);
+    });
+  }
+
+  if (m_event.type == TranscriptEvent::Type::EditPlan &&
+      (m_event.planStatus.isEmpty() ||
+       m_event.planStatus == QStringLiteral("pending"))) {
+    menu->addSeparator();
+
+    QAction *apply = menu->addAction(tr("Apply accepted edits"));
+    QAction *cancel = menu->addAction(tr("Cancel plan"));
+
+    connect(apply, &QAction::triggered, this, [this]() {
+      emit planApplyRequested(m_event.planId);
+    });
+
+    connect(cancel, &QAction::triggered, this, [this]() {
+      emit planCancelRequested(m_event.planId);
     });
   }
 

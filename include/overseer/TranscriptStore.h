@@ -20,13 +20,15 @@ public:
   const QList<TranscriptEvent> &events() const { return m_events; }
 
   void clear();
-
   void loadFromDisk();
-
   void append(const TranscriptEvent &event);
 
   void updateProposalStatus(const QString &proposalKey,
-                            const QString &status);
+                            const QString &status,
+                            const QString &acceptedScope = QString());
+
+  void updatePlanStatus(const QString &planId, const QString &status,
+                        const QString &result);
 
   signals:
     void eventsReset();
@@ -35,7 +37,6 @@ public:
 
 private:
   QString transcriptPath() const;
-
   void rewriteDisk();
 
   OverseerSession *m_session = nullptr;

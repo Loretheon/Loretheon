@@ -15,20 +15,19 @@ constexpr int ToastRadius = 8;
 
 MemoryProposalToast::MemoryProposalToast(const QString &fact,
                                          const QString &rationale,
+                                         const QString &scopeLabel,
                                          int lifetimeMs, QWidget *parent)
     : QWidget(parent), m_lifetimeMs(lifetimeMs) {
   setObjectName(QStringLiteral("memoryProposalToast"));
-  setAttribute(Qt::WA_TransparentForMouseEvents, true);
   setAttribute(Qt::WA_ShowWithoutActivating, true);
-
-  // Ensure paintEvent actually runs against a real backing surface.
   setAttribute(Qt::WA_StyledBackground, true);
+  setCursor(Qt::PointingHandCursor);
+  setToolTip(tr("Click to dismiss, or drag aside."));
 
   setAutoFillBackground(false);
 
   m_factLabel = new QLabel(fact, this);
   m_factLabel->setWordWrap(true);
-  m_factLabel->setAttribute(Qt::WA_TransparentForMouseEvents, true);
 
   {
     QFont bold = m_factLabel->font();
@@ -38,7 +37,6 @@ MemoryProposalToast::MemoryProposalToast(const QString &fact,
 
   m_rationaleLabel = new QLabel(rationale, this);
   m_rationaleLabel->setWordWrap(true);
-  m_rationaleLabel->setAttribute(Qt::WA_TransparentForMouseEvents, true);
   m_rationaleLabel->setVisible(!rationale.isEmpty());
 
   {
@@ -47,8 +45,12 @@ MemoryProposalToast::MemoryProposalToast(const QString &fact,
     m_rationaleLabel->setFont(small);
   }
 
-  auto *header = new QLabel(tr("Memory proposal"), this);
-  header->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+  const QString headerText =
+      scopeLabel.isEmpty()
+          ? tr("Memory proposal")
+          : tr("Memory proposal · %1").arg(scopeLabel);
+
+  auto *header = new QLabel(headerText, this);
   {
     QFont small = header->font();
     small.setPointSizeF(qMax(7.0, small.pointSizeF() - 1.0));
@@ -62,18 +64,14 @@ MemoryProposalToast::MemoryProposalToast(const QString &fact,
   layout->addWidget(m_factLabel);
   layout->addWidget(m_rationaleLabel);
 
-  // Fade only on dismiss, not as an always-on effect. This avoids the
-  // X11 issue where an opacity effect on a child widget with no
-  // composition surface renders nothing.
   m_opacity = new QGraphicsOpacityEffect(this);
   m_opacity->setOpacity(1.0);
 
   m_fade = new QPropertyAnimation(m_opacity, "opacity", this);
   m_fade->setDuration(FadeOutMs);
 
-  connect(m_fade, &QPropertyAnimation::finished, this, [this]() {
-    emit finished();
-  });
+  connect(m_fade, &QPropertyAnimation::finished, this,
+          [this]() { emit finished(); });
 
   m_lifetimeTimer = new QTimer(this);
   m_lifetimeTimer->setSingleShot(true);
@@ -86,32 +84,26 @@ MemoryProposalToast::MemoryProposalToast(const QString &fact,
 }
 
 void MemoryProposalToast::dismiss() {
-  if (m_dismissed) {
+  if (m_dismissed)
     return;
-  }
 
   m_dismissed = true;
 
-  if (m_lifetimeTimer) {
+  if (m_lifetimeTimer)
     m_lifetimeTimer->stop();
-  }
 
   startFadeOut();
 }
 
 void MemoryProposalToast::startFadeOut() {
-  if (m_dismissed && m_fade->state() == QPropertyAnimation::Running) {
+  if (m_dismissed && m_fade->state() == QPropertyAnimation::Running)
     return;
-  }
 
   m_dismissed = true;
 
-  if (m_lifetimeTimer) {
+  if (m_lifetimeTimer)
     m_lifetimeTimer->stop();
-  }
 
-  // Install the opacity effect now, right before we need it, so the
-  // widget is fully realised first.
   setGraphicsEffect(m_opacity);
 
   m_fade->stop();
@@ -140,9 +132,45 @@ void MemoryProposalToast::paintEvent(QPaintEvent *event) {
 }
 
 void MemoryProposalToast::mousePressEvent(QMouseEvent *event) {
-  event->ignore();
+  if (event->button() != Qt::LeftButton) {
+    QWidget::mousePressEvent(event);
+    return;
+  }
+
+  m_dragging = true;
+  m_dragStartGlobal = event->globalPosition().toPoint();
+
+  event->accept();
+}
+
+void MemoryProposalToast::mouseMoveEvent(QMouseEvent *event) {
+  if (!m_dragging) {
+    QWidget::mouseMoveEvent(event);
+    return;
+  }
+
+  const QPoint delta =
+      event->globalPosition().toPoint() - m_dragStartGlobal;
+
+  if (delta.manhattanLength() > kDragDismissPx) {
+    dismiss();
+    m_dragging = false;
+  }
+
+  event->accept();
 }
 
 void MemoryProposalToast::mouseReleaseEvent(QMouseEvent *event) {
-  event->ignore();
+  if (event->button() != Qt::LeftButton) {
+    QWidget::mouseReleaseEvent(event);
+    return;
+  }
+
+  const bool wasDragging = m_dragging;
+  m_dragging = false;
+
+  if (wasDragging)
+    dismiss();
+
+  event->accept();
 }

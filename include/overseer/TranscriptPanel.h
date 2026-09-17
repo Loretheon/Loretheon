@@ -26,9 +26,14 @@ public:
   void setPinToBottom(bool pin);
   bool pinToBottom() const { return m_pinToBottom; }
 
-  signals:
-    void memoryProposalAccepted(const QString &key);
+signals:
+  void memoryProposalAccepted(const QString &key, const QString &scope);
   void memoryProposalRejected(const QString &key);
+
+  void planEditAccepted(const QString &planId, int editId);
+  void planEditRejected(const QString &planId, int editId);
+  void planApplyRequested(const QString &planId);
+  void planCancelRequested(const QString &planId);
 
 private slots:
   void onEventsReset();

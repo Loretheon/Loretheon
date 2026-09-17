@@ -9,6 +9,7 @@
 #include "OverseerWidget.h"
 #include "OverviewPanel.h"
 #include "PathUtils.h"
+#include "ToastStack.h"
 #include "TranscriptPanel.h"
 #include "Workstation.h"
 #include "WorkstationBar.h"
@@ -124,18 +125,18 @@ OverseerPage::OverseerPage(InferenceService *inferenceService,
           });
 
   connect(m_overseer, &OverseerWidget::fileOpenRequested, this,
-        [this](const QString &absolutePath) {
-          if (!m_workstation)
-            return;
+          [this](const QString &absolutePath) {
+            if (!m_workstation)
+              return;
 
-          if (m_currentOutputFolder.isEmpty())
-            return;
+            if (m_currentOutputFolder.isEmpty())
+              return;
 
-          if (!PathUtils::isUnder(absolutePath, m_currentOutputFolder))
-            return;
+            if (!PathUtils::isUnder(absolutePath, m_currentOutputFolder))
+              return;
 
-          m_workstation->openFile(absolutePath);
-        });
+            m_workstation->openFile(absolutePath);
+          });
 
   connect(m_overseer, &OverseerWidget::fileCloseRequested, this,
           [this](const QString &absolutePath) {
@@ -145,12 +146,75 @@ OverseerPage::OverseerPage(InferenceService *inferenceService,
             m_workstation->closeFile(absolutePath);
           });
 
+
+  connect(m_overseer, &OverseerWidget::saveWorkstationFileRequested, this,
+          [this](const QString &absolutePath) {
+            if (!m_workstation || absolutePath.isEmpty())
+              return;
+
+            WorkstationWindow *window =
+                m_workstation->windowForPath(absolutePath);
+
+            if (window)
+              m_workstation->saveWindowToDisk(window);
+          });
+
+  connect(m_overseer, &OverseerWidget::planGenerationStarted, this,
+          [this](const QString &absolutePath) {
+            if (!m_workstation)
+              return;
+
+            for (WorkstationWindow *w : m_workstation->windows()) {
+              if (w && w->filePath() == absolutePath) {
+                w->setStatus(WorkstationWindow::Status::Rewriting);
+                return;
+              }
+            }
+          });
+
+  connect(m_overseer, &OverseerWidget::planReviewReady, this,
+          [this](const QString &absolutePath) {
+            if (!m_workstation)
+              return;
+
+            for (WorkstationWindow *w : m_workstation->windows()) {
+              if (w && w->filePath() == absolutePath) {
+                w->setStatus(WorkstationWindow::Status::Review);
+                return;
+              }
+            }
+          });
+
+  connect(m_overseer, &OverseerWidget::planApplied, this,
+          [this](const QString &absolutePath) {
+            if (!m_workstation)
+              return;
+
+            for (WorkstationWindow *w : m_workstation->windows()) {
+              if (w && w->filePath() == absolutePath) {
+                w->setTransientStatus(WorkstationWindow::Status::Applied,
+                                      tr("Applied"), 2500);
+                return;
+              }
+            }
+          });
+
+  connect(m_overseer, &OverseerWidget::planFailed, this,
+          [this](const QString &absolutePath) {
+            if (!m_workstation || absolutePath.isEmpty())
+              return;
+
+            for (WorkstationWindow *w : m_workstation->windows()) {
+              if (w && w->filePath() == absolutePath) {
+                w->setTransientStatus(WorkstationWindow::Status::Failed,
+                                      tr("Failed"), 3500);
+                return;
+              }
+            }
+          });
+
   connect(m_workstation, &Workstation::currentFileChanged, this,
-        &OverseerPage::onFocusedFileChanged);
-
-  connect(m_overseer, &OverseerWidget::scopedEditRequested, this,
-          &OverseerPage::onScopedEditRequested);
-
+          &OverseerPage::onFocusedFileChanged);
 
   connect(m_workstation, &Workstation::rewriteRequested, this,
           [this](WorkstationWindow *window) {
@@ -196,8 +260,6 @@ OverseerPage::OverseerPage(InferenceService *inferenceService,
     });
   }
 
-  // --- Left rail content -------------------------------------------------
-
   auto *leftContent = new QWidget(this);
   auto *leftLayout = new QVBoxLayout(leftContent);
   leftLayout->setContentsMargins(0, 0, 0, 0);
@@ -212,8 +274,6 @@ OverseerPage::OverseerPage(InferenceService *inferenceService,
   m_leftDock = new AutoHideDock(AutoHideDock::Edge::Left, this);
   m_leftDock->setContent(leftContent);
 
-  // --- Right rail content ------------------------------------------------
-
   auto *rightContent = new QWidget(this);
   auto *rightLayout = new QVBoxLayout(rightContent);
   rightLayout->setContentsMargins(0, 0, 0, 0);
@@ -223,8 +283,6 @@ OverseerPage::OverseerPage(InferenceService *inferenceService,
 
   m_rightDock = new AutoHideDock(AutoHideDock::Edge::Right, this);
   m_rightDock->setContent(rightContent);
-
-  // --- Center column -----------------------------------------------------
 
   auto *workstationColumn = new QWidget(this);
   auto *workstationLayout = new QVBoxLayout(workstationColumn);
@@ -249,12 +307,8 @@ OverseerPage::OverseerPage(InferenceService *inferenceService,
   centerColumn->setStretchFactor(0, 3);
   centerColumn->setStretchFactor(1, 1);
 
-  // --- Reservations ------------------------------------------------------
-
   auto *leftReservation = new DockReservation(m_leftDock, this);
   auto *rightReservation = new DockReservation(m_rightDock, this);
-
-  // --- Three-column horizontal layout -----------------------------------
 
   auto *columns = new QWidget(this);
   auto *columnsLayout = new QHBoxLayout(columns);
@@ -268,6 +322,14 @@ OverseerPage::OverseerPage(InferenceService *inferenceService,
   auto *root = new QVBoxLayout(this);
   root->setContentsMargins(0, 0, 0, 0);
   root->addWidget(columns);
+
+  // Reparent the toast stack to the page so it overlays the whole
+  // center area rather than the short input strip.
+  if (ToastStack *toastStack = m_overseer->toastStack(); toastStack) {
+    toastStack->setParent(this);
+    toastStack->reposition();
+    toastStack->raise();
+  }
 
   migrateLegacyLayoutFiles();
 }
@@ -361,8 +423,6 @@ void OverseerPage::onSessionCleared() {
   if (m_workstation)
     m_workstation->closeAll();
 
-  QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
-
   closeAllSessionDocuments();
 
   emit dirtyChanged(false);
@@ -384,8 +444,6 @@ void OverseerPage::reloadSession(const QString &name) {
 
   if (m_workstation)
     m_workstation->closeAll();
-
-  QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
 
   closeAllSessionDocuments();
 
@@ -480,7 +538,6 @@ void OverseerPage::stageFileInSession(const QString &absolutePath) {
                      3000);
 }
 
-
 void OverseerPage::onFocusedFileChanged(const QString &absolutePath) {
   if (!m_overseer)
     return;
@@ -492,9 +549,6 @@ void OverseerPage::onFocusedFileChanged(const QString &absolutePath) {
     return;
   }
 
-  // Locate the TextDocument and TextEdit for this file. The Workstation
-  // owns the window; we look up the document in the DocumentManager and
-  // the editor through the window's body.
   TextDocument *document = nullptr;
 
   for (TextDocument *candidate : m_documentManager->openDocuments()) {
@@ -504,8 +558,6 @@ void OverseerPage::onFocusedFileChanged(const QString &absolutePath) {
     }
   }
 
-  // Find the focused window's body widget and cast to TextWidget to get
-  // at its TextEdit.
   TextEdit *editor = nullptr;
 
   if (m_workstation) {
@@ -520,21 +572,3 @@ void OverseerPage::onFocusedFileChanged(const QString &absolutePath) {
 
   m_overseer->setFocusedDocument(document, editor);
 }
-
-void OverseerPage::onScopedEditRequested(TextEdit *editor,
-                                         TextDocument *document,
-                                         const QString &instruction) {
-  Q_UNUSED(document);
-
-  if (!editor || instruction.isEmpty())
-    return;
-
-  // The scoped-edit session is managed by OverseerWidget's plan flow.
-  // Here we just signal that the request was received; the actual
-  // EditPlanner call happens inside OverseerWidget's scoped edit
-  // handler.
-  emit statusMessage(
-      tr("Scoped edit session started: \"%1\"").arg(instruction.left(60)),
-      3000);
-}
-

@@ -10,13 +10,10 @@
 
 ToastStack::ToastStack(QWidget *parent) : QWidget(parent) {
   setObjectName(QStringLiteral("overseerToastStack"));
-  setAttribute(Qt::WA_TransparentForMouseEvents, true);
   setAttribute(Qt::WA_ShowWithoutActivating, true);
   setFocusPolicy(Qt::NoFocus);
-
-  // No WA_TranslucentBackground, no WA_NoSystemBackground. Those fight
-  // with child QGraphicsOpacityEffect on X11 and cause the toasts to
-  // render nothing.
+  // The stack does not draw; only the toasts do.
+  setAttribute(Qt::WA_TransparentForMouseEvents, false);
 
   m_layout = new QVBoxLayout(this);
   m_layout->setContentsMargins(0, 0, 0, 0);
@@ -37,7 +34,8 @@ bool ToastStack::eventFilter(QObject *watched, QEvent *event) {
 }
 
 void ToastStack::showProposalToast(const QString &fact,
-                                   const QString &rationale) {
+                                   const QString &rationale,
+                                   const QString &scopeLabel) {
   while (m_toasts.size() >= StackCap) {
     MemoryProposalToast *oldest = m_toasts.takeFirst();
     if (oldest) {
@@ -47,7 +45,8 @@ void ToastStack::showProposalToast(const QString &fact,
 
   const int lifetime = Settings::getOverseerToastDurationMs();
 
-  auto *toast = new MemoryProposalToast(fact, rationale, lifetime, this);
+  auto *toast =
+      new MemoryProposalToast(fact, rationale, scopeLabel, lifetime, this);
 
   m_layout->insertWidget(0, toast);
   m_toasts.append(toast);
@@ -66,7 +65,6 @@ void ToastStack::showProposalToast(const QString &fact,
 
   toast->show();
 
-  // Defer positioning until the widget has been laid out at least once.
   QTimer::singleShot(0, this, [this, toast]() {
     reposition();
 
@@ -74,7 +72,6 @@ void ToastStack::showProposalToast(const QString &fact,
       return;
     }
 
-    // Target position is where the layout has placed it.
     const QPoint target = toast->pos();
 
     auto *slide = new QPropertyAnimation(toast, "pos", toast);
@@ -107,8 +104,9 @@ void ToastStack::reposition() {
   }
 
   const int parentWidth = parent->width();
+  const int parentHeight = parent->height();
 
-  if (parentWidth <= 0) {
+  if (parentWidth <= 0 || parentHeight <= 0) {
     return;
   }
 
@@ -120,10 +118,9 @@ void ToastStack::reposition() {
     }
   }
 
-  // Let the layout compute our size, then anchor top-right.
   adjustSize();
 
-  const int x = parentWidth - width - MarginPx;
+  const int x = qMax(MarginPx, parentWidth - width - MarginPx);
   const int y = MarginPx;
 
   setGeometry(x, y, width, qMax(1, sizeHint().height()));

@@ -987,3 +987,47 @@ void EditSession::onCandidateSelected(int index) {
 
   applyCandidate(m_pendingCandidates.at(index));
 }
+
+bool EditSession::completeInsertFromInstruction(int pendingEditId) {
+  PendingEdit *edit = nullptr;
+
+  for (PendingEdit &candidate : m_pendingEdits) {
+    if (candidate.id != pendingEditId) {
+      continue;
+    }
+
+    edit = &candidate;
+    break;
+  }
+
+  if (!edit) {
+    emit failed(QStringLiteral("Pending edit %1 was not found.")
+                    .arg(pendingEditId));
+    return false;
+  }
+
+  if (edit->command.operation != EditCommand::Operation::Insert) {
+    emit failed(QStringLiteral("Pending edit %1 is not an insert.")
+                    .arg(pendingEditId));
+    return false;
+  }
+
+  const QString instruction = edit->command.instruction.trimmed();
+
+  if (instruction.isEmpty()) {
+    emit failed(QStringLiteral("Insert edit %1 has no instruction to insert.")
+                    .arg(pendingEditId));
+    return false;
+  }
+
+  edit->command.newString = instruction;
+  edit->generatedText = instruction;
+  edit->completed = true;
+
+  emit pendingEditUpdated(*edit);
+  emit pendingEditFinished(*edit);
+  emit pendingEditsChanged();
+  emit reviewReady();
+
+  return true;
+}
