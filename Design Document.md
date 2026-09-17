@@ -1,4 +1,4 @@
-# Episteme — Architecture
+# Lorefarer — Architecture
 
 A Qt6/C++ markdown editor with a structured editing pipeline and a
 persistent workspace assistant.

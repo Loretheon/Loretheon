@@ -124,7 +124,7 @@ MainWindow::MainWindow() {
     m_toggleModeAct->setChecked(overseerMode);
   }
 
-  setWindowTitle(tr("Episteme"));
+  setWindowTitle(tr("Lorefarer"));
   setMinimumSize(800, 800);
 
   QScreen *screen = QGuiApplication::primaryScreen();
@@ -683,8 +683,8 @@ QSet<QString> MainWindow::modifiedPaths() const {
 }
 
 void MainWindow::about() {
-  QMessageBox::about(this, tr("About Episteme"),
-                     tr("The <b>Episteme</b> document editor."));
+  QMessageBox::about(this, tr("About Lorefarer"),
+                     tr("The <b>Lorefarer</b> document editor."));
 }
 
 void MainWindow::aboutQt() { QMessageBox::aboutQt(this, tr("About Qt")); }

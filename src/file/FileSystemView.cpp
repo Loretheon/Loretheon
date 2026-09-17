@@ -17,7 +17,7 @@
 namespace {
 
 constexpr const char *kNotesPathMimeType =
-    "application/x-episteme-notes-path";
+    "application/x-lorefarer-notes-path";
 
 } // namespace
 

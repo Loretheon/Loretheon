@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.23)
-project(Episteme VERSION 0.1.0 LANGUAGES C CXX)
+project(Lorefarer VERSION 0.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -62,7 +62,7 @@ set(EPISTEME_EXT_CMAKE_ARGS
         -DCMAKE_POSITION_INDEPENDENT_CODE=ON
 )
 
-function(episteme_external name dir)
+function(lorefarer_external name dir)
     cmake_parse_arguments(EE "" "" "BYPRODUCTS;EXTRA_CMAKE_ARGS" ${ARGN})
 
     set(_build_byproducts "")
@@ -85,7 +85,7 @@ function(episteme_external name dir)
     )
 endfunction()
 
-function(episteme_import_static target ep_target relative_path)
+function(lorefarer_import_static target ep_target relative_path)
     set(_abs "${EPISTEME_EXTERNAL_PREFIX}/${relative_path}")
 
     if(NOT TARGET ${target})
@@ -95,7 +95,7 @@ function(episteme_import_static target ep_target relative_path)
     endif()
 endfunction()
 
-function(episteme_ts_grammar name subdir header_subdir)
+function(lorefarer_ts_grammar name subdir header_subdir)
     set(_src_dir "${CMAKE_CURRENT_SOURCE_DIR}/external/${subdir}")
     set(_gen_parser "${_src_dir}/src/parser.c")
     set(_gen_scanner "${_src_dir}/src/scanner.c")
@@ -144,7 +144,7 @@ function(episteme_ts_grammar name subdir header_subdir)
     endif()
 endfunction()
 
-episteme_external(edlib edlib
+lorefarer_external(edlib edlib
         BYPRODUCTS
         lib/libedlib.a
         EXTRA_CMAKE_ARGS
@@ -152,13 +152,13 @@ episteme_external(edlib edlib
         -DEDLIB_BUILD_UTILITIES=OFF
         -DEDLIB_ENABLE_INSTALL=ON)
 
-episteme_external(tree-sitter tree-sitter
+lorefarer_external(tree-sitter tree-sitter
         BYPRODUCTS
         lib/libtree-sitter.a
         EXTRA_CMAKE_ARGS
         -DBUILD_SHARED_LIBS=OFF)
 
-episteme_external(tree-sitter-markdown tree-sitter-markdown
+lorefarer_external(tree-sitter-markdown tree-sitter-markdown
         BYPRODUCTS
         lib/libtree-sitter-markdown.a
         lib/libtree-sitter-markdown-inline.a
@@ -166,7 +166,7 @@ episteme_external(tree-sitter-markdown tree-sitter-markdown
         -DBUILD_SHARED_LIBS=OFF
         -DTREE_SITTER_CLI=${TREE_SITTER_CLI})
 
-episteme_external(lunasvg lunasvg
+lorefarer_external(lunasvg lunasvg
         BYPRODUCTS
         lib/liblunasvg.a
         lib/libplutovg.a
@@ -174,22 +174,22 @@ episteme_external(lunasvg lunasvg
         -DBUILD_SHARED_LIBS=OFF
         -DLUNASVG_BUILD_EXAMPLES=OFF)
 
-episteme_import_static(ep_edlib                 ext_edlib                 lib/libedlib.a)
-episteme_import_static(ep_tree_sitter           ext_tree-sitter           lib/libtree-sitter.a)
-episteme_import_static(ep_tree_sitter_markdown  ext_tree-sitter-markdown  lib/libtree-sitter-markdown.a)
-episteme_import_static(ep_tree_sitter_md_inline ext_tree-sitter-markdown  lib/libtree-sitter-markdown-inline.a)
-episteme_import_static(ep_lunasvg                ext_lunasvg               lib/liblunasvg.a)
-episteme_import_static(ep_plutovg                ext_lunasvg               lib/libplutovg.a)
+lorefarer_import_static(ep_edlib                 ext_edlib                 lib/libedlib.a)
+lorefarer_import_static(ep_tree_sitter           ext_tree-sitter           lib/libtree-sitter.a)
+lorefarer_import_static(ep_tree_sitter_markdown  ext_tree-sitter-markdown  lib/libtree-sitter-markdown.a)
+lorefarer_import_static(ep_tree_sitter_md_inline ext_tree-sitter-markdown  lib/libtree-sitter-markdown-inline.a)
+lorefarer_import_static(ep_lunasvg                ext_lunasvg               lib/liblunasvg.a)
+lorefarer_import_static(ep_plutovg                ext_lunasvg               lib/libplutovg.a)
 
-episteme_ts_grammar(dot      tree-sitter-dot      bindings/c)
-episteme_ts_grammar(mermaid  tree-sitter-mermaid  bindings/c)
+lorefarer_ts_grammar(dot      tree-sitter-dot      bindings/c)
+lorefarer_ts_grammar(mermaid  tree-sitter-mermaid  bindings/c)
 
 add_subdirectory(
         external/QF-ML
         ${EPISTEME_EXTERNAL_BUILD_DIR}/QF-ML
 )
 
-add_executable(Episteme
+add_executable(Lorefarer
         src/main.cpp
         src/app/MainWindow.cpp
         include/app/MainWindow.h
@@ -395,19 +395,19 @@ add_executable(Episteme
         include/overseer/AutomationStrip.h
 )
 
-add_dependencies(Episteme
+add_dependencies(Lorefarer
         ext_edlib
         ext_tree-sitter
         ext_tree-sitter-markdown
         ext_lunasvg
 )
 
-target_compile_definitions(Episteme PRIVATE
+target_compile_definitions(Lorefarer PRIVATE
         EPISTEME_MERMAID_CLI="${MERMAID_CLI}"
         EPISTEME_GRAPHVIZ_DOT="${GRAPHVIZ_DOT}"
 )
 
-target_include_directories(Episteme PRIVATE
+target_include_directories(Lorefarer PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include/app
         ${CMAKE_CURRENT_SOURCE_DIR}/include/overseer
         ${CMAKE_CURRENT_SOURCE_DIR}/include/app/theme
@@ -439,12 +439,12 @@ target_include_directories(Episteme PRIVATE
         ${EPISTEME_EXTERNAL_PREFIX}/include/plutovg
 )
 
-set_target_properties(Episteme PROPERTIES
+set_target_properties(Lorefarer PROPERTIES
         BUILD_RPATH "${EPISTEME_EXTERNAL_PREFIX}/lib"
         INSTALL_RPATH "${EPISTEME_EXTERNAL_PREFIX}/lib"
 )
 
-target_link_libraries(Episteme PRIVATE
+target_link_libraries(Lorefarer PRIVATE
         Qt6::Core
         Qt6::Gui
         Qt6::Widgets
