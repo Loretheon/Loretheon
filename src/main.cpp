@@ -1,20 +1,17 @@
-#include <iostream>
 #include <QApplication>
+#include <iostream>
 #include <qsettings.h>
 
-#include "Settings.h"
 #include "../include/app/MainWindow.h"
+#include "Settings.h"
 
-int main(int argc, char ** argv) {
-    QApplication app (argc, argv);
-    QCoreApplication::setOrganizationName("QuestFarer");
-    QCoreApplication::setApplicationName("Episteme");
-    QCoreApplication::setApplicationVersion("0.0");
-    const QString root = Settings::getRootDirectory();
-
-    qDebug() << "ROOT:" << root;
-
-    MainWindow window;
-    window.show();
-    return app.exec();
+int main(int argc, char **argv) {
+  QApplication app(argc, argv);
+  QCoreApplication::setOrganizationName("Questfarer");
+  QCoreApplication::setApplicationName("Lorefarer");
+  QCoreApplication::setApplicationVersion("0.0");
+  const QString root = Settings::getRootDirectory();
+  MainWindow window;
+  window.show();
+  return app.exec();
 }

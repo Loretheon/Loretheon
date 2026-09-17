@@ -1,44 +1,101 @@
-#ifndef EPISTEME_TEXTWIDGET_H
-#define EPISTEME_TEXTWIDGET_H
+#ifndef TEXTWIDGET_H
+#define TEXTWIDGET_H
 
-#include <QTabWidget>
+#include <QString>
+#include <QPoint>
+#include <QWidget>
 
-#include "TextBrowser.h"
+#include "DiagramDocument.h"
 #include "TextDocument.h"
-#include "TextEdit.h"
+#include "ThemeAware.h"
 
+class TextEdit;
+class TextBrowser;
+class QStackedWidget;
+class DiagramView;
+class DiagramToolbar;
+class GraphvizRenderer;
+class PlantUmlRenderer;
+class MermaidRenderer;
+class TextDocument;
+class PreviewPane;
+class PreviewController;
+class EditSession;
+class QShowEvent;
 
-class TextWidget : public QTabWidget
-{
-    Q_OBJECT
+class TextWidget : public QWidget, public ThemeAware {
+  Q_OBJECT
 
 public:
-    explicit TextWidget(QWidget* parent = nullptr);
+  explicit TextWidget(QWidget *parent = nullptr);
+
+  TextEdit *editor() const { return textEdit; }
+
+  TextDocument *document() const { return activeDocument; }
+
+  void setActiveDocument(TextDocument *document);
+  void setProjectRoot(const QString &root);
+
+  void setPreviewSession(EditSession *session);
+
+  void setWorkstationMode(bool on);
+
+  void setThemeTokens(const ThemeTokens &tokens) override;
+
+  bool isViewMode() const;
 
 public slots:
-    void setActiveDocument(TextDocument* newDocument);
+  void setContextScopes(const QStringList &scopeIds);
+  void activatePreview(bool active);
+  void clearContextScopes();
 
-    void undo();
-    void redo();
+  // Toggle the outer stack between the editor page (false) and the
+  // preview / view page (true).
+  void setViewMode(bool viewMode);
 
-    void cut();
-    void copy();
-    void paste();
+signals:
+  void openDocumentRequested(const QString &path);
+  void statusMessage(const QString &text, int timeoutMs = 4000);
 
-    void bold();
-    void italic();
+protected:
+  void showEvent(QShowEvent *event) override;
+  void contextMenuEvent(QContextMenuEvent *event) override;
 
-    void leftAlign();
-    void rightAlign();
-    void justify();
-    void center();
-
-    void setLineSpacing();
-    void setParagraphSpacing();
+private slots:
+  void syncPreview();
+  void onElementClicked(const QString &id, const QString &name,
+                        const QPoint &globalPos);
 
 private:
-    TextBrowser *textBrowser;
-    TextEdit *textEdit;
+  void disconnectActiveDocument();
+  void clearPreview();
+  void findInEditor(const QString &text);
+  void showNodeContextMenu(const QString &id, const QString &name,
+                           const QPoint &globalPos);
+  void applyThemeToRenderers();
+
+  TextEdit *textEdit = nullptr;
+  PreviewPane *previewPane = nullptr;
+  PreviewController *previewController = nullptr;
+  QStackedWidget *editorStack = nullptr;
+
+  TextBrowser *textBrowser = nullptr;
+  QStackedWidget *viewStack = nullptr;
+  QWidget *diagramPage = nullptr;
+  DiagramView *svgView = nullptr;
+  DiagramToolbar *diagramToolbar = nullptr;
+  DiagramDocument *diagramDoc = nullptr;
+  QTextDocument *previewDocument = nullptr;
+  GraphvizRenderer *graphvizRenderer = nullptr;
+  PlantUmlRenderer *plantUmlRenderer = nullptr;
+  MermaidRenderer *mermaidRenderer = nullptr;
+
+  QStackedWidget *outerStack = nullptr;
+
+  TextDocument *activeDocument = nullptr;
+  ThemeTokens m_tokens;
+
+  bool m_workstationMode = false;
 };
 
-#endif // EPISTEME_TEXTWIDGET_H
+#endif // TEXTWIDGET_H

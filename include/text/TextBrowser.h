@@ -1,14 +1,12 @@
 #ifndef EPISTEME_TEXTBROWSER_H
 #define EPISTEME_TEXTBROWSER_H
-#include <qtextbrowser.h>
+#include <QTextBrowser>
 
-
-class TextBrowser: public QTextBrowser{
-    Q_OBJECT
+class TextBrowser : public QTextBrowser {
+  Q_OBJECT
 
 public:
-    explicit TextBrowser() = default;
+  explicit TextBrowser(QWidget *parent = nullptr);
 };
 
-
-#endif //EPISTEME_TEXTBROWSER_H
+#endif // EPISTEME_TEXTBROWSER_H
