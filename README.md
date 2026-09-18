@@ -1,4 +1,4 @@
-# Lorefarer
+# Lore
 
 A Qt6/C++ markdown editor with an integrated LLM editing pipeline and a
 persistent multi-session assistant called **Overseer**.

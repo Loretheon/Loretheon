@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.23)
-project(Lorefarer VERSION 0.1.0 LANGUAGES C CXX)
+project(Lore VERSION 0.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -62,7 +62,7 @@ set(EPISTEME_EXT_CMAKE_ARGS
         -DCMAKE_POSITION_INDEPENDENT_CODE=ON
 )
 
-function(lorefarer_external name dir)
+function(lore_external name dir)
     cmake_parse_arguments(EE "" "" "BYPRODUCTS;EXTRA_CMAKE_ARGS" ${ARGN})
 
     set(_build_byproducts "")
@@ -85,7 +85,7 @@ function(lorefarer_external name dir)
     )
 endfunction()
 
-function(lorefarer_import_static target ep_target relative_path)
+function(lore_import_static target ep_target relative_path)
     set(_abs "${EPISTEME_EXTERNAL_PREFIX}/${relative_path}")
 
     if(NOT TARGET ${target})
@@ -95,7 +95,7 @@ function(lorefarer_import_static target ep_target relative_path)
     endif()
 endfunction()
 
-function(lorefarer_ts_grammar name subdir header_subdir)
+function(lore_ts_grammar name subdir header_subdir)
     set(_src_dir "${CMAKE_CURRENT_SOURCE_DIR}/external/${subdir}")
     set(_gen_parser "${_src_dir}/src/parser.c")
     set(_gen_scanner "${_src_dir}/src/scanner.c")
@@ -144,7 +144,7 @@ function(lorefarer_ts_grammar name subdir header_subdir)
     endif()
 endfunction()
 
-lorefarer_external(edlib edlib
+lore_external(edlib edlib
         BYPRODUCTS
         lib/libedlib.a
         EXTRA_CMAKE_ARGS
@@ -152,13 +152,13 @@ lorefarer_external(edlib edlib
         -DEDLIB_BUILD_UTILITIES=OFF
         -DEDLIB_ENABLE_INSTALL=ON)
 
-lorefarer_external(tree-sitter tree-sitter
+lore_external(tree-sitter tree-sitter
         BYPRODUCTS
         lib/libtree-sitter.a
         EXTRA_CMAKE_ARGS
         -DBUILD_SHARED_LIBS=OFF)
 
-lorefarer_external(tree-sitter-markdown tree-sitter-markdown
+lore_external(tree-sitter-markdown tree-sitter-markdown
         BYPRODUCTS
         lib/libtree-sitter-markdown.a
         lib/libtree-sitter-markdown-inline.a
@@ -166,7 +166,7 @@ lorefarer_external(tree-sitter-markdown tree-sitter-markdown
         -DBUILD_SHARED_LIBS=OFF
         -DTREE_SITTER_CLI=${TREE_SITTER_CLI})
 
-lorefarer_external(lunasvg lunasvg
+lore_external(lunasvg lunasvg
         BYPRODUCTS
         lib/liblunasvg.a
         lib/libplutovg.a
@@ -174,22 +174,22 @@ lorefarer_external(lunasvg lunasvg
         -DBUILD_SHARED_LIBS=OFF
         -DLUNASVG_BUILD_EXAMPLES=OFF)
 
-lorefarer_import_static(ep_edlib                 ext_edlib                 lib/libedlib.a)
-lorefarer_import_static(ep_tree_sitter           ext_tree-sitter           lib/libtree-sitter.a)
-lorefarer_import_static(ep_tree_sitter_markdown  ext_tree-sitter-markdown  lib/libtree-sitter-markdown.a)
-lorefarer_import_static(ep_tree_sitter_md_inline ext_tree-sitter-markdown  lib/libtree-sitter-markdown-inline.a)
-lorefarer_import_static(ep_lunasvg                ext_lunasvg               lib/liblunasvg.a)
-lorefarer_import_static(ep_plutovg                ext_lunasvg               lib/libplutovg.a)
+lore_import_static(ep_edlib                 ext_edlib                 lib/libedlib.a)
+lore_import_static(ep_tree_sitter           ext_tree-sitter           lib/libtree-sitter.a)
+lore_import_static(ep_tree_sitter_markdown  ext_tree-sitter-markdown  lib/libtree-sitter-markdown.a)
+lore_import_static(ep_tree_sitter_md_inline ext_tree-sitter-markdown  lib/libtree-sitter-markdown-inline.a)
+lore_import_static(ep_lunasvg                ext_lunasvg               lib/liblunasvg.a)
+lore_import_static(ep_plutovg                ext_lunasvg               lib/libplutovg.a)
 
-lorefarer_ts_grammar(dot      tree-sitter-dot      bindings/c)
-lorefarer_ts_grammar(mermaid  tree-sitter-mermaid  bindings/c)
+lore_ts_grammar(dot      tree-sitter-dot      bindings/c)
+lore_ts_grammar(mermaid  tree-sitter-mermaid  bindings/c)
 
 add_subdirectory(
         external/QF-ML
         ${EPISTEME_EXTERNAL_BUILD_DIR}/QF-ML
 )
 
-add_executable(Lorefarer
+add_executable(Lore
         src/main.cpp
         src/app/MainWindow.cpp
         include/app/MainWindow.h
@@ -274,10 +274,8 @@ add_executable(Lorefarer
         include/ai/chat/ChatWidgetTranscript.h
         src/ai/chat/ChatWidgetEditFlow.cpp
         include/ai/chat/ChatWidgetEditFlow.h
-        ${CMAKE_CURRENT_SOURCE_DIR}/styles/catppuccin-latte/resources.qrc
-        ${CMAKE_CURRENT_SOURCE_DIR}/styles/catppuccin-frappe/resources.qrc
-        ${CMAKE_CURRENT_SOURCE_DIR}/styles/catppuccin-macchiato/resources.qrc
-        ${CMAKE_CURRENT_SOURCE_DIR}/styles/catppuccin-mocha/resources.qrc
+        resources/themes/resources.qrc
+        resources/icons/resources.qrc
         src/file/DirectoryExplorerSettings.cpp
         include/file/DirectoryExplorerSettings.h
         src/text/formats/DotSyntaxHighlighter.cpp
@@ -331,8 +329,6 @@ add_executable(Lorefarer
         include/ui/LlmSettingsPanel.h
         src/overseer/MemoryProposalCard.cpp
         include/overseer/MemoryProposalCard.h
-        src/overseer/MemoryProposalToast.cpp
-        include/overseer/MemoryProposalToast.h
         src/overseer/ToastStack.cpp
         include/overseer/ToastStack.h
         src/overseer/EditNoteTool.cpp
@@ -393,21 +389,26 @@ add_executable(Lorefarer
         include/overseer/SessionSettings.h
         include/overseer/AutomationStrip.cpp
         include/overseer/AutomationStrip.h
+        src/app/NotificationService.cpp
+        include/app/NotificationService.h
+        src/app/NotificationToast.cpp
+        include/app/NotificationToast.h
+        include/app/theme/ThemeRegistry.h
 )
 
-add_dependencies(Lorefarer
+add_dependencies(Lore
         ext_edlib
         ext_tree-sitter
         ext_tree-sitter-markdown
         ext_lunasvg
 )
 
-target_compile_definitions(Lorefarer PRIVATE
+target_compile_definitions(Lore PRIVATE
         EPISTEME_MERMAID_CLI="${MERMAID_CLI}"
         EPISTEME_GRAPHVIZ_DOT="${GRAPHVIZ_DOT}"
 )
 
-target_include_directories(Lorefarer PRIVATE
+target_include_directories(Lore PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include/app
         ${CMAKE_CURRENT_SOURCE_DIR}/include/overseer
         ${CMAKE_CURRENT_SOURCE_DIR}/include/app/theme
@@ -439,12 +440,12 @@ target_include_directories(Lorefarer PRIVATE
         ${EPISTEME_EXTERNAL_PREFIX}/include/plutovg
 )
 
-set_target_properties(Lorefarer PROPERTIES
+set_target_properties(Lore PROPERTIES
         BUILD_RPATH "${EPISTEME_EXTERNAL_PREFIX}/lib"
         INSTALL_RPATH "${EPISTEME_EXTERNAL_PREFIX}/lib"
 )
 
-target_link_libraries(Lorefarer PRIVATE
+target_link_libraries(Lore PRIVATE
         Qt6::Core
         Qt6::Gui
         Qt6::Widgets

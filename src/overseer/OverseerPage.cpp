@@ -9,7 +9,6 @@
 #include "OverseerWidget.h"
 #include "OverviewPanel.h"
 #include "PathUtils.h"
-#include "ToastStack.h"
 #include "TranscriptPanel.h"
 #include "Workstation.h"
 #include "WorkstationBar.h"
@@ -322,14 +321,6 @@ OverseerPage::OverseerPage(InferenceService *inferenceService,
   auto *root = new QVBoxLayout(this);
   root->setContentsMargins(0, 0, 0, 0);
   root->addWidget(columns);
-
-  // Reparent the toast stack to the page so it overlays the whole
-  // center area rather than the short input strip.
-  if (ToastStack *toastStack = m_overseer->toastStack(); toastStack) {
-    toastStack->setParent(this);
-    toastStack->reposition();
-    toastStack->raise();
-  }
 
   migrateLegacyLayoutFiles();
 }

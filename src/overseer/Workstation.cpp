@@ -8,6 +8,7 @@
 #include "../../include/ai/edit/EditSession.h"
 
 #include "TextDocument.h"
+#include "ThemeRegistry.h"
 
 #include <QContextMenuEvent>
 #include <QCoreApplication>
@@ -741,7 +742,7 @@ void Workstation::paintEvent(QPaintEvent *event) {
 
   constexpr int spacing = 40;
 
-  QColor line = tokens.overlay0;
+  QColor line = tokens.border;
   line.setAlpha(28);
 
   painter.setPen(QPen(line, 1));

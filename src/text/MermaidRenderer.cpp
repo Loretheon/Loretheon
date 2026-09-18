@@ -82,44 +82,30 @@ QString MermaidRenderer::writeMermaidConfig(const QString &dirPath) const {
   QFile file(path);
   if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) return {};
 
-  const QString config = QStringLiteral(
-      "{\n"
-      "  \"htmlLabels\": false,\n"
-      "  \"useMaxWidth\": false,\n"
-      "  \"theme\": \"base\",\n"
-      "  \"themeVariables\": {\n"
-      "    \"background\": \"%1\",\n"
-      "    \"primaryColor\": \"%2\",\n"
-      "    \"primaryTextColor\": \"%3\",\n"
-      "    \"primaryBorderColor\": \"%4\",\n"
-      "    \"lineColor\": \"%5\",\n"
-      "    \"secondaryColor\": \"%6\",\n"
-      "    \"tertiaryColor\": \"%7\",\n"
-      "    \"clusterBkg\": \"%8\",\n"
-      "    \"clusterBorder\": \"%9\",\n"
-      "    \"edgeLabelBackground\": \"%10\",\n"
-      "    \"nodeBorder\": \"%4\",\n"
-      "    \"nodeTextColor\": \"%3\",\n"
-      "    \"titleColor\": \"%3\",\n"
-      "    \"fontFamily\": \"sans-serif\",\n"
-      "    \"fontSize\": \"14px\"\n"
-      "  },\n"
-      "  \"flowchart\": {\n"
-      "    \"useMaxWidth\": false,\n"
-      "    \"curve\": \"linear\"\n"
-      "  }\n"
-      "}\n")
-      .arg(m_tokens.background().name(QColor::HexRgb),
-           m_tokens.nodeFill().name(QColor::HexRgb),
-           m_tokens.textFill().name(QColor::HexRgb),
-           m_tokens.nodeStroke().name(QColor::HexRgb),
-           m_tokens.edgeStroke().name(QColor::HexRgb),
-           m_tokens.surface1.name(QColor::HexRgb),
-           m_tokens.crust.name(QColor::HexRgb),
-           m_tokens.clusterBkg().name(QColor::HexRgb),
-           m_tokens.clusterBorder().name(QColor::HexRgb),
-           m_tokens.edgeLabelBackground().name(QColor::HexRgb))
-      .toUtf8();
+  const QString config = QStringLiteral(R"({
+  "theme": "base",
+  "themeVariables": {
+    "background": "%1",
+    "primaryColor": "%2",
+    "primaryTextColor": "%3",
+    "primaryBorderColor": "%4",
+    "lineColor": "%5",
+    "secondaryColor": "%6",
+    "tertiaryColor": "%7",
+    "clusterBkg": "%8",
+    "clusterBorder": "%9",
+    "edgeLabelBackground": "%10"
+  }
+})")
+    .arg(m_tokens.background().name(QColor::HexRgb),
+         m_tokens.nodeFill().name(QColor::HexRgb),
+         m_tokens.textFill().name(QColor::HexRgb),
+         m_tokens.nodeStroke().name(QColor::HexRgb),
+         m_tokens.edgeStroke().name(QColor::HexRgb),
+         m_tokens.structure.name(QColor::HexRgb),
+         m_tokens.clusterBkg().name(QColor::HexRgb),
+         m_tokens.clusterBorder().name(QColor::HexRgb),
+         m_tokens.edgeLabelBackground().name(QColor::HexRgb));
 
   if (file.write(config.toUtf8()) != config.toUtf8().size()) return {};
   if (!file.flush()) return {};

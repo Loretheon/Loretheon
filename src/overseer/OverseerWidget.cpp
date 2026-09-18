@@ -17,10 +17,9 @@
 #include "PayloadLogger.h"
 #include "PendingEdit.h"
 #include "Settings.h"
-#include "ToastStack.h"
 #include "TranscriptPanel.h"
 #include "TranscriptStore.h"
-
+#include "NotificationService.h"
 #include "TextEdit.h"
 
 #include "inference/InferenceService.h"
@@ -126,8 +125,6 @@ OverseerWidget::OverseerWidget(InferenceService *inferenceService,
   auto *rootLayout = new QVBoxLayout(this);
   rootLayout->setContentsMargins(0, 0, 0, 0);
   rootLayout->addWidget(centerPanel);
-
-  m_toastStack = new ToastStack(this);
 
   connect(m_sessionListPanel, &OverseerSessionList::newSessionRequested, this,
           &OverseerWidget::onNewSessionRequested);
@@ -446,10 +443,7 @@ void OverseerWidget::closeSession() {
     m_inferenceService->abortChatRequest(m_activeToken);
     m_activeToken = InferenceService::RequestToken();
   }
-
-  if (m_toastStack)
-    m_toastStack->dismissAll();
-
+  
   tearDownScopedEditSession();
 
   disconnect(m_currentSession, nullptr, this, nullptr);
@@ -812,13 +806,11 @@ void OverseerWidget::executeToolCalls(const QJsonArray &toolCalls) {
         proposalEvent.proposalStatus = QStringLiteral("pending");
         proposalEvent.proposalContext = m_assistantRawText;
         appendEvent(proposalEvent);
+        const QString scopeLabel =
+            scope == QStringLiteral("global") ? tr("global") : tr("session");
 
-        if (m_toastStack) {
-          const QString scopeLabel =
-              scope == QStringLiteral("global") ? tr("global") : tr("session");
-          m_toastStack->showProposalToast(fact, rationale, scopeLabel);
-        }
-
+        NotificationService::instance().warning(
+            tr("Memory proposal · %1").arg(scopeLabel), fact);
         if (m_sessionSettings.effectiveAutoMemory()) {
           QTimer::singleShot(0, this, [this, key, scope]() {
             if (!m_sessionSettings.effectiveAutoMemory())

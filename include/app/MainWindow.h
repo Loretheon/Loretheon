@@ -19,7 +19,7 @@ class ModelDialog;
 class LlmSettingsPanel;
 class OverseerPage;
 class Workstation;
-
+class ToastStack;
 class QAction;
 class QMenu;
 class QStackedWidget;
@@ -45,6 +45,9 @@ private slots:
   void onModeToggled(bool overseerMode);
 
 private:
+  bool loadThemeFromResource(const QString &name);
+  bool loadAllThemes();
+  QString combinedStylesheet(const QString &themeName) const;
   void createActions();
   void createMenus();
   void createToolbar();
@@ -110,6 +113,9 @@ private:
   QAction *m_toggleModeAct = nullptr;
   QAction *m_aboutAct = nullptr;
   QAction *m_aboutQtAct = nullptr;
+
+  ToastStack *m_toastStack = nullptr;
+
 };
 
 #endif // MAINWINDOW_H

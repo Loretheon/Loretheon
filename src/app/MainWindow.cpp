@@ -1,16 +1,18 @@
 #include "MainWindow.h"
-
 #include "ChatWidget.h"
 #include "DocumentArea.h"
 #include "EditSession.h"
 #include "FileWidget.h"
 #include "LlmSettingsPanel.h"
+#include "NotificationService.h"
 #include "OverseerPage.h"
 #include "Settings.h"
 #include "TextEdit.h"
 #include "TextWidget.h"
-#include "app/QfPaths.h"
+#include "ThemeRegistry.h"
 #include "ThemeTokens.h"
+#include "ToastStack.h"
+#include "app/QfPaths.h"
 #include "inference/InferenceService.h"
 #include "ui/ModelDialog.h"
 
@@ -27,6 +29,7 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QPalette>
+#include <QRegularExpression>
 #include <QScreen>
 #include <QSettings>
 #include <QSplitter>
@@ -64,6 +67,123 @@ InferenceService::LlmConfig configuredLlm() {
   return config;
 }
 
+// Reads a stylesheet resource. Returns empty string on failure.
+QString readResourceStylesheet(const QString &themeName) {
+  QFile file(QStringLiteral(":/themes/%1/stylesheet.qss").arg(themeName));
+
+  if (!file.open(QFile::ReadOnly | QFile::Text))
+    return {};
+
+  const QString qss = QString::fromUtf8(file.readAll());
+  file.close();
+
+  return qss;
+}
+
+// Parses a token block and returns @name -> QColor. Also returns the
+// @theme name via outTheme if present. Independent of ThemeRegistry's
+// parser so that MainWindow can drive expansion without depending on
+// registry internals.
+QHash<QString, QColor> parseTokenBlockForExpansion(const QString &qss,
+                                                   QString *outTheme) {
+  QHash<QString, QColor> result;
+
+  if (outTheme)
+    outTheme->clear();
+
+  static const QRegularExpression tokenLine(
+      QStringLiteral(
+          R"(^\s*@([A-Za-z_][A-Za-z0-9_]*)\s+(#[0-9A-Fa-f]{3,8})\s*$)"),
+      QRegularExpression::NoPatternOption);
+
+  static const QRegularExpression themeLine(
+      QStringLiteral(R"(^\s*@theme\s+(\S+)\s*$)"),
+      QRegularExpression::NoPatternOption);
+
+  const QStringList lines = qss.split(QChar('\n'));
+
+  bool inBlockComment = false;
+
+  for (const QString &rawLine : lines) {
+    const QString line = rawLine.trimmed();
+
+    if (inBlockComment) {
+      if (line.contains(QStringLiteral("*/")))
+        inBlockComment = false;
+      continue;
+    }
+
+    if (line.isEmpty())
+      continue;
+
+    if (line.startsWith(QStringLiteral("/*"))) {
+      if (!line.contains(QStringLiteral("*/")))
+        inBlockComment = true;
+      continue;
+    }
+
+    if (line.startsWith(QStringLiteral("//")))
+      continue;
+
+    const auto themeMatch = themeLine.match(line);
+
+    if (themeMatch.hasMatch()) {
+      if (outTheme)
+        *outTheme = themeMatch.captured(1).trimmed();
+      continue;
+    }
+
+    const auto tokenMatch = tokenLine.match(line);
+
+    if (tokenMatch.hasMatch()) {
+      const QString name = tokenMatch.captured(1).trimmed().toLower();
+      const QColor color(tokenMatch.captured(2));
+
+      if (color.isValid())
+        result.insert(name, color);
+
+      continue;
+    }
+
+    // First non-token, non-comment, non-blank line ends the preamble.
+    break;
+  }
+
+  return result;
+}
+
+// Expands "@token" references in a stylesheet using the given token
+// map. The token names do not include the leading "@". Every
+// occurrence of "@name" is replaced with the hex form of the color.
+//
+// Order matters: longer names first, so "@surface0" is replaced before
+// "@surface". Today there are no prefix collisions, but the sort makes
+// the function safe if a future token is added that prefixes another.
+QString expandTokens(const QString &qss,
+                     const QHash<QString, QColor> &tokens) {
+  QString out = qss;
+
+  QStringList keys = tokens.keys();
+  std::sort(keys.begin(), keys.end(),
+            [](const QString &a, const QString &b) {
+              return a.size() > b.size();
+            });
+
+  for (const QString &key : std::as_const(keys)) {
+    const QColor color = tokens.value(key);
+
+    if (!color.isValid())
+      continue;
+
+    const QString needle = QStringLiteral("@") + key;
+    const QString replacement = color.name(QColor::HexRgb);
+
+    out.replace(needle, replacement);
+  }
+
+  return out;
+}
+
 } // namespace
 
 MainWindow::MainWindow() {
@@ -83,6 +203,14 @@ MainWindow::MainWindow() {
 
   m_editSession = new EditSession(nullptr, this);
 
+  if (!loadAllThemes()) {
+    QMessageBox::critical(
+        this, tr("Theme load failure"),
+        tr("Lore could not load its base theme. The application "
+           "cannot start without a valid theme stylesheet."));
+    std::exit(1);
+  }
+
   buildNormalPage();
   buildOverseerPage();
 
@@ -92,6 +220,9 @@ MainWindow::MainWindow() {
 
   setCentralWidget(m_centralStack);
 
+  m_toastStack = new ToastStack(this);
+  NotificationService::instance().setToastHost(m_toastStack);
+
   createActions();
   createToolbar();
   createMenus();
@@ -99,15 +230,18 @@ MainWindow::MainWindow() {
   QSettings settings;
 
   m_currentNormalTheme =
-      settings.value(NormalThemeKey, ThemeRegistry::instance().defaultName())
+      settings.value(NormalThemeKey,
+                     ThemeRegistry::instance().defaultNormalName())
           .toString();
+
+  if (!ThemeRegistry::instance().contains(m_currentNormalTheme))
+    m_currentNormalTheme = ThemeRegistry::instance().defaultNormalName();
 
   m_currentOverseerTheme =
       settings.value(OverseerThemeKey, QString()).toString();
 
-  if (m_currentOverseerTheme.isEmpty()) {
-    m_currentOverseerTheme = m_currentNormalTheme;
-  }
+  if (!ThemeRegistry::instance().contains(m_currentOverseerTheme))
+    m_currentOverseerTheme = ThemeRegistry::instance().defaultOverseerName();
 
   const bool overseerMode = settings.value(ModeKey, false).toBool();
 
@@ -124,12 +258,191 @@ MainWindow::MainWindow() {
     m_toggleModeAct->setChecked(overseerMode);
   }
 
-  setWindowTitle(tr("Lorefarer"));
+  setWindowTitle(tr("Lore"));
   setMinimumSize(800, 800);
 
   QScreen *screen = QGuiApplication::primaryScreen();
   if (screen)
     setGeometry(screen->availableGeometry());
+}
+
+bool MainWindow::loadThemeFromResource(const QString &name) {
+  const QString qss = readResourceStylesheet(name);
+
+  if (qss.isEmpty()) {
+    qWarning() << "[MainWindow] Stylesheet not found or empty:" << name;
+    return false;
+  }
+
+  QStringList missing;
+
+  if (!ThemeRegistry::instance().registerFromStylesheet(name, qss,
+                                                        &missing)) {
+    if (!missing.isEmpty()) {
+      qWarning() << "[MainWindow] Theme" << name
+                 << "is missing tokens:" << missing;
+    } else {
+      qWarning() << "[MainWindow] Theme" << name
+                 << "failed to register. See [ThemeRegistry] log lines.";
+    }
+    return false;
+  }
+
+  return true;
+}
+
+bool MainWindow::loadAllThemes() {
+  const bool loreOk =
+      loadThemeFromResource(ThemeRegistry::instance().baseName());
+
+  if (!loreOk) {
+    qCritical() << "[MainWindow] Base theme 'lore' could not be loaded. "
+                   "The application cannot start.";
+    return false;
+  }
+
+  const QStringList candidates = {
+      ThemeRegistry::instance().defaultNormalName(),
+      ThemeRegistry::instance().defaultOverseerName(),
+  };
+
+  for (const QString &name : candidates) {
+    if (name == ThemeRegistry::instance().baseName())
+      continue;
+
+    if (!loadThemeFromResource(name)) {
+      qWarning() << "[MainWindow] Theme" << name
+                 << "did not register; it will not appear in the menu.";
+    }
+  }
+
+  return true;
+}
+
+QString MainWindow::combinedStylesheet(const QString &themeName) const {
+  const QString baseQss =
+      readResourceStylesheet(ThemeRegistry::instance().baseName());
+
+  if (baseQss.isEmpty()) {
+    qWarning() << "[MainWindow] Base stylesheet missing.";
+    return {};
+  }
+
+  const ThemeTokens tokens = ThemeRegistry::instance().tokens(themeName);
+
+  QHash<QString, QColor> tokenMap;
+
+  auto add = [&tokenMap](const QString &name, const QColor &color) {
+    if (color.isValid())
+      tokenMap.insert(name, color);
+  };
+
+  add(QStringLiteral("base"), tokens.base);
+  add(QStringLiteral("surface0"), tokens.surface0);
+  add(QStringLiteral("surface1"), tokens.surface1);
+  add(QStringLiteral("surface2"), tokens.surface2);
+  add(QStringLiteral("surface-raised"), tokens.surfaceRaised);
+  add(QStringLiteral("structure"), tokens.structure);
+
+  add(QStringLiteral("text"), tokens.text);
+  add(QStringLiteral("text-muted"), tokens.textMuted);
+  add(QStringLiteral("text-subtle"), tokens.textSubtle);
+  add(QStringLiteral("text-disabled"), tokens.textDisabled);
+
+  add(QStringLiteral("accent"), tokens.accent);
+  add(QStringLiteral("accent-hover"), tokens.accentHover);
+  add(QStringLiteral("accent-pressed"), tokens.accentPressed);
+  add(QStringLiteral("accent-muted"), tokens.accentMuted);
+  add(QStringLiteral("accent-fg"), tokens.accentFg);
+
+  add(QStringLiteral("hint-cool"), tokens.hintCool);
+  add(QStringLiteral("hint-warm"), tokens.hintWarm);
+  add(QStringLiteral("hint-neutral"), tokens.hintNeutral);
+
+  add(QStringLiteral("border"), tokens.border);
+  add(QStringLiteral("border-strong"), tokens.borderStrong);
+  add(QStringLiteral("divider"), tokens.divider);
+
+  add(QStringLiteral("success"), tokens.success);
+  add(QStringLiteral("warning"), tokens.warning);
+  add(QStringLiteral("error"), tokens.error);
+  add(QStringLiteral("info"), tokens.info);
+
+  QString concatenated = baseQss;
+
+  if (themeName != ThemeRegistry::instance().baseName()) {
+    const QString themeQss = readResourceStylesheet(themeName);
+
+    if (!themeQss.isEmpty()) {
+      concatenated += QStringLiteral("\n\n/* ---- theme: ");
+      concatenated += themeName;
+      concatenated += QStringLiteral(" ---- */\n\n");
+      concatenated += themeQss;
+    }
+  }
+
+  return expandTokens(concatenated, tokenMap);
+}
+void MainWindow::applyNormalTheme(const QString &name) {
+  const ThemeTokens tokens = ThemeRegistry::instance().tokens(name);
+
+  if (!tokens.isComplete()) {
+    qWarning() << "[MainWindow] Refusing to apply theme" << name
+               << "— its tokens are not complete.";
+    return;
+  }
+
+  const QString combined = combinedStylesheet(name);
+
+  if (combined.isEmpty())
+    return;
+
+  m_normalThemeManager->loadTheme(name, combined);
+
+  m_normalPage->setStyleSheet(combined);
+  m_normalPage->setPalette(paletteForTokens(tokens));
+
+  if (m_documentArea)
+    m_documentArea->setThemeTokens(tokens);
+
+  m_currentNormalTheme = name;
+
+  QSettings settings;
+  settings.setValue(NormalThemeKey, name);
+
+  if (m_centralStack && m_centralStack->currentIndex() == 0)
+    ThemeRegistry::instance().setActiveTheme(name);
+}
+
+void MainWindow::applyOverseerTheme(const QString &name) {
+  const ThemeTokens tokens = ThemeRegistry::instance().tokens(name);
+
+  if (!tokens.isComplete()) {
+    qWarning() << "[MainWindow] Refusing to apply theme" << name
+               << "— its tokens are not complete.";
+    return;
+  }
+
+  const QString combined = combinedStylesheet(name);
+
+  if (combined.isEmpty())
+    return;
+
+  m_overseerThemeManager->loadTheme(name, combined);
+
+  m_overseerPage->setStyleSheet(combined);
+  m_overseerPage->setPalette(paletteForTokens(tokens));
+
+  if (m_overseerPage)
+    m_overseerPage->setThemeTokens(tokens);
+
+  m_currentOverseerTheme = name;
+
+  QSettings settings;
+  settings.setValue(OverseerThemeKey, name);
+
+  if (m_centralStack && m_centralStack->currentIndex() == 1)
+    ThemeRegistry::instance().setActiveTheme(name);
 }
 
 void MainWindow::buildNormalPage() {
@@ -141,8 +454,8 @@ void MainWindow::buildNormalPage() {
   m_documentArea = new DocumentArea(m_documentManager, m_normalPage);
   m_documentArea->setEditSession(m_editSession);
 
-  m_chatWidget = new ChatWidget(m_inferenceService, m_editSession,
-                                m_normalPage);
+  m_chatWidget =
+      new ChatWidget(m_inferenceService, m_editSession, m_normalPage);
 
   connect(m_chatWidget, &ChatWidget::contextScopesChanged, m_documentArea,
           [this](const QStringList &scopeIds) {
@@ -431,7 +744,7 @@ void MainWindow::createMenus() {
   QActionGroup *normalGroup = new QActionGroup(this);
   normalGroup->setExclusive(true);
 
-  for (const QString &theme : ThemeRegistry::instance().names()) {
+  for (const QString &theme : ThemeRegistry::instance().selectableNames()) {
     QAction *a = normalThemeMenu->addAction(theme);
     a->setCheckable(true);
     normalGroup->addAction(a);
@@ -447,7 +760,7 @@ void MainWindow::createMenus() {
   QActionGroup *overseerGroup = new QActionGroup(this);
   overseerGroup->setExclusive(true);
 
-  for (const QString &theme : ThemeRegistry::instance().names()) {
+  for (const QString &theme : ThemeRegistry::instance().selectableNames()) {
     QAction *a = overseerThemeMenu->addAction(theme);
     a->setCheckable(true);
     overseerGroup->addAction(a);
@@ -464,99 +777,32 @@ void MainWindow::createMenus() {
   m_helpMenu->addAction(m_aboutQtAct);
 }
 
-void MainWindow::applyNormalTheme(const QString &name) {
-  const QString resourcePath =
-      QString(":/catppuccin-%1/stylesheet.qss").arg(name);
-
-  QFile file(resourcePath);
-
-  if (!file.open(QFile::ReadOnly | QFile::Text)) {
-    return;
-  }
-
-  const QString qss = QString::fromUtf8(file.readAll());
-  file.close();
-
-  m_normalThemeManager->loadTheme(name, qss);
-
-  const ThemeTokens tokens = m_normalThemeManager->currentTokens();
-
-  m_normalPage->setStyleSheet(qss);
-  m_normalPage->setPalette(paletteForTokens(tokens));
-
-  if (m_documentArea)
-    m_documentArea->setThemeTokens(tokens);
-
-  m_currentNormalTheme = name;
-
-  QSettings settings;
-  settings.setValue(NormalThemeKey, name);
-
-  if (m_centralStack && m_centralStack->currentIndex() == 0) {
-    ThemeRegistry::instance().setActiveTheme(name);
-  }
-}
-
-void MainWindow::applyOverseerTheme(const QString &name) {
-  const QString resourcePath =
-      QString(":/catppuccin-%1/stylesheet.qss").arg(name);
-
-  QFile file(resourcePath);
-
-  if (!file.open(QFile::ReadOnly | QFile::Text)) {
-    return;
-  }
-
-  const QString qss = QString::fromUtf8(file.readAll());
-  file.close();
-
-  m_overseerThemeManager->loadTheme(name, qss);
-
-  const ThemeTokens tokens = m_overseerThemeManager->currentTokens();
-
-  m_overseerPage->setStyleSheet(qss);
-  m_overseerPage->setPalette(paletteForTokens(tokens));
-
-  if (m_overseerPage)
-    m_overseerPage->setThemeTokens(tokens);
-
-  m_currentOverseerTheme = name;
-
-  QSettings settings;
-  settings.setValue(OverseerThemeKey, name);
-
-  if (m_centralStack && m_centralStack->currentIndex() == 1) {
-    ThemeRegistry::instance().setActiveTheme(name);
-  }
-}
-
 QPalette MainWindow::paletteForTokens(const ThemeTokens &tokens) const {
   QPalette pal = QApplication::style()->standardPalette();
 
   pal.setColor(QPalette::Window, tokens.base);
   pal.setColor(QPalette::WindowText, tokens.text);
   pal.setColor(QPalette::Base, tokens.surface0);
-  pal.setColor(QPalette::AlternateBase, tokens.mantle);
+  pal.setColor(QPalette::AlternateBase, tokens.surfaceRaised);
   pal.setColor(QPalette::Text, tokens.text);
-  pal.setColor(QPalette::PlaceholderText, tokens.overlay0);
+  pal.setColor(QPalette::PlaceholderText, tokens.textSubtle);
   pal.setColor(QPalette::Button, tokens.surface0);
   pal.setColor(QPalette::ButtonText, tokens.text);
-  pal.setColor(QPalette::BrightText, tokens.red);
-  pal.setColor(QPalette::Highlight, tokens.blue);
-  pal.setColor(QPalette::HighlightedText, tokens.base);
-  pal.setColor(QPalette::Link, tokens.blue);
-  pal.setColor(QPalette::LinkVisited, tokens.mauve);
-  pal.setColor(QPalette::ToolTipBase, tokens.surface0);
+  pal.setColor(QPalette::BrightText, tokens.error);
+  pal.setColor(QPalette::Highlight, tokens.accent);
+  pal.setColor(QPalette::HighlightedText, tokens.accentFg);
+  pal.setColor(QPalette::Link, tokens.accent);
+  pal.setColor(QPalette::LinkVisited, tokens.accentMuted);
+  pal.setColor(QPalette::ToolTipBase, tokens.surfaceRaised);
   pal.setColor(QPalette::ToolTipText, tokens.text);
   pal.setColor(QPalette::Light, tokens.surface2);
   pal.setColor(QPalette::Midlight, tokens.surface1);
-  pal.setColor(QPalette::Dark, tokens.crust);
-  pal.setColor(QPalette::Mid, tokens.overlay0);
-  pal.setColor(QPalette::Shadow, tokens.crust);
+  pal.setColor(QPalette::Dark, tokens.structure);
+  pal.setColor(QPalette::Mid, tokens.border);
+  pal.setColor(QPalette::Shadow, tokens.base);
 
   return pal;
 }
-
 void MainWindow::onModeToggled(bool overseerMode) {
   const int targetIndex = overseerMode ? 1 : 0;
 
@@ -683,8 +929,8 @@ QSet<QString> MainWindow::modifiedPaths() const {
 }
 
 void MainWindow::about() {
-  QMessageBox::about(this, tr("About Lorefarer"),
-                     tr("The <b>Lorefarer</b> document editor."));
+  QMessageBox::about(this, tr("About Lore"),
+                     tr("The <b>Lore</b> document editor."));
 }
 
 void MainWindow::aboutQt() { QMessageBox::aboutQt(this, tr("About Qt")); }

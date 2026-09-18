@@ -13,14 +13,13 @@
 #include <QStringList>
 #include <QVector>
 #include <QWidget>
-
+#include "NotificationService.h"
 class AutomationStrip;
 class MemoryProposalCard;
 class OverseerSession;
 class OverseerSessionList;
 class OverseerSidePanel;
 class PayloadLogger;
-class ToastStack;
 class TranscriptPanel;
 class TranscriptStore;
 class TextDocument;
@@ -57,7 +56,6 @@ public:
   OverseerSidePanel *sidePanel() const { return m_sidePanel; }
   TranscriptPanel *transcriptPanel() const { return m_transcriptPanel; }
   TranscriptStore *transcriptStore() const { return m_transcriptStore; }
-  ToastStack *toastStack() const { return m_toastStack; }
 
   OverseerSession *currentSession() const { return m_currentSession; }
 
@@ -172,7 +170,6 @@ private:
   QLineEdit *m_input = nullptr;
   QPushButton *m_sendButton = nullptr;
 
-  ToastStack *m_toastStack = nullptr;
 
   OverseerSession *m_currentSession = nullptr;
 

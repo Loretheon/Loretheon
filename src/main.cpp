@@ -8,7 +8,7 @@
 int main(int argc, char **argv) {
   QApplication app(argc, argv);
   QCoreApplication::setOrganizationName("Questfarer");
-  QCoreApplication::setApplicationName("Lorefarer");
+  QCoreApplication::setApplicationName("Lore");
   QCoreApplication::setApplicationVersion("0.0");
   const QString root = Settings::getRootDirectory();
   MainWindow window;

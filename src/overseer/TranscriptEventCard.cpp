@@ -2,6 +2,7 @@
 
 #include "../../include/app/theme/ThemeTokens.h"
 #include "../../include/overseer/MarkdownView.h"
+#include "ThemeRegistry.h"
 #include "TranscriptEditPlanCard.h"
 
 #include <QClipboard>
