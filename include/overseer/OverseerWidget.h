@@ -8,12 +8,15 @@
 
 #include "inference/InferenceService.h"
 
+#include <QHash>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QStringList>
 #include <QVector>
 #include <QWidget>
+
 #include "NotificationService.h"
+
 class AutomationStrip;
 class MemoryProposalCard;
 class OverseerSession;
@@ -27,6 +30,7 @@ class TextEdit;
 class EditPlanner;
 class EditSession;
 class EditCommand;
+class Workstation;
 
 class QComboBox;
 class QLabel;
@@ -52,12 +56,16 @@ public:
 
   void setThemeTokens(const ThemeTokens &tokens) override;
 
+  void setWorkstation(Workstation *workstation);
+
   OverseerSessionList *sessionListPanel() const { return m_sessionListPanel; }
   OverseerSidePanel *sidePanel() const { return m_sidePanel; }
   TranscriptPanel *transcriptPanel() const { return m_transcriptPanel; }
   TranscriptStore *transcriptStore() const { return m_transcriptStore; }
 
   OverseerSession *currentSession() const { return m_currentSession; }
+
+  int activeSessionCount() const { return m_scopedSessions.size(); }
 
 public slots:
   void setFocusedFilePath(const QString &absolutePath);
@@ -93,14 +101,9 @@ private slots:
 
   void startScopedEdit(TextEdit *editor, TextDocument *document,
                        const QString &instruction);
-  void onPlannerValidated(const QVector<EditCommand> &commands);
-  void onPlannerFailed(const QString &reason);
-
-  void onGenerationDelta(const InferenceService::RequestToken &token,
-                         const QString &text);
-  void onGenerationFinished(const InferenceService::RequestToken &token);
-  void onGenerationError(const InferenceService::RequestToken &token,
-                         const QString &error);
+  void onPlannerValidated(const QString &planId,
+                          const QVector<EditCommand> &commands);
+  void onPlannerFailed(const QString &planId, const QString &reason);
 
   void onPlanEditAccepted(const QString &planId, int editId);
   void onPlanEditRejected(const QString &planId, int editId);
@@ -117,6 +120,18 @@ private:
     QString status;
     QString scope;
     QString acceptedScope;
+  };
+
+  struct ScopedSession {
+    QString planId;
+    QString filePath;
+    QString instruction;
+    QVector<EditCommand> commands;
+
+    EditPlanner *planner = nullptr;
+    EditSession *session = nullptr;
+
+    bool awaitingAutoApply = false;
   };
 
   void rebuildSessionList();
@@ -142,13 +157,12 @@ private:
   void loadProposals();
   void saveProposals();
 
-  void tearDownScopedEditSession();
-  void buildEditPlanEvent();
-  void startNextPendingEdit();
-  void finishPlanGeneration();
-  bool allPendingEditsCompleted() const;
+  void tearDownScopedSession(const QString &planId);
+  void tearDownAllScopedSessions();
 
-  void autoApplyPendingPlan();
+  void buildEditPlanEvent(const ScopedSession &ctx);
+
+  void autoApplySession(const QString &planId);
 
   void reloadMemoryPanels();
 
@@ -169,7 +183,6 @@ private:
 
   QLineEdit *m_input = nullptr;
   QPushButton *m_sendButton = nullptr;
-
 
   OverseerSession *m_currentSession = nullptr;
 
@@ -192,16 +205,7 @@ private:
   TextDocument *m_focusedDocument = nullptr;
   TextEdit *m_focusedEditor = nullptr;
 
-  EditPlanner *m_scopedPlanner = nullptr;
-  EditSession *m_scopedSession = nullptr;
-  QString m_scopedPlanId;
-  QString m_scopedPlanFilePath;
-  QString m_scopedInstruction;
-  QVector<EditCommand> m_scopedCommands;
+  Workstation *m_workstation = nullptr;
 
-  InferenceService::RequestToken m_generationToken;
-  int m_generationEditIndex = 0;
-  bool m_generatingEdit = false;
-
-  bool m_pendingPlanAwaitingAutoApply = false;
+  QHash<QString, ScopedSession> m_scopedSessions;
 };

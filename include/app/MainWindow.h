@@ -18,8 +18,8 @@ class EditSession;
 class ModelDialog;
 class LlmSettingsPanel;
 class OverseerPage;
-class Workstation;
 class ToastStack;
+
 class QAction;
 class QMenu;
 class QStackedWidget;
@@ -40,20 +40,22 @@ private slots:
   void aboutQt();
   void manageModels();
   void openLlmSettings();
+  void openSettings();
   void onThemeSelected(const QString &theme);
   void onOverseerThemeSelected(const QString &theme);
   void onModeToggled(bool overseerMode);
 
 private:
-  bool loadThemeFromResource(const QString &name);
-  bool loadAllThemes();
-  QString combinedStylesheet(const QString &themeName) const;
   void createActions();
   void createMenus();
   void createToolbar();
 
   void buildNormalPage();
   void buildOverseerPage();
+
+  bool loadThemeFromResource(const QString &name);
+  bool loadAllThemes();
+  QString combinedStylesheet(const QString &themeName) const;
 
   void applyNormalTheme(const QString &name);
   void applyOverseerTheme(const QString &name);
@@ -65,8 +67,6 @@ private:
 
   bool confirmDiscardChanges(const QString &areaName);
 
-  // --- Normal page -------------------------------------------------------
-
   QWidget *m_normalPage = nullptr;
   DocumentArea *m_documentArea = nullptr;
   FileWidget *m_fileWidget = nullptr;
@@ -74,15 +74,13 @@ private:
   EditSession *m_editSession = nullptr;
   ChatWidget *m_chatWidget = nullptr;
 
-  // --- Overseer page -----------------------------------------------------
-
   OverseerPage *m_overseerPage = nullptr;
-
-  // --- Shared ------------------------------------------------------------
 
   QStackedWidget *m_centralStack = nullptr;
   QToolBar *m_topToolBar = nullptr;
   QToolButton *m_modeButton = nullptr;
+
+  ToastStack *m_toastStack = nullptr;
 
   InferenceService *m_inferenceService = nullptr;
   ModelDialog *m_modelDialog = nullptr;
@@ -110,12 +108,10 @@ private:
   QAction *m_exitAct = nullptr;
   QAction *m_manageModelsAct = nullptr;
   QAction *m_llmSettingsAct = nullptr;
+  QAction *m_settingsAct = nullptr;
   QAction *m_toggleModeAct = nullptr;
   QAction *m_aboutAct = nullptr;
   QAction *m_aboutQtAct = nullptr;
-
-  ToastStack *m_toastStack = nullptr;
-
 };
 
 #endif // MAINWINDOW_H

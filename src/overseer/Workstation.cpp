@@ -142,7 +142,7 @@ void Workstation::destroyWindow(WorkstationWindow *window, bool emitSignals) {
   const QString path = window->filePath();
 
   unwatchFile(path);
-
+  unlockFile(path);
   m_windows.removeOne(window);
   m_byPath.remove(path);
 
@@ -725,6 +725,49 @@ void Workstation::resizeEvent(QResizeEvent *event) {
 
     w->setGeometry(g);
   }
+}
+
+bool Workstation::isFileLocked(const QString &absolutePath) const {
+  return m_lockedFiles.contains(absolutePath);
+}
+
+bool Workstation::lockFile(const QString &absolutePath) {
+  if (absolutePath.isEmpty())
+    return false;
+
+  if (m_lockedFiles.contains(absolutePath))
+    return false;
+
+  m_lockedFiles.insert(absolutePath);
+
+  WorkstationWindow *window = windowForPath(absolutePath);
+  if (window)
+    window->setLocked(true);
+
+  return true;
+}
+
+void Workstation::unlockFile(const QString &absolutePath) {
+  if (absolutePath.isEmpty())
+    return;
+
+  if (!m_lockedFiles.remove(absolutePath))
+    return;
+
+  WorkstationWindow *window = windowForPath(absolutePath);
+  if (window)
+    window->setLocked(false);
+}
+
+QStringList Workstation::lockedFiles() const {
+  QStringList result;
+
+  for (const QString &path : m_lockedFiles)
+    result.append(path);
+
+  result.sort();
+
+  return result;
 }
 
 void Workstation::paintEvent(QPaintEvent *event) {

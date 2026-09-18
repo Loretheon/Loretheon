@@ -369,6 +369,24 @@ void WorkstationWindow::setDropTargetHighlight(bool highlighted) {
   update();
 }
 
+void WorkstationWindow::setLocked(bool locked) {
+  if (m_locked == locked)
+    return;
+
+  m_locked = locked;
+
+  if (m_locked) {
+    setStatus(Status::Rewriting, tr("Under edit"));
+  } else {
+    refreshNeutralStatus();
+  }
+
+  setProperty("locked", locked);
+  style()->unpolish(this);
+  style()->polish(this);
+  update();
+}
+
 void WorkstationWindow::toggleMaximize() {
   if (!parentWidget())
     return;
@@ -536,6 +554,11 @@ void WorkstationWindow::paintEvent(QPaintEvent *event) {
     borderWidth = focused ? 1.5 : 1.0;
   }
 
+  if (m_locked) {
+    border = tokens.warning;
+    borderWidth = 2.0;
+  }
+
   if (m_dropTargetHighlight) {
     border = tokens.success;
     borderWidth = 2.5;
@@ -549,6 +572,7 @@ void WorkstationWindow::paintEvent(QPaintEvent *event) {
 
   painter.drawRoundedRect(rect().adjusted(1, 1, -1, -1), 6, 6);
 }
+
 void WorkstationWindow::contextMenuEvent(QContextMenuEvent *event) {
   QMenu menu(this);
 

@@ -1,4 +1,4 @@
-#include "../../include/app/Settings.h"
+#include "Settings.h"
 
 #include <QDir>
 #include <QSettings>
@@ -8,6 +8,9 @@ namespace {
 
 constexpr auto OverseerToolCallDepthKey = "overseer/toolCallDepthLimit";
 constexpr int DefaultToolCallDepth = 16;
+
+constexpr auto OverseerConcurrencyCapKey = "overseer/concurrencyCap";
+constexpr int DefaultConcurrencyCap = 4;
 
 constexpr auto LlmModeKey = "llm/mode";
 constexpr auto LlmEndpointKey = "llm/endpoint";
@@ -45,6 +48,18 @@ int Settings::getOverseerToolCallDepthLimit() {
 void Settings::setOverseerToolCallDepthLimit(int limit) {
   QSettings settings;
   settings.setValue(OverseerToolCallDepthKey, qBound(1, limit, 64));
+}
+
+int Settings::getOverseerConcurrencyCap() {
+  QSettings settings;
+  const int value =
+      settings.value(OverseerConcurrencyCapKey, DefaultConcurrencyCap).toInt();
+  return qBound(1, value, 16);
+}
+
+void Settings::setOverseerConcurrencyCap(int cap) {
+  QSettings settings;
+  settings.setValue(OverseerConcurrencyCapKey, qBound(1, cap, 16));
 }
 
 Settings::LlmSettings Settings::getLlmSettings() {

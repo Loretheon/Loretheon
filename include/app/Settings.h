@@ -19,6 +19,9 @@ public:
   static int getOverseerToolCallDepthLimit();
   static void setOverseerToolCallDepthLimit(int limit);
 
+  static int getOverseerConcurrencyCap();
+  static void setOverseerConcurrencyCap(int cap);
+
   static LlmSettings getLlmSettings();
   static void setLlmSettings(const LlmSettings &settings);
 

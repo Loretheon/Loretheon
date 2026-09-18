@@ -19,7 +19,10 @@
 #include "Settings.h"
 #include "TranscriptPanel.h"
 #include "TranscriptStore.h"
+#include "Workstation.h"
+
 #include "NotificationService.h"
+
 #include "TextEdit.h"
 
 #include "inference/InferenceService.h"
@@ -190,11 +193,6 @@ OverseerWidget::OverseerWidget(InferenceService *inferenceService,
     connect(m_inferenceService, &InferenceService::llmDelta, this,
             [this](const InferenceService::RequestToken &token,
                    const QString &text) {
-              if (m_generatingEdit && token == m_generationToken) {
-                onGenerationDelta(token, text);
-                return;
-              }
-
               if (token != m_activeToken || !m_currentSession)
                 return;
 
@@ -203,11 +201,6 @@ OverseerWidget::OverseerWidget(InferenceService *inferenceService,
 
     connect(m_inferenceService, &InferenceService::llmFinished, this,
             [this](const InferenceService::RequestToken &token) {
-              if (m_generatingEdit && token == m_generationToken) {
-                onGenerationFinished(token);
-                return;
-              }
-
               if (token != m_activeToken)
                 return;
 
@@ -216,7 +209,6 @@ OverseerWidget::OverseerWidget(InferenceService *inferenceService,
               if (!m_currentSession)
                 return;
 
-              // ---- CHANGE 1: log the response, or surface an empty one ----
               if (!m_assistantRawText.isEmpty()) {
                 TranscriptEvent event;
                 event.type = TranscriptEvent::Type::AssistantMessage;
@@ -248,7 +240,6 @@ OverseerWidget::OverseerWidget(InferenceService *inferenceService,
                     tr("The assistant returned an empty response.");
                 appendEvent(notice);
               }
-              // ---- end CHANGE 1 ----
 
               m_turnMessages = QJsonArray();
               m_toolCallDepth = 0;
@@ -281,11 +272,6 @@ OverseerWidget::OverseerWidget(InferenceService *inferenceService,
     connect(m_inferenceService, &InferenceService::llmError, this,
             [this](const InferenceService::RequestToken &token,
                    const QString &error) {
-              if (m_generatingEdit && token == m_generationToken) {
-                onGenerationError(token, error);
-                return;
-              }
-
               if (token != m_activeToken)
                 return;
 
@@ -322,6 +308,10 @@ OverseerWidget::~OverseerWidget() = default;
 
 void OverseerWidget::setThemeTokens(const ThemeTokens &tokens) {
   Q_UNUSED(tokens);
+}
+
+void OverseerWidget::setWorkstation(Workstation *workstation) {
+  m_workstation = workstation;
 }
 
 void OverseerWidget::setFocusedFilePath(const QString &absolutePath) {
@@ -443,7 +433,7 @@ void OverseerWidget::closeSession() {
     m_inferenceService->abortChatRequest(m_activeToken);
     m_activeToken = InferenceService::RequestToken();
   }
-  
+
   tearDownScopedEditSession();
 
   disconnect(m_currentSession, nullptr, this, nullptr);
@@ -600,6 +590,23 @@ QString OverseerWidget::buildSystemPrompt() const {
       .arg(workspaceTree);
 
   prompt += focusSection;
+
+  if (m_workstation) {
+    const QStringList locked = m_workstation->lockedFiles();
+
+    if (!locked.isEmpty()) {
+      prompt += QStringLiteral("## Locked files\n\n");
+      prompt += QStringLiteral(
+          "These files are currently under an active scoped edit. Do not "
+          "issue edit_workstation_file against them until the edit "
+          "completes or is cancelled.\n\n");
+
+      for (const QString &path : locked)
+        prompt += QStringLiteral("  - %1\n").arg(path);
+
+      prompt += QChar('\n');
+    }
+  }
 
   prompt += QStringLiteral("## Global Memory\n\n%1\n\n").arg(globalMemory);
   prompt += QStringLiteral("## Session Memory\n\n%1\n\n").arg(sessionMemory);
@@ -806,11 +813,13 @@ void OverseerWidget::executeToolCalls(const QJsonArray &toolCalls) {
         proposalEvent.proposalStatus = QStringLiteral("pending");
         proposalEvent.proposalContext = m_assistantRawText;
         appendEvent(proposalEvent);
+
         const QString scopeLabel =
             scope == QStringLiteral("global") ? tr("global") : tr("session");
 
         NotificationService::instance().warning(
             tr("Memory proposal · %1").arg(scopeLabel), fact);
+
         if (m_sessionSettings.effectiveAutoMemory()) {
           QTimer::singleShot(0, this, [this, key, scope]() {
             if (!m_sessionSettings.effectiveAutoMemory())
@@ -913,7 +922,23 @@ void OverseerWidget::startScopedEdit(TextEdit *editor, TextDocument *document,
   if (!editor || instruction.isEmpty() || !m_inferenceService)
     return;
 
+  const QString targetPath = m_focusedFilePath;
+
+  if (m_workstation && !targetPath.isEmpty() &&
+      m_workstation->isFileLocked(targetPath)) {
+    NotificationService::instance().critical(
+        tr("File already under edit"),
+        tr("A scoped edit is already active on %1. Wait for it to "
+           "complete, or cancel it first.")
+            .arg(QFileInfo(targetPath).fileName()),
+        targetPath);
+    return;
+  }
+
   tearDownScopedEditSession();
+
+  if (m_workstation && !targetPath.isEmpty())
+    m_workstation->lockFile(targetPath);
 
   m_scopedPlanner = new EditPlanner(m_inferenceService, this);
 
@@ -924,7 +949,7 @@ void OverseerWidget::startScopedEdit(TextEdit *editor, TextDocument *document,
           &OverseerWidget::onPlannerFailed);
 
   m_scopedPlanId = QUuid::createUuid().toString(QUuid::WithoutBraces);
-  m_scopedPlanFilePath = m_focusedFilePath;
+  m_scopedPlanFilePath = targetPath;
   m_scopedInstruction = instruction;
 
   m_scopedPlanner->start(editor, instruction);
@@ -964,6 +989,8 @@ void OverseerWidget::onPlannerValidated(
 
   m_scopedSession = new EditSession(m_focusedEditor, this);
 
+  m_scopedSession->setInferenceService(m_inferenceService);
+
   connect(m_scopedSession, &EditSession::pendingEditStarted, m_focusedEditor,
           &TextEdit::showPendingEdit);
 
@@ -997,6 +1024,26 @@ void OverseerWidget::onPlannerValidated(
             tearDownScopedEditSession();
           });
 
+  connect(m_scopedSession, &EditSession::generationFinished, this,
+          [this](bool allCompleted) {
+            if (m_transcriptStore) {
+              m_transcriptStore->updatePlanStatus(
+                  m_scopedPlanId,
+                  allCompleted ? QStringLiteral("pending")
+                               : QStringLiteral("failed"),
+                  allCompleted ? tr("Ready for review.")
+                               : tr("Some edits did not generate."));
+            }
+
+            emit planReviewReady(m_scopedPlanFilePath);
+
+            if (allCompleted && m_sessionSettings.effectiveAutoEdits()) {
+              m_pendingPlanAwaitingAutoApply = true;
+              QTimer::singleShot(0, this,
+                                 [this]() { autoApplyPendingPlan(); });
+            }
+          });
+
   if (!m_scopedSession->executePlan(commands)) {
     TranscriptEvent event;
     event.type = TranscriptEvent::Type::Error;
@@ -1020,10 +1067,7 @@ void OverseerWidget::onPlannerValidated(
 
   emit planGenerationStarted(m_scopedPlanFilePath);
 
-  m_generationEditIndex = 0;
-  m_generatingEdit = false;
-
-  startNextPendingEdit();
+  m_scopedSession->startAllPendingEdits();
 }
 
 void OverseerWidget::buildEditPlanEvent() {
@@ -1044,219 +1088,6 @@ void OverseerWidget::buildEditPlanEvent() {
   event.planStatus = QStringLiteral("pending");
 
   appendEvent(event);
-}
-
-void OverseerWidget::startNextPendingEdit() {
-  if (!m_scopedSession) {
-    finishPlanGeneration();
-    return;
-  }
-
-  const auto &pending = m_scopedSession->pendingEdits();
-
-  const PendingEdit *nextEdit = nullptr;
-
-  for (const PendingEdit &edit : pending) {
-    if (edit.completed)
-      continue;
-
-    nextEdit = &edit;
-    break;
-  }
-
-  if (!nextEdit) {
-    finishPlanGeneration();
-    return;
-  }
-
-  const EditCommand &command = nextEdit->command;
-
-  if (command.operation == EditCommand::Operation::Insert) {
-    m_scopedSession->completeInsertFromInstruction(nextEdit->id);
-    startNextPendingEdit();
-    return;
-  }
-
-  if (!m_scopedSession->prepareStreaming(nextEdit->command, nextEdit->id)) {
-    finishPlanGeneration();
-    return;
-  }
-
-  m_generatingEdit = true;
-  m_generationEditIndex = nextEdit->id;
-
-  const bool isScopedReplacement =
-      command.operation == EditCommand::Operation::Replace;
-
-  const bool isScopeBodyReplacement =
-      command.operation == EditCommand::Operation::ReplaceScope;
-
-  QString systemPrompt;
-  QString userPrompt;
-
-  if (isScopedReplacement) {
-    systemPrompt = QStringLiteral(
-        "You are a text-substitution engine. The application will replace "
-        "exactly one occurrence of a target substring in a document with "
-        "your output.\n"
-        "\n"
-        "Rules:\n"
-        "- Output ONLY the replacement for the target substring.\n"
-        "- Output must be a single line. No newlines.\n"
-        "- Do NOT include the target substring in your output.\n"
-        "- Do NOT wrap your output in backticks, quotes, ---, or any "
-        "other delimiter.\n"
-        "- Do NOT explain your output.\n");
-  } else if (isScopeBodyReplacement) {
-    systemPrompt = QStringLiteral(
-        "You are a text generator. The application will replace the "
-        "entire body of a section or scope with your output.\n"
-        "\n"
-        "Rules:\n"
-        "- Output ONLY the new body content for the scope.\n"
-        "- Do NOT include the scope's heading or title line.\n"
-        "- Do NOT wrap your output in backticks or fences.\n"
-        "- Do NOT explain your output.\n"
-        "- End your output with exactly one trailing newline.\n");
-  } else {
-    systemPrompt = QStringLiteral(
-        "You are an automated text generator. Output only the requested "
-        "content. No commentary. No markdown fences. No explanation.");
-  }
-
-  if (isScopedReplacement) {
-    userPrompt =
-        QStringLiteral("Target substring:\n%1\n\nInstruction:\n%2\n\n"
-                       "Output the replacement now. Nothing else.")
-            .arg(command.findString, command.instruction);
-  } else if (isScopeBodyReplacement) {
-    userPrompt =
-        QStringLiteral("Target scope: %1\n\nInstruction:\n%2\n\n"
-                       "Output the new body now.")
-            .arg(command.scopeId, command.instruction);
-  } else {
-    userPrompt = QStringLiteral("Instruction:\n%1\n\nTarget scope: %2")
-                     .arg(command.instruction, command.scopeId);
-  }
-
-  QJsonArray messages;
-
-  messages.append(QJsonObject{
-      {QStringLiteral("role"), QStringLiteral("system")},
-      {QStringLiteral("content"), systemPrompt}});
-
-  messages.append(QJsonObject{
-      {QStringLiteral("role"), QStringLiteral("user")},
-      {QStringLiteral("content"), userPrompt}});
-
-  if (m_payloadLogger) {
-    m_payloadLogger->log(
-        QStringLiteral("OVERSEER_EDIT_GENERATION_REQUEST"),
-        QStringLiteral("Plan: %1\nFile: %2\nEdit: %3\nOperation: %4\n\n"
-                       "Messages:\n%5")
-            .arg(m_scopedPlanId, m_scopedPlanFilePath)
-            .arg(nextEdit->id)
-            .arg(static_cast<int>(command.operation))
-            .arg(formatMessagesForLog(messages)));
-  }
-
-  m_generationToken = m_inferenceService->sendChatRequest(
-      messages, QString(), 0.7, 120000);
-}
-
-void OverseerWidget::onGenerationDelta(
-    const InferenceService::RequestToken &token, const QString &text) {
-  if (!m_generatingEdit || token != m_generationToken || !m_scopedSession)
-    return;
-
-  m_scopedSession->appendStreaming(text);
-}
-
-void OverseerWidget::onGenerationFinished(
-    const InferenceService::RequestToken &token) {
-  if (!m_generatingEdit || token != m_generationToken || !m_scopedSession)
-    return;
-
-  m_generationToken = InferenceService::RequestToken();
-  m_generatingEdit = false;
-
-  if (!m_scopedSession->finishStreaming()) {
-    return;
-  }
-
-  startNextPendingEdit();
-}
-
-void OverseerWidget::onGenerationError(
-    const InferenceService::RequestToken &token, const QString &error) {
-  if (!m_generatingEdit || token != m_generationToken || !m_scopedSession)
-    return;
-
-  m_generationToken = InferenceService::RequestToken();
-  m_generatingEdit = false;
-
-  TranscriptEvent event;
-  event.type = TranscriptEvent::Type::Error;
-  event.role = QStringLiteral("error");
-  event.body = tr("Edit generation failed: %1").arg(error);
-  appendEvent(event);
-
-  if (m_transcriptStore) {
-    m_transcriptStore->updatePlanStatus(
-        m_scopedPlanId, QStringLiteral("failed"), error);
-  }
-
-  emit planFailed(m_scopedPlanFilePath);
-
-  tearDownScopedEditSession();
-}
-
-bool OverseerWidget::allPendingEditsCompleted() const {
-  if (!m_scopedSession)
-    return false;
-
-  for (const PendingEdit &edit : m_scopedSession->pendingEdits()) {
-    if (!edit.completed)
-      return false;
-  }
-
-  return true;
-}
-
-void OverseerWidget::finishPlanGeneration() {
-  m_generatingEdit = false;
-  m_generationToken = InferenceService::RequestToken();
-
-  if (!m_scopedSession)
-    return;
-
-  if (!allPendingEditsCompleted()) {
-    if (m_transcriptStore) {
-      m_transcriptStore->updatePlanStatus(
-          m_scopedPlanId, QStringLiteral("failed"),
-          tr("Some edits did not generate."));
-    }
-
-    emit planFailed(m_scopedPlanFilePath);
-
-    tearDownScopedEditSession();
-    return;
-  }
-
-  if (m_transcriptStore) {
-    m_transcriptStore->updatePlanStatus(
-        m_scopedPlanId, QStringLiteral("pending"),
-        tr("Ready for review."));
-  }
-
-  emit planReviewReady(m_scopedPlanFilePath);
-
-  if (!m_sessionSettings.effectiveAutoEdits())
-    return;
-
-  m_pendingPlanAwaitingAutoApply = true;
-
-  QTimer::singleShot(0, this, [this]() { autoApplyPendingPlan(); });
 }
 
 void OverseerWidget::autoApplyPendingPlan() {
@@ -1302,13 +1133,9 @@ void OverseerWidget::tearDownScopedEditSession() {
     m_scopedSession = nullptr;
   }
 
-  if (m_inferenceService && !m_generationToken.isNull()) {
-    m_inferenceService->abortChatRequest(m_generationToken);
-    m_generationToken = InferenceService::RequestToken();
-  }
+  if (m_workstation && !m_scopedPlanFilePath.isEmpty())
+    m_workstation->unlockFile(m_scopedPlanFilePath);
 
-  m_generatingEdit = false;
-  m_generationEditIndex = 0;
   m_pendingPlanAwaitingAutoApply = false;
 }
 

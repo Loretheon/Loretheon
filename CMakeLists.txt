@@ -394,6 +394,8 @@ add_executable(Lore
         src/app/NotificationToast.cpp
         include/app/NotificationToast.h
         include/app/theme/ThemeRegistry.h
+        include/ui/SettingsDialog.cpp
+        include/ui/SettingsDialog.h
 )
 
 add_dependencies(Lore

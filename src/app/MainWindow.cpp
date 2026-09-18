@@ -7,6 +7,7 @@
 #include "NotificationService.h"
 #include "OverseerPage.h"
 #include "Settings.h"
+#include "SettingsDialog.h"
 #include "TextEdit.h"
 #include "TextWidget.h"
 #include "ThemeRegistry.h"
@@ -67,7 +68,6 @@ InferenceService::LlmConfig configuredLlm() {
   return config;
 }
 
-// Reads a stylesheet resource. Returns empty string on failure.
 QString readResourceStylesheet(const QString &themeName) {
   QFile file(QStringLiteral(":/themes/%1/stylesheet.qss").arg(themeName));
 
@@ -80,10 +80,6 @@ QString readResourceStylesheet(const QString &themeName) {
   return qss;
 }
 
-// Parses a token block and returns @name -> QColor. Also returns the
-// @theme name via outTheme if present. Independent of ThemeRegistry's
-// parser so that MainWindow can drive expansion without depending on
-// registry internals.
 QHash<QString, QColor> parseTokenBlockForExpansion(const QString &qss,
                                                    QString *outTheme) {
   QHash<QString, QColor> result;
@@ -93,7 +89,7 @@ QHash<QString, QColor> parseTokenBlockForExpansion(const QString &qss,
 
   static const QRegularExpression tokenLine(
       QStringLiteral(
-          R"(^\s*@([A-Za-z_][A-Za-z0-9_]*)\s+(#[0-9A-Fa-f]{3,8})\s*$)"),
+          R"(^\s*@([A-Za-z_][A-Za-z0-9_-]*)\s+(#[0-9A-Fa-f]{3,8})\s*$)"),
       QRegularExpression::NoPatternOption);
 
   static const QRegularExpression themeLine(
@@ -145,20 +141,12 @@ QHash<QString, QColor> parseTokenBlockForExpansion(const QString &qss,
       continue;
     }
 
-    // First non-token, non-comment, non-blank line ends the preamble.
     break;
   }
 
   return result;
 }
 
-// Expands "@token" references in a stylesheet using the given token
-// map. The token names do not include the leading "@". Every
-// occurrence of "@name" is replaced with the hex form of the color.
-//
-// Order matters: longer names first, so "@surface0" is replaced before
-// "@surface". Today there are no prefix collisions, but the sort makes
-// the function safe if a future token is added that prefixes another.
 QString expandTokens(const QString &qss,
                      const QHash<QString, QColor> &tokens) {
   QString out = qss;
@@ -383,6 +371,7 @@ QString MainWindow::combinedStylesheet(const QString &themeName) const {
 
   return expandTokens(concatenated, tokenMap);
 }
+
 void MainWindow::applyNormalTheme(const QString &name) {
   const ThemeTokens tokens = ThemeRegistry::instance().tokens(name);
 
@@ -443,6 +432,33 @@ void MainWindow::applyOverseerTheme(const QString &name) {
 
   if (m_centralStack && m_centralStack->currentIndex() == 1)
     ThemeRegistry::instance().setActiveTheme(name);
+}
+
+QPalette MainWindow::paletteForTokens(const ThemeTokens &tokens) const {
+  QPalette pal = QApplication::style()->standardPalette();
+
+  pal.setColor(QPalette::Window, tokens.base);
+  pal.setColor(QPalette::WindowText, tokens.text);
+  pal.setColor(QPalette::Base, tokens.surface0);
+  pal.setColor(QPalette::AlternateBase, tokens.surfaceRaised);
+  pal.setColor(QPalette::Text, tokens.text);
+  pal.setColor(QPalette::PlaceholderText, tokens.textSubtle);
+  pal.setColor(QPalette::Button, tokens.surface0);
+  pal.setColor(QPalette::ButtonText, tokens.text);
+  pal.setColor(QPalette::BrightText, tokens.error);
+  pal.setColor(QPalette::Highlight, tokens.accent);
+  pal.setColor(QPalette::HighlightedText, tokens.accentFg);
+  pal.setColor(QPalette::Link, tokens.accent);
+  pal.setColor(QPalette::LinkVisited, tokens.accentMuted);
+  pal.setColor(QPalette::ToolTipBase, tokens.surfaceRaised);
+  pal.setColor(QPalette::ToolTipText, tokens.text);
+  pal.setColor(QPalette::Light, tokens.surface2);
+  pal.setColor(QPalette::Midlight, tokens.surface1);
+  pal.setColor(QPalette::Dark, tokens.structure);
+  pal.setColor(QPalette::Mid, tokens.border);
+  pal.setColor(QPalette::Shadow, tokens.base);
+
+  return pal;
 }
 
 void MainWindow::buildNormalPage() {
@@ -678,6 +694,10 @@ void MainWindow::createActions() {
   connect(m_llmSettingsAct, &QAction::triggered, this,
           &MainWindow::openLlmSettings);
 
+  m_settingsAct = new QAction(tr("&Settings..."), this);
+  connect(m_settingsAct, &QAction::triggered, this,
+          &MainWindow::openSettings);
+
   m_toggleModeAct = new QAction(tr("&Overseer Mode"), this);
   m_toggleModeAct->setCheckable(true);
   m_toggleModeAct->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_O));
@@ -734,6 +754,8 @@ void MainWindow::createMenus() {
   m_viewMenu->addAction(m_toggleModeAct);
 
   m_toolsMenu = menuBar()->addMenu(tr("&Tools"));
+  m_toolsMenu->addAction(m_settingsAct);
+  m_toolsMenu->addSeparator();
   m_toolsMenu->addAction(m_llmSettingsAct);
   m_toolsMenu->addSeparator();
   m_toolsMenu->addAction(m_manageModelsAct);
@@ -777,32 +799,6 @@ void MainWindow::createMenus() {
   m_helpMenu->addAction(m_aboutQtAct);
 }
 
-QPalette MainWindow::paletteForTokens(const ThemeTokens &tokens) const {
-  QPalette pal = QApplication::style()->standardPalette();
-
-  pal.setColor(QPalette::Window, tokens.base);
-  pal.setColor(QPalette::WindowText, tokens.text);
-  pal.setColor(QPalette::Base, tokens.surface0);
-  pal.setColor(QPalette::AlternateBase, tokens.surfaceRaised);
-  pal.setColor(QPalette::Text, tokens.text);
-  pal.setColor(QPalette::PlaceholderText, tokens.textSubtle);
-  pal.setColor(QPalette::Button, tokens.surface0);
-  pal.setColor(QPalette::ButtonText, tokens.text);
-  pal.setColor(QPalette::BrightText, tokens.error);
-  pal.setColor(QPalette::Highlight, tokens.accent);
-  pal.setColor(QPalette::HighlightedText, tokens.accentFg);
-  pal.setColor(QPalette::Link, tokens.accent);
-  pal.setColor(QPalette::LinkVisited, tokens.accentMuted);
-  pal.setColor(QPalette::ToolTipBase, tokens.surfaceRaised);
-  pal.setColor(QPalette::ToolTipText, tokens.text);
-  pal.setColor(QPalette::Light, tokens.surface2);
-  pal.setColor(QPalette::Midlight, tokens.surface1);
-  pal.setColor(QPalette::Dark, tokens.structure);
-  pal.setColor(QPalette::Mid, tokens.border);
-  pal.setColor(QPalette::Shadow, tokens.base);
-
-  return pal;
-}
 void MainWindow::onModeToggled(bool overseerMode) {
   const int targetIndex = overseerMode ? 1 : 0;
 
@@ -903,6 +899,11 @@ void MainWindow::openLlmSettings() {
   m_llmSettingsPanel->show();
   m_llmSettingsPanel->raise();
   m_llmSettingsPanel->activateWindow();
+}
+
+void MainWindow::openSettings() {
+  SettingsDialog dialog(this);
+  dialog.exec();
 }
 
 void MainWindow::manageModels() {

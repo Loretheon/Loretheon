@@ -53,7 +53,14 @@ public:
 
   void reloadWindowFromDisk(WorkstationWindow *window);
   void saveWindowToDisk(WorkstationWindow *window);
+  // A file that has an active scoped edit session is locked. Locking
+  // is a coordination mechanism between sessions; it does not prevent
+  // the user from typing in the editor.
+  bool isFileLocked(const QString &absolutePath) const;
+  bool lockFile(const QString &absolutePath);
+  void unlockFile(const QString &absolutePath);
 
+  QStringList lockedFiles() const;
 signals:
   void windowClosed(const QString &absolutePath);
   void currentFileChanged(const QString &absolutePath);
@@ -86,6 +93,7 @@ private slots:
   void onDiskConflictOverwrite(WorkstationWindow *window);
 
 private:
+  QSet<QString> m_lockedFiles;
   void destroyWindow(WorkstationWindow *window, bool emitSignals);
 
   int nextZ();

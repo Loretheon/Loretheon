@@ -52,7 +52,7 @@ OverseerPage::OverseerPage(InferenceService *inferenceService,
 
   m_overseer = new OverseerWidget(inferenceService, this);
   m_workstation = new Workstation(m_documentManager, editSession, this);
-
+  m_overseer->setWorkstation(m_workstation);
   m_documentArea = new DocumentArea(m_documentManager, this);
   m_documentArea->setEditSession(editSession);
   m_documentArea->hide();
