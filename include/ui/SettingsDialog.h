@@ -19,4 +19,5 @@ private:
   QCheckBox *m_toasts = nullptr;
   QCheckBox *m_osNotifications = nullptr;
   QCheckBox *m_sound = nullptr;
+  QSpinBox *m_fileAgentCap = nullptr;
 };

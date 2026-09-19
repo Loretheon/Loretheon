@@ -49,8 +49,6 @@ public slots:
   void activatePreview(bool active);
   void clearContextScopes();
 
-  // Toggle the outer stack between the editor page (false) and the
-  // preview / view page (true).
   void setViewMode(bool viewMode);
 
 signals:
@@ -73,6 +71,7 @@ private:
   void showNodeContextMenu(const QString &id, const QString &name,
                            const QPoint &globalPos);
   void applyThemeToRenderers();
+  void refreshActiveRenderer();
 
   TextEdit *textEdit = nullptr;
   PreviewPane *previewPane = nullptr;

@@ -21,7 +21,8 @@ constexpr auto LlmSeededKey = "llm/seededFromEnv";
 
 constexpr auto OverseerToastDurationKey = "overseer/toastDurationMs";
 constexpr int DefaultToastDurationMs = 8000;
-
+constexpr auto OverseerFileAgentCapKey = "overseer/fileAgentCap";
+constexpr int DefaultFileAgentCap = 4;
 } // namespace
 
 QString Settings::getRootDirectory() {
@@ -123,4 +124,21 @@ int Settings::getOverseerToastDurationMs() {
 void Settings::setOverseerToastDurationMs(int ms) {
   QSettings settings;
   settings.setValue(OverseerToastDurationKey, qBound(1000, ms, 60000));
+}
+
+int Settings::getOverseerFileAgentCap() {
+  QSettings settings;
+  const int value =
+      settings.value(OverseerFileAgentCapKey, DefaultFileAgentCap).toInt();
+  return qBound(1, value, 16);
+}
+
+void Settings::setOverseerFileAgentCap(int cap) {
+  QSettings settings;
+  settings.setValue(OverseerFileAgentCapKey, qBound(1, cap, 16));
+}
+
+QString Settings::getPayloadLogRoot() {
+  return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) +
+         QStringLiteral("/logs/payloads");
 }

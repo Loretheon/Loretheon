@@ -1,4 +1,4 @@
-#include "TranscriptEditPlanCard.h"
+#include "../../include/overseer/TranscriptEditPlanCard.h"
 
 #include <QFileInfo>
 #include <QHBoxLayout>

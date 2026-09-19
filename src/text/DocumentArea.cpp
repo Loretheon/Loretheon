@@ -1,11 +1,11 @@
-#include "DocumentArea.h"
+#include "../../include/text/DocumentArea.h"
 
-#include "../app/DocumentManager.h"
+#include "../../include/app/DocumentManager.h"
 
-#include "TextEdit.h"
-#include "TextWidget.h"
+#include "../../include/text/TextEdit.h"
+#include "../../include/text/TextWidget.h"
 
-#include "../ai/edit/EditSession.h"
+#include "../../include/ai/edit/EditSession.h"
 
 #include <QFileInfo>
 #include <QTabBar>

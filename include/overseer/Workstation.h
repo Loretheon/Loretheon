@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ThemeTokens.h"
+
 #include <QFileSystemWatcher>
 #include <QHash>
 #include <QList>
@@ -61,6 +63,8 @@ public:
   void unlockFile(const QString &absolutePath);
 
   QStringList lockedFiles() const;
+
+  void setThemeTokens(const ThemeTokens &tokens);
 signals:
   void windowClosed(const QString &absolutePath);
   void currentFileChanged(const QString &absolutePath);
@@ -141,4 +145,7 @@ private:
 
   static constexpr int kGap = 12;
   static constexpr int kMargin = 12;
+
+  ThemeTokens m_tokens;
+  
 };

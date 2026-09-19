@@ -1,4 +1,4 @@
-#include "SettingsDialog.h"
+#include "../../include/ui/SettingsDialog.h"
 
 #include "NotificationService.h"
 #include "Settings.h"
@@ -31,6 +31,17 @@ SettingsDialog::SettingsDialog(QWidget *parent) : QDialog(parent) {
       tr("How many files can be under concurrent scoped edit at once."));
 
   overseerForm->addRow(tr("Concurrent edits:"), m_concurrencyCap);
+
+
+  m_fileAgentCap = new QSpinBox(this);
+  m_fileAgentCap->setRange(1, 16);
+  m_fileAgentCap->setValue(Settings::getOverseerFileAgentCap());
+  m_fileAgentCap->setToolTip(
+      tr("How many file-manipulation agents can run in parallel."));
+
+  overseerForm->addRow(tr("File agents:"), m_fileAgentCap);
+  
+
   layout->addLayout(overseerForm);
 
   layout->addSpacing(12);

@@ -27,6 +27,11 @@ public:
 
   static int getOverseerToastDurationMs();
   static void setOverseerToastDurationMs(int ms);
+
+  static int getOverseerFileAgentCap();
+  static void setOverseerFileAgentCap(int cap);
+
+  static QString getPayloadLogRoot();
 };
 
 #endif // EPISTEME_SETTINGS_H

@@ -1,7 +1,9 @@
 #include "../../include/overseer/OverseerPage.h"
 
+#include "../../include/overseer/DockReservation.h"
 #include "AutoHideDock.h"
-#include "DockReservation.h"
+#include "ConductorBoard.h"
+#include "ConductorDock.h"
 #include "OverseerSession.h"
 #include "OverseerSessionList.h"
 #include "OverseerSidePanel.h"
@@ -9,11 +11,12 @@
 #include "OverseerWidget.h"
 #include "OverviewPanel.h"
 #include "PathUtils.h"
+#include "TextEdit.h"
+#include "ToastStack.h"
 #include "TranscriptPanel.h"
 #include "Workstation.h"
 #include "WorkstationBar.h"
 #include "WorkstationWindow.h"
-#include "TextEdit.h"
 
 #include "DocumentArea.h"
 #include "DocumentManager.h"
@@ -34,6 +37,7 @@
 #include <QHBoxLayout>
 #include <QMessageBox>
 #include <QSplitter>
+#include <QToolButton>
 #include <QVBoxLayout>
 
 namespace {
@@ -52,12 +56,46 @@ OverseerPage::OverseerPage(InferenceService *inferenceService,
 
   m_overseer = new OverseerWidget(inferenceService, this);
   m_workstation = new Workstation(m_documentManager, editSession, this);
+
   m_overseer->setWorkstation(m_workstation);
+
   m_documentArea = new DocumentArea(m_documentManager, this);
   m_documentArea->setEditSession(editSession);
   m_documentArea->hide();
 
   m_fileWidget = new FileWidget(this);
+
+  // The conductor dock. It lives on top of the page, not inside any
+  // layout, and slides down from the top when triggered.
+  m_conductorDock = new ConductorDock(this);
+  m_conductorDock->setQueue(m_overseer->queue());
+  m_conductorDock->setRoster(m_overseer->roster());
+  m_conductorDock->setDependencies(m_overseer->dependencies());
+
+  // The board's Remove button on failed cards routes back into the
+  // conductor, which prompts the user about dependents and then
+  // updates both the queue and the dependency graph.
+  connect(m_conductorDock->board(), &ConductorBoard::removeRequested,
+          m_overseer, &OverseerWidget::removeFailedRequest);
+
+  m_dockTrigger = new QToolButton(this);
+  m_dockTrigger->setObjectName(QStringLiteral("conductorDockTrigger"));
+  m_dockTrigger->setText(tr("Conductor"));
+  m_dockTrigger->setToolButtonStyle(Qt::ToolButtonTextOnly);
+  m_dockTrigger->setAutoRaise(true);
+
+  connect(m_dockTrigger, &QToolButton::clicked, m_conductorDock,
+          &ConductorDock::toggle);
+
+  connect(m_conductorDock, &ConductorDock::opened, this, [this]() {
+    if (m_dockTrigger)
+      m_dockTrigger->setText(tr("Conductor ▲"));
+  });
+
+  connect(m_conductorDock, &ConductorDock::closed, this, [this]() {
+    if (m_dockTrigger)
+      m_dockTrigger->setText(tr("Conductor"));
+  });
 
   connect(m_overseer->sessionListPanel(),
           &OverseerSessionList::sessionSelected, this,
@@ -120,6 +158,12 @@ OverseerPage::OverseerPage(InferenceService *inferenceService,
             if (m_fileWidget)
               m_fileWidget->setRootPath(m_currentOutputFolder);
 
+            if (WorkstationWindow *existing =
+                    m_workstation->windowForPath(absolutePath)) {
+              m_workstation->focusWindow(existing);
+              return;
+            }
+
             m_workstation->openFile(absolutePath);
           });
 
@@ -144,7 +188,6 @@ OverseerPage::OverseerPage(InferenceService *inferenceService,
 
             m_workstation->closeFile(absolutePath);
           });
-
 
   connect(m_overseer, &OverseerWidget::saveWorkstationFileRequested, this,
           [this](const QString &absolutePath) {
@@ -233,8 +276,16 @@ OverseerPage::OverseerPage(InferenceService *inferenceService,
               const QString abs =
                   PathUtils::toAbsolute(relativePath, m_currentOutputFolder);
 
-              if (QFileInfo::exists(abs))
-                m_workstation->openFile(abs);
+              if (!QFileInfo::exists(abs))
+                return;
+
+              if (WorkstationWindow *existing =
+                      m_workstation->windowForPath(abs)) {
+                m_workstation->focusWindow(existing);
+                return;
+              }
+
+              m_workstation->openFile(abs);
             });
 
     connect(op, &OverviewPanel::openInNormalEditorRequested, this,
@@ -306,6 +357,24 @@ OverseerPage::OverseerPage(InferenceService *inferenceService,
   centerColumn->setStretchFactor(0, 3);
   centerColumn->setStretchFactor(1, 1);
 
+  // The trigger sits above the center column, in its own fixed-height
+  // row. The conductor dock overlays the whole page from the top.
+  auto *centerHost = new QWidget(this);
+  auto *centerHostLayout = new QVBoxLayout(centerHost);
+  centerHostLayout->setContentsMargins(0, 0, 0, 0);
+  centerHostLayout->setSpacing(0);
+
+  auto *triggerRow = new QWidget(centerHost);
+  triggerRow->setObjectName(QStringLiteral("conductorTriggerRow"));
+  auto *triggerLayout = new QHBoxLayout(triggerRow);
+  triggerLayout->setContentsMargins(6, 2, 6, 2);
+  triggerLayout->setSpacing(6);
+  triggerLayout->addWidget(m_dockTrigger);
+  triggerLayout->addStretch(1);
+
+  centerHostLayout->addWidget(triggerRow);
+  centerHostLayout->addWidget(centerColumn, 1);
+
   auto *leftReservation = new DockReservation(m_leftDock, this);
   auto *rightReservation = new DockReservation(m_rightDock, this);
 
@@ -315,12 +384,13 @@ OverseerPage::OverseerPage(InferenceService *inferenceService,
   columnsLayout->setSpacing(0);
 
   columnsLayout->addWidget(leftReservation, 0);
-  columnsLayout->addWidget(centerColumn, 1);
+  columnsLayout->addWidget(centerHost, 1);
   columnsLayout->addWidget(rightReservation, 0);
 
   auto *root = new QVBoxLayout(this);
   root->setContentsMargins(0, 0, 0, 0);
   root->addWidget(columns);
+
 
   migrateLegacyLayoutFiles();
 }
@@ -364,6 +434,9 @@ void OverseerPage::migrateLegacyLayoutFiles() {
 void OverseerPage::setThemeTokens(const ThemeTokens &tokens) {
   if (m_documentArea)
     m_documentArea->setThemeTokens(tokens);
+
+  if (m_workstation)
+    m_workstation->setThemeTokens(tokens);
 }
 
 bool OverseerPage::hasUnsavedChanges() const {
@@ -411,6 +484,9 @@ void OverseerPage::onSessionCleared() {
   m_currentSessionName.clear();
   m_currentOutputFolder.clear();
 
+  if (m_conductorDock)
+    m_conductorDock->setSessionFolder(QString());
+
   if (m_workstation)
     m_workstation->closeAll();
 
@@ -440,6 +516,11 @@ void OverseerPage::reloadSession(const QString &name) {
 
   m_currentSessionName = name;
   m_currentOutputFolder = session->outputPath();
+
+  // Pass the session folder to the conductor board so it can persist
+  // the splitter geometry between the dependency graph and the kanban.
+  if (m_conductorDock)
+    m_conductorDock->setSessionFolder(session->folderPath());
 
   if (m_workstation) {
     m_workstation->setOutputFolder(m_currentOutputFolder);
@@ -474,6 +555,11 @@ void OverseerPage::onFileSelected(const QString &path) {
 
   if (!m_currentOutputFolder.isEmpty() &&
       !PathUtils::isUnder(path, m_currentOutputFolder)) {
+    return;
+  }
+
+  if (WorkstationWindow *existing = m_workstation->windowForPath(path)) {
+    m_workstation->focusWindow(existing);
     return;
   }
 
@@ -522,8 +608,13 @@ void OverseerPage::stageFileInSession(const QString &absolutePath) {
   if (m_fileWidget)
     m_fileWidget->setRootPath(m_currentOutputFolder);
 
-  if (m_workstation)
-    m_workstation->openFile(dest);
+  if (m_workstation) {
+    if (WorkstationWindow *existing = m_workstation->windowForPath(dest)) {
+      m_workstation->focusWindow(existing);
+    } else {
+      m_workstation->openFile(dest);
+    }
+  }
 
   emit statusMessage(tr("Staged %1 in the session.").arg(info.fileName()),
                      3000);

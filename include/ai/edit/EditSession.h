@@ -25,7 +25,7 @@ public:
     WaitingForReview,
     Applying
   };
-
+  void setSessionId(const QString &id) { m_sessionId = id; }
   Q_ENUM(State)
 
   explicit EditSession(TextEdit *editor = nullptr, QObject *parent = nullptr);
@@ -91,6 +91,8 @@ private slots:
   void onCandidateSelected(int index);
 
 private:
+
+  QString m_sessionId;
   void setState(State state);
 
   void applyCandidate(const EditMatch &match);

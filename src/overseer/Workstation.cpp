@@ -8,6 +8,7 @@
 #include "../../include/ai/edit/EditSession.h"
 
 #include "TextDocument.h"
+#include "TextWidget.h"
 #include "ThemeRegistry.h"
 
 #include <QContextMenuEvent>
@@ -30,6 +31,7 @@
 #include <algorithm>
 #include <limits>
 
+class TextWidget;
 namespace {
 
 constexpr auto LayoutFilename = "workstation.json";
@@ -54,6 +56,20 @@ Workstation::~Workstation() = default;
 void Workstation::setOutputFolder(const QString &folder) {
   m_outputFolder = folder;
 }
+void Workstation::setThemeTokens(const ThemeTokens &tokens) {
+  m_tokens = tokens;
+
+  for (WorkstationWindow *w : std::as_const(m_windows)) {
+    if (!w)
+      continue;
+
+    if (auto *textWidget = qobject_cast<TextWidget *>(w->body()))
+      textWidget->setThemeTokens(tokens);
+  }
+
+  update();
+}
+
 
 QString Workstation::sessionFolder() const {
   if (m_outputFolder.isEmpty())
@@ -549,7 +565,10 @@ WorkstationWindow *Workstation::openFile(const QString &absolutePath,
                            : bodyHint;
 
   QWidget *body = m_bodyFactory.createBody(hint, document, m_editSession, this);
-
+  if (auto *textWidget = qobject_cast<TextWidget *>(body)) {
+    textWidget->setThemeTokens(m_tokens);
+  }
+  
   auto *window = new WorkstationWindow(document, body, absolutePath, this);
   window->setEditSession(m_editSession);
   window->setMode(WorkstationWindow::Mode::Tiled);

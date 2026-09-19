@@ -2,8 +2,8 @@
 
 #include "../../include/app/theme/ThemeTokens.h"
 #include "../../include/overseer/MarkdownView.h"
+#include "../../include/overseer/TranscriptEditPlanCard.h"
 #include "ThemeRegistry.h"
-#include "TranscriptEditPlanCard.h"
 
 #include <QClipboard>
 #include <QComboBox>

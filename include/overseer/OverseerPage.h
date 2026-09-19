@@ -3,6 +3,7 @@
 #include "ThemeTokens.h"
 
 #include <QWidget>
+#include <QToolButton>
 
 class FileWidget;
 class AutoHideDock;
@@ -15,7 +16,7 @@ class OverseerWidget;
 class Workstation;
 class TextDocument;
 class TextEdit;
-
+class ConductorDock;
 class QSplitter;
 class QStackedWidget;
 
@@ -59,7 +60,8 @@ private:
   void reloadSession(const QString &name);
   void closeAllSessionDocuments();
   void migrateLegacyLayoutFiles();
-
+  ConductorDock *m_conductorDock = nullptr;
+  QToolButton *m_dockTrigger = nullptr;
   InferenceService *m_inferenceService = nullptr;
   EditSession *m_editSession = nullptr;
 

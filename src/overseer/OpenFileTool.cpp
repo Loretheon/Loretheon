@@ -1,4 +1,4 @@
-#include "OpenFileTool.h"
+#include "../../include/overseer/OpenFileTool.h"
 
 #include <QDir>
 #include <QFileInfo>

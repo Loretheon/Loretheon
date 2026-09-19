@@ -321,7 +321,7 @@ add_executable(Lore
         include/overseer/OverseerTools.h
         src/overseer/OverseerOverviewEditor.cpp
         include/overseer/OverseerOverviewEditor.h
-        include/text/DocumentArea.cpp
+        src/text/DocumentArea.cpp
         include/text/DocumentArea.h
         src/overseer/ProposeMemoryFactTool.cpp
         include/overseer/ProposeMemoryFactTool.h
@@ -373,29 +373,43 @@ add_executable(Lore
         include/overseer/MarkdownView.h
         src/overseer/WorkstationBar.cpp
         include/overseer/WorkstationBar.h
-        include/overseer/AutoHideDock.cpp
+        src/overseer/AutoHideDock.cpp
         include/overseer/AutoHideDock.h
         src/overseer/DockReservation.cpp
-        src/overseer/DockReservation.h
+        include/overseer/DockReservation.h
         src/overseer/OpenFileTool.cpp
-        src/overseer/OpenFileTool.h
+        include/overseer/OpenFileTool.h
         src/overseer/CloseFileTool.cpp
-        src/overseer/CloseFileTool.h
-        include/overseer/EditWorkstationFileTool.cpp
+        include/overseer/CloseFileTool.h
+        src/overseer/EditWorkstationFileTool.cpp
         include/overseer/EditWorkstationFileTool.h
         src/overseer/TranscriptEditPlanCard.cpp
-        src/overseer/TranscriptEditPlanCard.h
-        include/overseer/SessionSettings.cpp
+        include/overseer/TranscriptEditPlanCard.h
+        src/overseer/SessionSettings.cpp
         include/overseer/SessionSettings.h
-        include/overseer/AutomationStrip.cpp
+        src/overseer/AutomationStrip.cpp
         include/overseer/AutomationStrip.h
         src/app/NotificationService.cpp
         include/app/NotificationService.h
         src/app/NotificationToast.cpp
         include/app/NotificationToast.h
         include/app/theme/ThemeRegistry.h
-        include/ui/SettingsDialog.cpp
+        src/ui/SettingsDialog.cpp
         include/ui/SettingsDialog.h
+        src/overseer/ConductorTypes.cpp
+        include/overseer/ConductorTypes.h
+        src/overseer/ConductorQueue.cpp
+        include/overseer/ConductorQueue.h
+        src/overseer/ConductorRoster.cpp
+        include/overseer/ConductorRoster.h
+        src/overseer/ConductorBoard.cpp
+        include/overseer/ConductorBoard.h
+        src/overseer/FileAgent.cpp
+        include/overseer/FileAgent.h
+        src/overseer/DependencyGraph.cpp
+        include/overseer/DependencyGraph.h
+        src/overseer/ConductorDock.cpp
+        include/overseer/ConductorDock.h
 )
 
 add_dependencies(Lore
