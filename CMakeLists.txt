@@ -6,7 +6,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(QuaZip-Qt6 REQUIRED)
 find_package(Qt6 6.4 REQUIRED COMPONENTS
-        Core Gui Widgets PrintSupport Pdf PdfWidgets Network Multimedia Svg SvgWidgets Xml)
+        Core Gui Widgets PrintSupport Pdf PdfWidgets Network Multimedia
+        MultimediaWidgets Svg SvgWidgets Xml)
 set(CMAKE_AUTORCC ON)
 qt_standard_project_setup()
 
@@ -434,6 +435,11 @@ add_executable(Lore
         src/ingest/EpubExtractor.cpp
         include/ingest/EpubExtractor.h
         include/ingest/Extractors.h
+        include/text/media/MediaKind.h
+        include/text/media/MediaPane.h
+        src/text/media/MediaPane.cpp
+        src/text/media/MediaSettings.cpp
+        include/text/media/MediaSettings.h
 )
 
 add_dependencies(Lore
@@ -495,6 +501,7 @@ target_link_libraries(Lore PRIVATE
         Qt6::PdfWidgets
         Qt6::Network
         Qt6::Multimedia
+        Qt6::MultimediaWidgets
         Qt6::Svg
         Qt6::SvgWidgets
         Qt6::Xml

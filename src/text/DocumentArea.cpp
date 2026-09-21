@@ -4,11 +4,13 @@
 
 #include "../../include/text/TextEdit.h"
 #include "../../include/text/TextWidget.h"
+#include "../../include/text/media/MediaPane.h"
 
 #include "../../include/ai/edit/EditSession.h"
 
 #include <QFileInfo>
 #include <QTabBar>
+#include <QVBoxLayout>
 
 namespace {
 
@@ -32,20 +34,28 @@ QString tabLabelFor(TextDocument *document) {
 } // namespace
 
 DocumentArea::DocumentArea(DocumentManager *manager, QWidget *parent)
-    : QTabWidget(parent), m_manager(manager) {
-  setTabsClosable(true);
-  setMovable(true);
-  setDocumentMode(true);
+    : QStackedWidget(parent), m_manager(manager) {
+  m_tabs = new QTabWidget(this);
+  m_tabs->setTabsClosable(true);
+  m_tabs->setMovable(true);
+  m_tabs->setDocumentMode(true);
 
-  connect(this, &QTabWidget::currentChanged, this,
+  m_mediaPane = new MediaPane(this);
+
+  m_pageTabs = addWidget(m_tabs);
+  m_pageMedia = addWidget(m_mediaPane);
+
+  setCurrentIndex(m_pageTabs);
+
+  connect(m_tabs, &QTabWidget::currentChanged, this,
           &DocumentArea::onCurrentChanged);
 
-  connect(this, &QTabWidget::tabCloseRequested, this, [this](int index) {
+  connect(m_tabs, &QTabWidget::tabCloseRequested, this, [this](int index) {
     if (!m_manager) {
       return;
     }
 
-    auto *page = qobject_cast<TextWidget *>(QTabWidget::widget(index));
+    auto *page = qobject_cast<TextWidget *>(m_tabs->widget(index));
 
     if (!page) {
       return;
@@ -65,6 +75,9 @@ DocumentArea::DocumentArea(DocumentManager *manager, QWidget *parent)
 
     connect(m_manager, &DocumentManager::documentClosed, this,
             &DocumentArea::onDocumentClosed);
+
+    connect(m_manager, &DocumentManager::mediaFileRequested, this,
+            &DocumentArea::showMediaFile);
   }
 }
 
@@ -74,7 +87,7 @@ TextEdit *DocumentArea::currentEditor() const {
 }
 
 TextWidget *DocumentArea::currentTextWidget() const {
-  return qobject_cast<TextWidget *>(currentWidget());
+  return qobject_cast<TextWidget *>(m_tabs->currentWidget());
 }
 
 TextDocument *DocumentArea::currentDocument() const {
@@ -101,6 +114,19 @@ void DocumentArea::setThemeTokens(const ThemeTokens &tokens) {
   }
 }
 
+void DocumentArea::showMediaFile(const QString &absolutePath) {
+  if (!m_mediaPane) {
+    return;
+  }
+
+  m_mediaPane->load(absolutePath);
+  setCurrentIndex(m_pageMedia);
+}
+
+void DocumentArea::showTextTabs() {
+  setCurrentIndex(m_pageTabs);
+}
+
 TextWidget *DocumentArea::widgetForDocument(TextDocument *document) const {
   return m_widgets.value(document, nullptr);
 }
@@ -112,7 +138,7 @@ int DocumentArea::indexForDocument(TextDocument *document) const {
     return -1;
   }
 
-  return indexOf(page);
+  return m_tabs->indexOf(page);
 }
 
 void DocumentArea::onDocumentOpened(TextDocument *document) {
@@ -120,7 +146,7 @@ void DocumentArea::onDocumentOpened(TextDocument *document) {
     return;
   }
 
-  auto *page = new TextWidget(this);
+  auto *page = new TextWidget(m_tabs);
 
   page->setActiveDocument(document);
   page->setPreviewSession(m_session);
@@ -132,16 +158,17 @@ void DocumentArea::onDocumentOpened(TextDocument *document) {
   connect(page, &TextWidget::statusMessage, this,
           &DocumentArea::statusMessage);
 
-  const int index = addTab(page, tabLabelFor(document));
+  const int index = m_tabs->addTab(page, tabLabelFor(document));
   m_widgets.insert(document, page);
 
-  setCurrentIndex(index);
+  m_tabs->setCurrentIndex(index);
+  showTextTabs();
 
   connect(document, &QTextDocument::contentsChanged, this,
           [this, document]() {
             const int i = indexForDocument(document);
             if (i >= 0) {
-              setTabText(i, tabLabelFor(document));
+              m_tabs->setTabText(i, tabLabelFor(document));
             }
           });
 }
@@ -153,20 +180,20 @@ void DocumentArea::onDocumentClosed(TextDocument *document) {
     return;
   }
 
-  const int index = indexOf(page);
+  const int index = m_tabs->indexOf(page);
 
   m_widgets.remove(document);
 
-  removeTab(index);
+  m_tabs->removeTab(index);
   page->deleteLater();
 
   if (m_manager && m_manager->currentDocument() &&
       m_manager->currentDocument() != document) {
     const int newIndex = indexForDocument(m_manager->currentDocument());
 
-    if (newIndex >= 0 && newIndex != currentIndex()) {
-      QSignalBlocker blocker(this);
-      setCurrentIndex(newIndex);
+    if (newIndex >= 0 && newIndex != m_tabs->currentIndex()) {
+      QSignalBlocker blocker(m_tabs);
+      m_tabs->setCurrentIndex(newIndex);
     }
   }
 }
@@ -176,7 +203,7 @@ void DocumentArea::onCurrentChanged(int index) {
     return;
   }
 
-  auto *page = qobject_cast<TextWidget *>(QTabWidget::widget(index));
+  auto *page = qobject_cast<TextWidget *>(m_tabs->widget(index));
 
   if (!page) {
     emit currentEditorChanged(nullptr);

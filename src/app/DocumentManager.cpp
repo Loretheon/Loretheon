@@ -1,6 +1,7 @@
 #include "DocumentManager.h"
 
 #include "Settings.h"
+#include "media/MediaKind.h"
 
 #include <QDir>
 #include <QFile>
@@ -73,6 +74,35 @@ bool readTextFile(const QString &path, QString &text) {
   }
 
   return true;
+}
+
+// Extensions that are binary by nature and should never be read as text.
+// Opening them produces garbage and wastes memory. The list is
+// deliberately conservative: it covers archives, executables, object
+// files, and a few common opaque containers. Anything not on the list
+// falls through to the existing text path.
+bool isKnownBinaryExtension(const QString &extension) {
+  static const QStringList kBinaryExtensions = {
+      QStringLiteral("zip"),  QStringLiteral("tar"),
+      QStringLiteral("gz"),   QStringLiteral("bz2"),
+      QStringLiteral("xz"),   QStringLiteral("7z"),
+      QStringLiteral("rar"),  QStringLiteral("zst"),
+      QStringLiteral("tgz"),  QStringLiteral("tbz2"),
+      QStringLiteral("exe"),  QStringLiteral("dll"),
+      QStringLiteral("so"),   QStringLiteral("dylib"),
+      QStringLiteral("o"),    QStringLiteral("obj"),
+      QStringLiteral("a"),    QStringLiteral("lib"),
+      QStringLiteral("class"), QStringLiteral("jar"),
+      QStringLiteral("pyc"),  QStringLiteral("pyo"),
+      QStringLiteral("wasm"), QStringLiteral("bin"),
+      QStringLiteral("iso"),  QStringLiteral("img"),
+      QStringLiteral("dmg"),  QStringLiteral("deb"),
+      QStringLiteral("rpm"),  QStringLiteral("apk"),
+      QStringLiteral("msi"),  QStringLiteral("sqlite"),
+      QStringLiteral("db"),   QStringLiteral("dat"),
+  };
+
+  return kBinaryExtensions.contains(extension.trimmed().toLower());
 }
 
 } // namespace
@@ -333,6 +363,24 @@ TextDocument *DocumentManager::openDocumentFromPath(const QString &path) {
 }
 
 bool DocumentManager::openFile(const QString &path) {
+  const QFileInfo info(path);
+
+  if (!info.exists() || !info.isFile()) {
+    return false;
+  }
+
+  if (MediaKinds::isMediaPath(path)) {
+    emit mediaFileRequested(info.absoluteFilePath());
+    return true;
+  }
+
+  if (isKnownBinaryExtension(info.suffix())) {
+    emit unsupportedFileRequested(
+        info.absoluteFilePath(),
+        tr("This file type is not supported: %1").arg(info.fileName()));
+    return false;
+  }
+
   return openDocumentFromPath(path) != nullptr;
 }
 
