@@ -7,7 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 find_package(QuaZip-Qt6 REQUIRED)
 find_package(Qt6 6.4 REQUIRED COMPONENTS
         Core Gui Widgets PrintSupport Pdf PdfWidgets Network Multimedia
-        MultimediaWidgets Svg SvgWidgets Xml)
+        MultimediaWidgets Svg SvgWidgets Xml Concurrent)
 set(CMAKE_AUTORCC ON)
 qt_standard_project_setup()
 
@@ -440,6 +440,18 @@ add_executable(Lore
         src/text/media/MediaPane.cpp
         src/text/media/MediaSettings.cpp
         include/text/media/MediaSettings.h
+        include/voice/VoiceCommand.cpp
+        include/voice/VoiceCommand.h
+        include/voice/VoiceCommandRegistry.cpp
+        include/voice/VoiceCommandRegistry.h
+        include/voice/SpeechController.cpp
+        include/voice/SpeechController.h
+        include/voice/DictateCommand.cpp
+        include/voice/DictateCommand.h
+        include/voice/ReadAloudCommand.cpp
+        include/voice/ReadAloudCommand.h
+        include/voice/SpeechPanel.cpp
+        include/voice/SpeechPanel.h
 )
 
 add_dependencies(Lore
@@ -473,6 +485,7 @@ target_include_directories(Lore PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include/ai/history
         ${CMAKE_CURRENT_SOURCE_DIR}/include/ai/chat
         ${CMAKE_CURRENT_SOURCE_DIR}/include/ai/edit
+        ${CMAKE_CURRENT_SOURCE_DIR}/include/voice
         ${CMAKE_CURRENT_SOURCE_DIR}/include/ingest
         ${CMAKE_CURRENT_SOURCE_DIR}/external/QF-ML/include
         ${CMAKE_CURRENT_SOURCE_DIR}/external/edlib/edlib/include
@@ -505,6 +518,7 @@ target_link_libraries(Lore PRIVATE
         Qt6::Svg
         Qt6::SvgWidgets
         Qt6::Xml
+        Qt6::Concurrent
         qf-inference
         ep_edlib
         ep_tree_sitter

@@ -20,18 +20,24 @@
 #include "../../include/ingest/IngestRegistry.h"
 #include "../../include/ingest/IngestService.h"
 #include "../../include/ingest/NoteWriter.h"
+#include "../../include/voice/DictateCommand.h"
+#include "../../include/voice/ReadAloudCommand.h"
+#include "../../include/voice/SpeechController.h"
+#include "../../include/voice/SpeechPanel.h"
+#include "../../include/voice/VoiceCommandRegistry.h"
 
+#include <QDir>
+#include <QDirIterator>
+#include <QStandardPaths>
 #include <QAction>
 #include <QActionGroup>
 #include <QApplication>
 #include <QCloseEvent>
 #include <QDir>
-#include <QDirIterator>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QIcon>
-#include <QImageReader>
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
@@ -42,7 +48,6 @@
 #include <QSettings>
 #include <QSplitter>
 #include <QStackedWidget>
-#include <QStandardPaths>
 #include <QStatusBar>
 #include <QThreadPool>
 #include <QToolBar>
@@ -56,8 +61,6 @@ constexpr auto NormalThemeKey = "theme";
 constexpr auto OverseerThemeKey = "overseer/theme";
 constexpr auto ModeKey = "overseer/mode";
 
-// Concurrency cap for bulk import. Four keeps the UI responsive without
-// thrashing memory on large PDFs.
 constexpr int ImportConcurrency = 4;
 
 InferenceService::LlmConfig configuredLlm() {
@@ -123,11 +126,6 @@ QString expandTokens(const QString &qss,
 MainWindow::~MainWindow() = default;
 
 MainWindow::MainWindow() {
-  qDebug() << "Supported image formats:"
-         << QImageReader::supportedImageFormats();
-
-
-
   setCorner(Qt::TopLeftCorner, Qt::LeftDockWidgetArea);
   setCorner(Qt::BottomLeftCorner, Qt::LeftDockWidgetArea);
   setCorner(Qt::TopRightCorner, Qt::RightDockWidgetArea);
@@ -139,8 +137,8 @@ MainWindow::MainWindow() {
   m_inferenceService = new InferenceService(this);
 
   m_inferenceService->initialize(
-      LlamaManager::Backend::Vulkan, QFPaths::sttModelsDir(),
-      InferenceService::SttModel::Nemotron35, configuredLlm());
+    LlamaManager::Backend::Vulkan, QString(),
+    InferenceService::SttModel::Nemotron35, configuredLlm());
 
   m_editSession = new EditSession(nullptr, this);
 
@@ -155,6 +153,7 @@ MainWindow::MainWindow() {
   buildNormalPage();
   buildOverseerPage();
   buildIngestLayer();
+  buildSpeechLayer();
 
   m_centralStack = new QStackedWidget(this);
   m_centralStack->addWidget(m_normalPage);
@@ -517,13 +516,6 @@ void MainWindow::buildNormalPage() {
               m_chatWidget->setActiveEditor(editor);
           });
 
-  connect(m_documentManager, &DocumentManager::unsupportedFileRequested, this,
-        [](const QString &, const QString &reason) {
-          NotificationService::instance().warning(tr("Unsupported file"),
-                                                  reason);
-        });
-
-
   auto *mainSplitter = new QSplitter(Qt::Horizontal, m_normalPage);
   mainSplitter->addWidget(m_fileWidget);
 
@@ -684,12 +676,22 @@ void MainWindow::createActions() {
   connect(m_toggleModeAct, &QAction::toggled, this,
           &MainWindow::onModeToggled);
 
+  m_toggleSpeechAct = new QAction(tr("Voice Panel"), this);
+  m_toggleSpeechAct->setShortcut(
+      QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_Space));
+  m_toggleSpeechAct->setStatusTip(
+      tr("Show or hide the voice command panel"));
+  connect(m_toggleSpeechAct, &QAction::triggered, this,
+          &MainWindow::onToggleSpeechPanel);
+
   m_aboutAct = new QAction(getSafeIcon("help-about", ":/icons/help-about.png"),
                            tr("&About"), this);
   connect(m_aboutAct, &QAction::triggered, this, &MainWindow::about);
 
   m_aboutQtAct = new QAction(tr("About &Qt"), this);
   connect(m_aboutQtAct, &QAction::triggered, this, &MainWindow::aboutQt);
+
+  addAction(m_toggleSpeechAct);
 }
 
 void MainWindow::createToolbar() {
@@ -730,6 +732,8 @@ void MainWindow::createMenus() {
 
   m_viewMenu = menuBar()->addMenu(tr("&View"));
   m_viewMenu->addAction(m_toggleModeAct);
+  m_viewMenu->addSeparator();
+  m_viewMenu->addAction(m_toggleSpeechAct);
 
   m_toolsMenu = menuBar()->addMenu(tr("&Tools"));
   m_toolsMenu->addAction(m_settingsAct);
@@ -1123,8 +1127,6 @@ void MainWindow::startBulkImport(const QStringList &paths) {
     if (token != 0) {
       m_bulkImportTokens.append(token);
     } else {
-      // Rejected immediately, e.g. queue full. Count it as a failure and
-      // let the completion bookkeeping run.
       onBulkImportCompleted(0, false);
     }
   }
@@ -1248,4 +1250,65 @@ void MainWindow::reportImportSummary(int succeeded, int failed, int total) {
           .arg(succeeded)
           .arg(total)
           .arg(failed));
+}
+
+void MainWindow::buildSpeechLayer() {
+  m_speechController = new SpeechController(m_inferenceService, this);
+
+  // TTS defaults to disabled in TtsManager. Nothing else turns it on,
+  // and SpeechController::speakText bails when it is off. Enable it
+  // once here so Read Aloud works out of the box.
+  if (m_inferenceService) {
+    m_inferenceService->setTtsEnabled(true);
+  }
+
+  m_voiceCommands = new VoiceCommandRegistry(this);
+  m_voiceCommands->add(
+      std::make_unique<DictateCommand>(m_speechController));
+  m_voiceCommands->add(
+      std::make_unique<ReadAloudCommand>(m_speechController));
+
+  m_speechPanel =
+      new SpeechPanel(m_voiceCommands, m_speechController, this);
+  m_speechPanel->hide();
+
+  if (m_documentManager) {
+    connect(m_documentManager, &DocumentManager::currentDocumentChanged, this,
+            [this](TextDocument *) {
+              onCurrentEditorChangedForSpeech(
+                  m_documentArea ? m_documentArea->currentEditor() : nullptr);
+            });
+
+    // Seed the initial context. If no document is open yet, this passes
+    // nullptr and the commands stay disabled until one is.
+    onCurrentEditorChangedForSpeech(
+        m_documentArea ? m_documentArea->currentEditor() : nullptr);
+  }
+}
+
+void MainWindow::onToggleSpeechPanel() {
+  if (!m_speechPanel) {
+    return;
+  }
+
+  if (m_speechPanel->isVisible()) {
+    m_speechPanel->hide();
+  } else {
+    m_speechPanel->show();
+    m_speechPanel->raise();
+    m_speechPanel->activateWindow();
+  }
+}
+
+void MainWindow::onCurrentEditorChangedForSpeech(TextEdit *editor) {
+  m_currentSpeechEditor = editor;
+
+  if (!m_speechPanel) {
+    return;
+  }
+
+  VoiceContext context;
+  context.editor = editor;
+  context.inference = m_inferenceService;
+  m_speechPanel->setContext(context);
 }

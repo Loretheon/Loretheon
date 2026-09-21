@@ -28,6 +28,10 @@ class IngestService;
 class NoteWriter;
 class NotificationService;
 
+class SpeechController;
+class SpeechPanel;
+class VoiceCommandRegistry;
+
 class QAction;
 class QMenu;
 class QProgressDialog;
@@ -59,6 +63,9 @@ private slots:
   void onImportAllRequested(const QStringList &paths);
   void onImportFilesDialog();
   void onImportFolderDialog();
+
+  void onToggleSpeechPanel();
+  void onCurrentEditorChangedForSpeech(TextEdit *editor);
 
 private:
   void createActions();
@@ -95,12 +102,12 @@ private:
   QStringList collectImportableFilesIn(const QString &folderPath) const;
   QStringList filterImportable(const QStringList &paths) const;
 
-  // Bulk import bookkeeping. A run begins in onImportAllRequested and
-  // ends when completed() reaches m_bulkImportTotal or the user cancels.
   void startBulkImport(const QStringList &paths);
   void onBulkImportCompleted(quint64 token, bool ok);
   void onBulkImportCancelled();
   void finishBulkImport();
+
+  void buildSpeechLayer();
 
   QWidget *m_normalPage = nullptr;
   DocumentArea *m_documentArea = nullptr;
@@ -147,6 +154,7 @@ private:
   QAction *m_llmSettingsAct = nullptr;
   QAction *m_settingsAct = nullptr;
   QAction *m_toggleModeAct = nullptr;
+  QAction *m_toggleSpeechAct = nullptr;
   QAction *m_aboutAct = nullptr;
   QAction *m_aboutQtAct = nullptr;
 
@@ -164,6 +172,11 @@ private:
   int m_bulkImportCompleted = 0;
   bool m_bulkImportCancelled = false;
   QList<quint64> m_bulkImportTokens;
+
+  SpeechController *m_speechController = nullptr;
+  VoiceCommandRegistry *m_voiceCommands = nullptr;
+  SpeechPanel *m_speechPanel = nullptr;
+  TextEdit *m_currentSpeechEditor = nullptr;
 };
 
 #endif // MAINWINDOW_H
