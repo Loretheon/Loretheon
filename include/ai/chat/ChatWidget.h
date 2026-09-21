@@ -57,9 +57,17 @@ signals:
 
   void previewActivationRequested(bool active);
 
+  // Emitted when the user picks "Import" and chooses a single file.
+  void importRequested(const QString &path);
+
+  // Emitted when the user picks "Import" and chooses more than one file.
+  void importAllRequested(const QStringList &paths);
+
 private slots:
   void onPlanValidatedFromSession(const QVector<EditCommand> &commands);
   void onSendClicked();
+
+  void onImportClicked();
 
   void onPendingEditStarted(const PendingEdit &edit);
 
@@ -156,6 +164,8 @@ private:
   QLineEdit *m_input = nullptr;
 
   QPushButton *m_sendButton = nullptr;
+
+  QPushButton *m_attachButton = nullptr;
 
   QCheckBox *m_editModeCheckbox = nullptr;
 

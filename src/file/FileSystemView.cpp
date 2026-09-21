@@ -19,6 +19,15 @@ namespace {
 constexpr const char *kNotesPathMimeType =
     "application/x-lore-notes-path";
 
+const QStringList &defaultImportableExtensions() {
+  static const QStringList kExtensions = {
+      QStringLiteral("pdf"),  QStringLiteral("html"),
+      QStringLiteral("htm"),  QStringLiteral("docx"),
+      QStringLiteral("pptx"), QStringLiteral("epub"),
+  };
+  return kExtensions;
+}
+
 } // namespace
 
 const char *FileSystemView::notesPathMimeType() {
@@ -35,6 +44,33 @@ FileSystemView::FileSystemView(QWidget *parent) : QTreeView(parent) {
   setDropIndicatorShown(false);
   setDragDropMode(QAbstractItemView::DragOnly);
   setDefaultDropAction(Qt::CopyAction);
+
+  m_importableExtensions = defaultImportableExtensions();
+}
+
+void FileSystemView::setImportableExtensions(const QStringList &extensions) {
+  QStringList normalized;
+  for (const QString &ext : extensions) {
+    QString key = ext.toLower();
+    if (key.startsWith(QLatin1Char('.'))) {
+      key.remove(0, 1);
+    }
+    if (!key.isEmpty() && !normalized.contains(key)) {
+      normalized.append(key);
+    }
+  }
+
+  m_importableExtensions =
+      normalized.isEmpty() ? defaultImportableExtensions() : normalized;
+}
+
+QStringList FileSystemView::importableExtensions() const {
+  return m_importableExtensions;
+}
+
+bool FileSystemView::isImportablePath(const QString &path) const {
+  const QString suffix = QFileInfo(path).suffix().toLower();
+  return !suffix.isEmpty() && m_importableExtensions.contains(suffix);
 }
 
 void FileSystemView::currentChanged(const QModelIndex &current,
@@ -207,6 +243,22 @@ void FileSystemView::contextMenuEvent(QContextMenuEvent *event) {
       convertToPlantUmlAction = menu.addAction(tr("Convert to PlantUML"));
   }
 
+  // Import entries. Only offered when the clicked file is a source
+  // format the ingest layer can handle.
+  QAction *importAction = nullptr;
+  QAction *importAllAction = nullptr;
+
+  if (!isDir && isImportablePath(path)) {
+    menu.addSeparator();
+    importAction = menu.addAction(tr("Import…"));
+
+    const QStringList selected = selectedFilePaths();
+    if (selected.size() > 1) {
+      importAllAction = menu.addAction(
+          tr("Import All (%1 files)…").arg(selected.size()));
+    }
+  }
+
   menu.addSeparator();
 
   QAction *addToOverseerAction = nullptr;
@@ -240,6 +292,18 @@ void FileSystemView::contextMenuEvent(QContextMenuEvent *event) {
     emit convertToDotRequested(path);
   } else if (chosen == convertToPlantUmlAction) {
     emit convertToPlantUmlRequested(path);
+  } else if (chosen == importAction) {
+    emit importRequested(path);
+  } else if (chosen == importAllAction) {
+    QStringList paths;
+    for (const QString &candidate : selectedFilePaths()) {
+      if (isImportablePath(candidate)) {
+        paths.append(candidate);
+      }
+    }
+    if (!paths.isEmpty()) {
+      emit importAllRequested(paths);
+    }
   } else if (chosen == addToOverseerAction) {
     const QStringList paths = selectedFilePaths();
     if (!paths.isEmpty()) {

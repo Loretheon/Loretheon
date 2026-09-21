@@ -4,6 +4,9 @@
 #include <QMainWindow>
 #include <QSet>
 #include <QString>
+#include <QStringList>
+
+#include <memory>
 
 #include "DocumentManager.h"
 #include "ThemeManager.h"
@@ -20,8 +23,14 @@ class LlmSettingsPanel;
 class OverseerPage;
 class ToastStack;
 
+class IngestRegistry;
+class IngestService;
+class NoteWriter;
+class NotificationService;
+
 class QAction;
 class QMenu;
+class QProgressDialog;
 class QStackedWidget;
 class QToolBar;
 class QToolButton;
@@ -31,6 +40,7 @@ class MainWindow : public QMainWindow {
 
 public:
   MainWindow();
+  ~MainWindow() override;
 
 protected:
   void closeEvent(QCloseEvent *event) override;
@@ -44,6 +54,11 @@ private slots:
   void onThemeSelected(const QString &theme);
   void onOverseerThemeSelected(const QString &theme);
   void onModeToggled(bool overseerMode);
+
+  void onImportRequested(const QString &path);
+  void onImportAllRequested(const QStringList &paths);
+  void onImportFilesDialog();
+  void onImportFolderDialog();
 
 private:
   void createActions();
@@ -66,6 +81,26 @@ private:
   void bindCurrentEditor(TextEdit *editor);
 
   bool confirmDiscardChanges(const QString &areaName);
+
+  void buildIngestLayer();
+
+  void importOne(const QString &sourcePath);
+
+  QString notesRootPath() const;
+
+  void reportImportFailure(const QString &sourcePath, const QString &error);
+  void reportImportSummary(int succeeded, int failed, int total);
+
+  QString importDialogFilter() const;
+  QStringList collectImportableFilesIn(const QString &folderPath) const;
+  QStringList filterImportable(const QStringList &paths) const;
+
+  // Bulk import bookkeeping. A run begins in onImportAllRequested and
+  // ends when completed() reaches m_bulkImportTotal or the user cancels.
+  void startBulkImport(const QStringList &paths);
+  void onBulkImportCompleted(quint64 token, bool ok);
+  void onBulkImportCancelled();
+  void finishBulkImport();
 
   QWidget *m_normalPage = nullptr;
   DocumentArea *m_documentArea = nullptr;
@@ -103,6 +138,8 @@ private:
   QAction *m_newMarkdownAct = nullptr;
   QAction *m_newPlantUmlAct = nullptr;
   QAction *m_openAct = nullptr;
+  QAction *m_importFilesAct = nullptr;
+  QAction *m_importFolderAct = nullptr;
   QAction *m_saveAct = nullptr;
   QAction *m_saveAllAct = nullptr;
   QAction *m_exitAct = nullptr;
@@ -112,6 +149,21 @@ private:
   QAction *m_toggleModeAct = nullptr;
   QAction *m_aboutAct = nullptr;
   QAction *m_aboutQtAct = nullptr;
+
+  std::unique_ptr<IngestRegistry> m_ingestRegistry;
+  std::unique_ptr<NoteWriter> m_noteWriter;
+  IngestService *m_ingestService = nullptr;
+
+  NotificationService *m_notificationService = nullptr;
+
+  QProgressDialog *m_importProgress = nullptr;
+
+  int m_bulkImportSucceeded = 0;
+  int m_bulkImportFailed = 0;
+  int m_bulkImportTotal = 0;
+  int m_bulkImportCompleted = 0;
+  bool m_bulkImportCancelled = false;
+  QList<quint64> m_bulkImportTokens;
 };
 
 #endif // MAINWINDOW_H

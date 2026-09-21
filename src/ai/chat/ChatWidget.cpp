@@ -20,6 +20,7 @@
 
 #include <QCheckBox>
 #include <QComboBox>
+#include <QFileDialog>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QLineEdit>
@@ -155,6 +156,7 @@ ChatWidget::ChatWidget(InferenceService *inferenceService,
   m_transcript = layout.transcript;
   m_input = layout.input;
   m_sendButton = layout.sendButton;
+  m_attachButton = layout.attachButton;
   m_editModeCheckbox = layout.editModeCheckbox;
   m_editModeCombo = layout.editModeCombo;
   m_editSessionWidget = layout.editSessionWidget;
@@ -185,6 +187,9 @@ ChatWidget::ChatWidget(InferenceService *inferenceService,
           &ChatWidget::onSendClicked);
 
   connect(m_input, &QLineEdit::returnPressed, this, &ChatWidget::onSendClicked);
+
+  connect(m_attachButton, &QPushButton::clicked, this,
+          &ChatWidget::onImportClicked);
 
   if (m_inferenceService) {
     // Every llm* handler filters on the token issued by the most recent
@@ -532,6 +537,23 @@ void ChatWidget::onSendClicked() {
   }
 
   sendPromptWithMode(prompt, scopeMode);
+}
+
+void ChatWidget::onImportClicked() {
+  const QStringList paths = QFileDialog::getOpenFileNames(
+      this, tr("Import Files"), QString(),
+      tr("Documents (*.pdf *.html *.htm *.docx *.pptx *.epub);;"
+         "All Files (*)"));
+
+  if (paths.isEmpty()) {
+    return;
+  }
+
+  if (paths.size() == 1) {
+    emit importRequested(paths.first());
+  } else {
+    emit importAllRequested(paths);
+  }
 }
 
 void ChatWidget::sendPrompt(const QString &prompt) {

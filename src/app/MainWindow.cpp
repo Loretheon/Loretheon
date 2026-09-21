@@ -16,7 +16,14 @@
 #include "app/QfPaths.h"
 #include "inference/InferenceService.h"
 #include "ui/ModelDialog.h"
+#include "../../include/ingest/Extractors.h"
+#include "../../include/ingest/IngestRegistry.h"
+#include "../../include/ingest/IngestService.h"
+#include "../../include/ingest/NoteWriter.h"
 
+#include <QDir>
+#include <QDirIterator>
+#include <QStandardPaths>
 #include <QAction>
 #include <QActionGroup>
 #include <QApplication>
@@ -30,12 +37,14 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QPalette>
+#include <QProgressDialog>
 #include <QRegularExpression>
 #include <QScreen>
 #include <QSettings>
 #include <QSplitter>
 #include <QStackedWidget>
 #include <QStatusBar>
+#include <QThreadPool>
 #include <QToolBar>
 #include <QToolButton>
 #include <QVBoxLayout>
@@ -46,6 +55,10 @@ namespace {
 constexpr auto NormalThemeKey = "theme";
 constexpr auto OverseerThemeKey = "overseer/theme";
 constexpr auto ModeKey = "overseer/mode";
+
+// Concurrency cap for bulk import. Four keeps the UI responsive without
+// thrashing memory on large PDFs.
+constexpr int ImportConcurrency = 4;
 
 InferenceService::LlmConfig configuredLlm() {
   InferenceService::LlmConfig config;
@@ -80,73 +93,6 @@ QString readResourceStylesheet(const QString &themeName) {
   return qss;
 }
 
-QHash<QString, QColor> parseTokenBlockForExpansion(const QString &qss,
-                                                   QString *outTheme) {
-  QHash<QString, QColor> result;
-
-  if (outTheme)
-    outTheme->clear();
-
-  static const QRegularExpression tokenLine(
-      QStringLiteral(
-          R"(^\s*@([A-Za-z_][A-Za-z0-9_-]*)\s+(#[0-9A-Fa-f]{3,8})\s*$)"),
-      QRegularExpression::NoPatternOption);
-
-  static const QRegularExpression themeLine(
-      QStringLiteral(R"(^\s*@theme\s+(\S+)\s*$)"),
-      QRegularExpression::NoPatternOption);
-
-  const QStringList lines = qss.split(QChar('\n'));
-
-  bool inBlockComment = false;
-
-  for (const QString &rawLine : lines) {
-    const QString line = rawLine.trimmed();
-
-    if (inBlockComment) {
-      if (line.contains(QStringLiteral("*/")))
-        inBlockComment = false;
-      continue;
-    }
-
-    if (line.isEmpty())
-      continue;
-
-    if (line.startsWith(QStringLiteral("/*"))) {
-      if (!line.contains(QStringLiteral("*/")))
-        inBlockComment = true;
-      continue;
-    }
-
-    if (line.startsWith(QStringLiteral("//")))
-      continue;
-
-    const auto themeMatch = themeLine.match(line);
-
-    if (themeMatch.hasMatch()) {
-      if (outTheme)
-        *outTheme = themeMatch.captured(1).trimmed();
-      continue;
-    }
-
-    const auto tokenMatch = tokenLine.match(line);
-
-    if (tokenMatch.hasMatch()) {
-      const QString name = tokenMatch.captured(1).trimmed().toLower();
-      const QColor color(tokenMatch.captured(2));
-
-      if (color.isValid())
-        result.insert(name, color);
-
-      continue;
-    }
-
-    break;
-  }
-
-  return result;
-}
-
 QString expandTokens(const QString &qss,
                      const QHash<QString, QColor> &tokens) {
   QString out = qss;
@@ -173,6 +119,8 @@ QString expandTokens(const QString &qss,
 }
 
 } // namespace
+
+MainWindow::~MainWindow() = default;
 
 MainWindow::MainWindow() {
   setCorner(Qt::TopLeftCorner, Qt::LeftDockWidgetArea);
@@ -201,6 +149,7 @@ MainWindow::MainWindow() {
 
   buildNormalPage();
   buildOverseerPage();
+  buildIngestLayer();
 
   m_centralStack = new QStackedWidget(this);
   m_centralStack->addWidget(m_normalPage);
@@ -653,6 +602,24 @@ void MainWindow::createActions() {
       m_documentManager->openFile(path);
   });
 
+  m_importFilesAct =
+      new QAction(getSafeIcon("document-import",
+                              ":/icons/document-import.png"),
+                  tr("Import &Files..."), this);
+  m_importFilesAct->setStatusTip(
+      tr("Convert documents into notes in the notes folder"));
+  connect(m_importFilesAct, &QAction::triggered, this,
+          &MainWindow::onImportFilesDialog);
+
+  m_importFolderAct =
+      new QAction(getSafeIcon("document-import",
+                              ":/icons/document-import.png"),
+                  tr("Import F&older..."), this);
+  m_importFolderAct->setStatusTip(
+      tr("Recursively convert every supported document in a folder"));
+  connect(m_importFolderAct, &QAction::triggered, this,
+          &MainWindow::onImportFolderDialog);
+
   m_saveAct =
       new QAction(getSafeIcon("document-save", ":/icons/document-save.png"),
                   tr("&Save"), this);
@@ -711,11 +678,6 @@ void MainWindow::createActions() {
 
   m_aboutQtAct = new QAction(tr("About &Qt"), this);
   connect(m_aboutQtAct, &QAction::triggered, this, &MainWindow::aboutQt);
-
-  connect(m_documentManager, &DocumentManager::currentDocumentChanged, this,
-          [this](TextDocument *) {
-            m_fileWidget->setModifiedPaths(modifiedPaths());
-          });
 }
 
 void MainWindow::createToolbar() {
@@ -745,6 +707,10 @@ void MainWindow::createMenus() {
   m_newMenu->addAction(m_newPlantUmlAct);
 
   m_fileMenu->addAction(m_openAct);
+  m_fileMenu->addSeparator();
+  m_fileMenu->addAction(m_importFilesAct);
+  m_fileMenu->addAction(m_importFolderAct);
+  m_fileMenu->addSeparator();
   m_fileMenu->addAction(m_saveAct);
   m_fileMenu->addAction(m_saveAllAct);
   m_fileMenu->addSeparator();
@@ -953,4 +919,321 @@ void MainWindow::closeEvent(QCloseEvent *event) {
   settings.setValue(ModeKey, m_centralStack->currentIndex() == 1);
 
   event->accept();
+}
+
+void MainWindow::buildIngestLayer() {
+  QThreadPool::globalInstance()->setMaxThreadCount(ImportConcurrency);
+
+  m_ingestRegistry = std::make_unique<IngestRegistry>();
+  registerBuiltinExtractors(*m_ingestRegistry);
+
+  m_noteWriter = std::make_unique<DiskNoteWriter>();
+
+  m_ingestService =
+      new IngestService(m_ingestRegistry.get(), m_noteWriter.get(), this);
+
+  m_ingestService->setMaxConcurrent(ImportConcurrency);
+
+  QDir().mkpath(notesRootPath());
+
+  const QStringList importable = m_ingestService->importableExtensions();
+
+  if (m_fileWidget) {
+    m_fileWidget->setImportableExtensions(importable);
+
+    connect(m_fileWidget, &FileWidget::importRequested, this,
+            &MainWindow::onImportRequested);
+    connect(m_fileWidget, &FileWidget::importAllRequested, this,
+            &MainWindow::onImportAllRequested);
+  }
+
+  if (m_chatWidget) {
+    connect(m_chatWidget, &ChatWidget::importRequested, this,
+            &MainWindow::onImportRequested);
+    connect(m_chatWidget, &ChatWidget::importAllRequested, this,
+            &MainWindow::onImportAllRequested);
+  }
+}
+
+QString MainWindow::notesRootPath() const {
+  return QStandardPaths::writableLocation(
+             QStandardPaths::AppDataLocation) +
+         QStringLiteral("/notes");
+}
+
+QString MainWindow::importDialogFilter() const {
+  if (!m_ingestService) {
+    return tr("All Files (*)");
+  }
+
+  QStringList patterns;
+  for (const QString &ext : m_ingestService->importableExtensions()) {
+    patterns << QStringLiteral("*.") + ext;
+  }
+  if (patterns.isEmpty()) {
+    return tr("All Files (*)");
+  }
+  return tr("Importable Documents (%1);;All Files (*)")
+      .arg(patterns.join(QLatin1Char(' ')));
+}
+
+QStringList MainWindow::filterImportable(const QStringList &paths) const {
+  QStringList result;
+  if (!m_ingestService) {
+    return result;
+  }
+  for (const QString &path : paths) {
+    if (m_ingestService->canImport(path)) {
+      result.append(path);
+    }
+  }
+  return result;
+}
+
+QStringList MainWindow::collectImportableFilesIn(
+    const QString &folderPath) const {
+  QStringList result;
+  if (folderPath.isEmpty() || !m_ingestService) {
+    return result;
+  }
+
+  QStringList patterns;
+  for (const QString &ext : m_ingestService->importableExtensions()) {
+    patterns << QStringLiteral("*.") + ext;
+  }
+  if (patterns.isEmpty()) {
+    return result;
+  }
+
+  QDirIterator it(folderPath, patterns, QDir::Files | QDir::Readable,
+                  QDirIterator::Subdirectories);
+  while (it.hasNext()) {
+    result.append(it.next());
+  }
+
+  result.sort(Qt::CaseInsensitive);
+  return result;
+}
+
+void MainWindow::onImportFilesDialog() {
+  if (!m_ingestService) {
+    return;
+  }
+
+  const QStringList chosen = QFileDialog::getOpenFileNames(
+      this, tr("Import Files"), QString(), importDialogFilter());
+
+  if (chosen.isEmpty()) {
+    return;
+  }
+
+  const QStringList paths = filterImportable(chosen);
+  if (paths.isEmpty()) {
+    return;
+  }
+
+  onImportAllRequested(paths);
+}
+
+void MainWindow::onImportFolderDialog() {
+  if (!m_ingestService) {
+    return;
+  }
+
+  const QString folder = QFileDialog::getExistingDirectory(
+      this, tr("Import Folder"), QString(),
+      QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
+
+  if (folder.isEmpty()) {
+    return;
+  }
+
+  const QStringList files = collectImportableFilesIn(folder);
+
+  if (files.isEmpty()) {
+    reportImportSummary(0, 0, 0);
+    return;
+  }
+
+  onImportAllRequested(files);
+}
+
+void MainWindow::onImportRequested(const QString &path) {
+  importOne(path);
+}
+
+void MainWindow::onImportAllRequested(const QStringList &paths) {
+  if (paths.isEmpty() || !m_ingestService) {
+    return;
+  }
+
+  startBulkImport(paths);
+}
+
+void MainWindow::startBulkImport(const QStringList &paths) {
+  m_bulkImportSucceeded = 0;
+  m_bulkImportFailed = 0;
+  m_bulkImportTotal = paths.size();
+  m_bulkImportCompleted = 0;
+  m_bulkImportCancelled = false;
+  m_bulkImportTokens.clear();
+
+  m_importProgress = new QProgressDialog(
+      tr("Importing %1 file(s)…").arg(paths.size()), tr("Cancel"), 0,
+      paths.size(), this);
+  m_importProgress->setWindowTitle(tr("Import"));
+  m_importProgress->setWindowModality(Qt::WindowModal);
+  m_importProgress->setMinimumDuration(0);
+  m_importProgress->setAutoClose(false);
+  m_importProgress->setAutoReset(false);
+  m_importProgress->show();
+
+  connect(m_importProgress, &QProgressDialog::canceled, this,
+          &MainWindow::onBulkImportCancelled);
+
+  for (const QString &path : paths) {
+    IngestOptions options;
+    options.destinationFolder = notesRootPath();
+    options.writeProvenance = true;
+    options.sectionPerPage = true;
+
+    const quint64 token = m_ingestService->import(
+        path, options,
+        [this, token](IngestService::Outcome outcome) {
+          onBulkImportCompleted(token, outcome.ok());
+          if (outcome.ok() && m_documentManager) {
+            m_documentManager->openFile(outcome.notePath);
+          } else if (!outcome.ok() && !m_bulkImportCancelled) {
+            reportImportFailure(QString(), outcome.error);
+          }
+        });
+
+    if (token != 0) {
+      m_bulkImportTokens.append(token);
+    } else {
+      // Rejected immediately, e.g. queue full. Count it as a failure and
+      // let the completion bookkeeping run.
+      onBulkImportCompleted(0, false);
+    }
+  }
+}
+
+void MainWindow::onBulkImportCompleted(quint64, bool ok) {
+  if (ok) {
+    ++m_bulkImportSucceeded;
+  } else {
+    ++m_bulkImportFailed;
+  }
+
+  ++m_bulkImportCompleted;
+
+  if (m_importProgress) {
+    m_importProgress->setValue(m_bulkImportCompleted);
+  }
+
+  if (m_bulkImportCompleted >= m_bulkImportTotal) {
+    finishBulkImport();
+  }
+}
+
+void MainWindow::onBulkImportCancelled() {
+  if (m_bulkImportCancelled) {
+    return;
+  }
+  m_bulkImportCancelled = true;
+
+  if (m_ingestService) {
+    for (quint64 token : std::as_const(m_bulkImportTokens)) {
+      m_ingestService->cancel(token);
+    }
+  }
+  m_bulkImportTokens.clear();
+
+  finishBulkImport();
+}
+
+void MainWindow::finishBulkImport() {
+  if (m_importProgress) {
+    m_importProgress->close();
+    m_importProgress->deleteLater();
+    m_importProgress = nullptr;
+  }
+
+  m_bulkImportTokens.clear();
+
+  if (m_bulkImportCancelled) {
+    const int completed = m_bulkImportSucceeded + m_bulkImportFailed;
+    NotificationService::instance().warning(
+        tr("Import cancelled"),
+        tr("Stopped after %1 of %2 file(s).")
+            .arg(completed)
+            .arg(m_bulkImportTotal));
+  } else {
+    reportImportSummary(m_bulkImportSucceeded, m_bulkImportFailed,
+                        m_bulkImportTotal);
+  }
+}
+
+void MainWindow::importOne(const QString &sourcePath) {
+  if (!m_ingestService) {
+    return;
+  }
+
+  IngestOptions options;
+  options.destinationFolder = notesRootPath();
+  options.writeProvenance = true;
+  options.sectionPerPage = true;
+
+  m_ingestService->import(
+      sourcePath, options,
+      [this, sourcePath](IngestService::Outcome outcome) {
+        if (!outcome.ok()) {
+          reportImportFailure(sourcePath, outcome.error);
+          return;
+        }
+        if (m_documentManager) {
+          m_documentManager->openFile(outcome.notePath);
+        }
+      });
+}
+
+void MainWindow::reportImportFailure(const QString &sourcePath,
+                                     const QString &error) {
+  const QString title = sourcePath.isEmpty()
+                            ? tr("Import failed")
+                            : tr("Import failed: %1")
+                                  .arg(QFileInfo(sourcePath).fileName());
+
+  NotificationService::instance().error(
+      title, error, sourcePath.isEmpty() ? QString() : sourcePath);
+}
+
+void MainWindow::reportImportSummary(int succeeded, int failed, int total) {
+  if (total == 0) {
+    NotificationService::instance().info(
+        tr("Import"),
+        tr("No importable documents were found in that folder."));
+    return;
+  }
+
+  if (failed == 0) {
+    NotificationService::instance().info(
+        tr("Import complete"),
+        tr("%n note(s) created.", "", succeeded));
+    return;
+  }
+
+  if (succeeded == 0) {
+    NotificationService::instance().error(
+        tr("Import failed"),
+        tr("None of the %1 document(s) could be imported.").arg(total));
+    return;
+  }
+
+  NotificationService::instance().warning(
+      tr("Import partly complete"),
+      tr("%1 of %2 imported; %3 failed.")
+          .arg(succeeded)
+          .arg(total)
+          .arg(failed));
 }

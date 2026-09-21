@@ -93,6 +93,39 @@ on them as objects. Closer to a node editor than a tabbed editor.
   goes read-only while the board is open
 - [x] **Notifications** — unified toasts and native notifications
 
+### Source ingest
+- [x] **PDF** — text extraction for born-digital PDFs; one section
+  per page with `## Page N` headings. OCR fallback for scans not
+  yet implemented.
+- [x] **PPTX** — slide text from `.pptx` (OOXML in a ZIP); one
+  section per slide with `## Slide N` headings.
+- [x] **DOCX** — paragraphs and heading styles from `.docx`,
+  mapped to Markdown structure.
+- [x] **HTML** — readable text from `.html` / `.htm`.
+- [x] **EPUB** — spine-ordered chapters from `.epub`, one section
+  per chapter with `## Chapter N` headings.
+- [x] **Provenance frontmatter** — each note records source path,
+  source hash, extraction timestamp, page count, and MIME type.
+- [x] **Import Files…** — multi-select from the File menu.
+- [x] **Import Folder…** — recursive walk, all supported formats.
+- [x] **File tree context menu** — "Import…" and "Import All…" on
+  any supported file.
+- [x] **Chat panel Import button** — pick files from the chat
+  input row.
+- [x] **Threaded extraction** — extraction runs on worker threads;
+  results are marshalled back to the main thread.
+- [x] **Concurrency cap** — at most four imports run at once;
+  further requests are rejected with a "queue is full" outcome.
+- [x] **Progress and cancel** — a modal progress dialog with a
+  Cancel button for bulk imports.
+- [x] **Collision-safe note names** — importing the same source
+  twice produces `lecture.md` and `lecture (2).md`.
+- [x] **Sources are never modified** — import reads the source and
+  writes a new note; the original file is left untouched.
+- [x] **Live extension registry** — the file tree, the file
+  dialogs, and the folder walk all read from `IngestRegistry`,
+  so a new extractor is offered without a second list.
+
 ### Workstation UI
 - [x] Floating and tiled window modes
 - [x] Deterministic tiling layout
@@ -105,13 +138,24 @@ on them as objects. Closer to a node editor than a tabbed editor.
 - [ ] **Text to speech** — read assistant responses and documents aloud
 - [ ] **Speech to text** — dictate prompts and notes
 - [ ] **Overseer journals** — running narrative of what the assistant is working on
-- [ ] **Raster images** — view and edit
-- [ ] **Vector images** — view and edit
-- [ ] **Audio** — playback and transcription
+- [ ] **Source ingest — PDF OCR** — Tesseract fallback for scanned
+  PDFs and photographed pages. `tesseract` and `leptonica` are
+  already linked; the extractor does not call them yet.
+- [ ] **Source ingest — bulk queue** — the concurrency cap currently
+  rejects rather than queues. A real backlog with a pump on slot
+  release would let "Import Folder" accept hundreds of files.
+- [ ] **Raster images** — view; OCR extract to note. (Editing deferred.)
+- [ ] **Vector images** — view SVG via `LunasvgRenderer`; treat as a diagram source where applicable. (Editing deferred.)
+- [ ] **Audio** — playback and transcription via `NemoTranscriber`; transcript becomes a note.
 - [ ] **Git** — native versioning and per-file history
 - [ ] **Graph view as a document kind** — a `.mmd` file can be viewed
   as source, as a rendered diagram, or as a structured widget
   (kanban for now, extensible to gantt, timeline, mind-map)
+- [ ] **Large-file handling** — opening a very large Markdown file
+  blocks the UI while `QTextDocument` lays out every block. Options
+  under consideration: `maximumBlockCount`, a `QPlainTextEdit` path
+  for oversized files, or section-scoped loading driven by
+  `DocumentStructure`. Deferred.
 - [ ] **Conductor log rotation** — `conductor.log` grows unbounded
   within a session; cap it or rotate per N entries
 - [ ] **Theme PR template** — a `.github/PULL_REQUEST_TEMPLATE/theme.md`
@@ -119,9 +163,16 @@ on them as objects. Closer to a node editor than a tabbed editor.
 
 ## Supported file types
 
+### Native formats (read and write)
 - [x] Markdown (`.md`)
 - [x] Plain text (`.txt`)
 - [x] Graphviz (`.dot`, `.gv`)
 - [x] PlantUML (`.puml`, `.plantuml`)
 - [x] Mermaid (`.mmd`, `.mermaid`)
 - [x] HTML (`.html`, `.htm`)
+
+### Source formats (read-only ingest)
+- [x] PDF (`.pdf`)
+- [x] PowerPoint (`.pptx`)
+- [x] Word (`.docx`)
+- [x] EPUB (`.epub`)

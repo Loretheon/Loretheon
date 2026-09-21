@@ -4,6 +4,7 @@ project(Lore VERSION 0.1.0 LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+find_package(QuaZip-Qt6 REQUIRED)
 find_package(Qt6 6.4 REQUIRED COMPONENTS
         Core Gui Widgets PrintSupport Pdf PdfWidgets Network Multimedia Svg SvgWidgets Xml)
 set(CMAKE_AUTORCC ON)
@@ -410,6 +411,29 @@ add_executable(Lore
         include/overseer/DependencyGraph.h
         src/overseer/ConductorDock.cpp
         include/overseer/ConductorDock.h
+        include/ingest/ExtractedDocument.h
+        include/ingest/IngestOptions.h
+        src/ingest/Extractor.cpp
+        include/ingest/Extractor.h
+        src/ingest/IngestRegistry.cpp
+        include/ingest/IngestRegistry.h
+        src/ingest/ZipReader.cpp
+        include/ingest/ZipReader.h
+        src/ingest/NoteWriter.cpp
+        include/ingest/NoteWriter.h
+        src/ingest/IngestService.cpp
+        include/ingest/IngestService.h
+        src/ingest/PdfExtractor.cpp
+        include/ingest/PdfExtractor.h
+        src/ingest/HtmlExtractor.cpp
+        include/ingest/HtmlExtractor.h
+        src/ingest/DocxExtractor.cpp
+        include/ingest/DocxExtractor.h
+        src/ingest/PptxExtractor.cpp
+        include/ingest/PptxExtractor.h
+        src/ingest/EpubExtractor.cpp
+        include/ingest/EpubExtractor.h
+        include/ingest/Extractors.h
 )
 
 add_dependencies(Lore
@@ -443,6 +467,7 @@ target_include_directories(Lore PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include/ai/history
         ${CMAKE_CURRENT_SOURCE_DIR}/include/ai/chat
         ${CMAKE_CURRENT_SOURCE_DIR}/include/ai/edit
+        ${CMAKE_CURRENT_SOURCE_DIR}/include/ingest
         ${CMAKE_CURRENT_SOURCE_DIR}/external/QF-ML/include
         ${CMAKE_CURRENT_SOURCE_DIR}/external/edlib/edlib/include
         ${CMAKE_CURRENT_SOURCE_DIR}/external/tree-sitter/lib/include
@@ -482,4 +507,5 @@ target_link_libraries(Lore PRIVATE
         tree-sitter-mermaid
         ep_lunasvg
         ep_plutovg
+        QuaZip::QuaZip
 )
