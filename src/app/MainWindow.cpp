@@ -21,18 +21,17 @@
 #include "../../include/ingest/IngestService.h"
 #include "../../include/ingest/NoteWriter.h"
 
-#include <QDir>
-#include <QDirIterator>
-#include <QStandardPaths>
 #include <QAction>
 #include <QActionGroup>
 #include <QApplication>
 #include <QCloseEvent>
 #include <QDir>
+#include <QDirIterator>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QIcon>
+#include <QImageReader>
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
@@ -43,6 +42,7 @@
 #include <QSettings>
 #include <QSplitter>
 #include <QStackedWidget>
+#include <QStandardPaths>
 #include <QStatusBar>
 #include <QThreadPool>
 #include <QToolBar>
@@ -123,6 +123,11 @@ QString expandTokens(const QString &qss,
 MainWindow::~MainWindow() = default;
 
 MainWindow::MainWindow() {
+  qDebug() << "Supported image formats:"
+         << QImageReader::supportedImageFormats();
+
+
+
   setCorner(Qt::TopLeftCorner, Qt::LeftDockWidgetArea);
   setCorner(Qt::BottomLeftCorner, Qt::LeftDockWidgetArea);
   setCorner(Qt::TopRightCorner, Qt::RightDockWidgetArea);
@@ -511,6 +516,13 @@ void MainWindow::buildNormalPage() {
             if (m_chatWidget && editor)
               m_chatWidget->setActiveEditor(editor);
           });
+
+  connect(m_documentManager, &DocumentManager::unsupportedFileRequested, this,
+        [](const QString &, const QString &reason) {
+          NotificationService::instance().warning(tr("Unsupported file"),
+                                                  reason);
+        });
+
 
   auto *mainSplitter = new QSplitter(Qt::Horizontal, m_normalPage);
   mainSplitter->addWidget(m_fileWidget);

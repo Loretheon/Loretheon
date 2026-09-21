@@ -15,14 +15,9 @@ class DocumentManager : public QObject {
 public:
   explicit DocumentManager(QObject *parent = nullptr);
 
-  // The document belonging to the currently focused tab. Null if no tabs.
   TextDocument *currentDocument() const;
-
-  // All documents that currently have an open tab (in tab order).
   QList<TextDocument *> openDocuments() const { return openDocumentsList; }
 
-  // Called by DocumentArea when the user switches tabs. Fires
-  // currentDocumentChanged if the pointer actually changed.
   void setCurrentDocument(TextDocument *document);
 
 public slots:
@@ -46,19 +41,17 @@ public slots:
   void closeDocument(TextDocument *document);
 
 signals:
-  // Fired when a document becomes the focused one.
   void currentDocumentChanged(TextDocument *document);
-
-  // Fired when a new document is created and a tab should be added.
   void documentOpened(TextDocument *document);
-
-  // Fired when a document is closed and its tab should be removed.
   void documentClosed(TextDocument *document);
-
-  // Kept for compatibility with existing wiring; fires on any change to
-  // the focused document's metadata (path, type, modified flag).
   void documentChanged(TextDocument *document);
 
+  // Emitted when openFile() is asked for a media file. The manager does
+  // not open a tab; whoever listens (DocumentArea, or MainWindow) is
+  // responsible for showing the file.
+  void mediaFileRequested(const QString &absolutePath);
+  void unsupportedFileRequested(const QString &absolutePath,
+                                const QString &reason);
   void documentCreated(const QString &path);
   void fileRenamed(const QString &oldPath, const QString &newPath);
   void fileDeleted(const QString &path);
@@ -74,7 +67,6 @@ private:
                        const QString &extension) const;
   QString uniqueFolderPathIn(const QDir &dir, const QString &baseName) const;
 
-  // Creates a document, opens a tab for it, and makes it current.
   TextDocument *createDocument(DocumentMode type, const QString &extension);
   TextDocument *createDocumentIn(DocumentMode type, const QString &extension,
                                  const QString &parentPath);
@@ -87,10 +79,7 @@ private:
   void registerOpenDocument(TextDocument *document);
   void unregisterOpenDocument(TextDocument *document);
 
-  // Every TextDocument ever created and still alive. Owned by this manager.
   QList<TextDocument *> allDocuments;
-
-  // Subset of allDocuments that have an open tab, in tab order.
   QList<TextDocument *> openDocumentsList;
 
   TextDocument *current = nullptr;
