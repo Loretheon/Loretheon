@@ -95,8 +95,7 @@ on them as objects. Closer to a node editor than a tabbed editor.
 
 ### Source ingest
 - [x] **PDF** — text extraction for born-digital PDFs; one section
-  per page with `## Page N` headings. OCR fallback for scans not
-  yet implemented.
+  per page with `## Page N` headings.
 - [x] **PPTX** — slide text from `.pptx` (OOXML in a ZIP); one
   section per slide with `## Slide N` headings.
 - [x] **DOCX** — paragraphs and heading styles from `.docx`,
@@ -114,10 +113,6 @@ on them as objects. Closer to a node editor than a tabbed editor.
   input row.
 - [x] **Threaded extraction** — extraction runs on worker threads;
   results are marshalled back to the main thread.
-- [x] **Concurrency cap** — at most four imports run at once;
-  further requests are rejected with a "queue is full" outcome.
-- [x] **Progress and cancel** — a modal progress dialog with a
-  Cancel button for bulk imports.
 - [x] **Collision-safe note names** — importing the same source
   twice produces `lecture.md` and `lecture (2).md`.
 - [x] **Sources are never modified** — import reads the source and
@@ -125,6 +120,38 @@ on them as objects. Closer to a node editor than a tabbed editor.
 - [x] **Live extension registry** — the file tree, the file
   dialogs, and the folder walk all read from `IngestRegistry`,
   so a new extractor is offered without a second list.
+
+### Media viewing
+- [x] **Raster images** — PNG, JPG, GIF (animated), BMP, WebP, TIFF.
+  Fit-to-window by default, Ctrl+wheel to zoom anchored at the
+  cursor, plain wheel to scroll, right-drag to pan. Fit and 100%
+  buttons. No editing.
+- [x] **Vector images** — SVG rendered through `DiagramView`, so
+  zoom, pan, fit, and keyboard shortcuts match the diagram stack.
+  Custom background with a persistent colour and a toggle.
+- [x] **Audio** — playback with a transport, position slider, and
+  time label.
+- [x] **Video** — playback with `QVideoWidget`, position slider,
+  and time label.
+- [x] **Media dispatch** — opening a media file in the tree or via
+  Open routes to the `MediaPane` instead of the text editor.
+- [x] **Binary file rejection** — known-binary extensions are
+  refused with a toast rather than opened as garbage text.
+
+### Speech 
+- [x] **Speech to text (offline)** — NeMo-Speech.cpp via the C ABI.
+  Push-to-talk, transcribed once on release.
+- [x] **Speech to text (streaming)** — the NeMo streaming C API
+  (`nemo_speech_asr_streaming_recognize` and friends) driven by a
+  worker thread. Interim results replace in place; final results
+  settle.
+- [x] **Text to speech** — Kokoro via Docker, sentence-sequenced
+  through `TtsManager`. Read the current document aloud.
+- [x] **Voice command registry** — extensible command interface.
+  `DictateCommand`, `LiveDictateCommand`, `ReadAloudCommand`
+  registered at startup.
+- [x] **Voice panel** — non-modal, toggled by `Ctrl+Shift+Space`,
+  available in both modes.
 
 ### Workstation UI
 - [x] Floating and tiled window modes
@@ -135,29 +162,31 @@ on them as objects. Closer to a node editor than a tabbed editor.
 - [x] Auto-hiding left and right rails
 
 ### Planned
-- [ ] **Text to speech** — read assistant responses and documents aloud
-- [ ] **Speech to text** — dictate prompts and notes
-- [ ] **Overseer journals** — running narrative of what the assistant is working on
+- [ ] **Overseer journals** — running narrative of what the assistant
+  is working on
+- [ ] **Audio** — transcription to note via `NemoTranscriber`; the
+  transcript becomes a note. Playback already works.
+- [ ] **Git** — native versioning and per-file history
+- [ ] **Graph view as a document kind** — a `.mmd` file can be viewed
+  as source, as a rendered diagram, or as a structured widget
+  (kanban for now, extensible to gantt, timeline, mind-map)
+- [ ] **Conductor log rotation** — `conductor.log` grows unbounded
+  within a session; cap it or rotate per N entries
+
+### Potential planned features
 - [ ] **Source ingest — PDF OCR** — Tesseract fallback for scanned
   PDFs and photographed pages. `tesseract` and `leptonica` are
   already linked; the extractor does not call them yet.
 - [ ] **Source ingest — bulk queue** — the concurrency cap currently
   rejects rather than queues. A real backlog with a pump on slot
   release would let "Import Folder" accept hundreds of files.
-- [ ] **Raster images** — view; OCR extract to note. (Editing deferred.)
-- [ ] **Vector images** — view SVG via `LunasvgRenderer`; treat as a diagram source where applicable. (Editing deferred.)
-- [ ] **Audio** — playback and transcription via `NemoTranscriber`; transcript becomes a note.
-- [ ] **Git** — native versioning and per-file history
-- [ ] **Graph view as a document kind** — a `.mmd` file can be viewed
-  as source, as a rendered diagram, or as a structured widget
-  (kanban for now, extensible to gantt, timeline, mind-map)
+- [ ] **Raster images — editing**
+- [ ] **Vector images — editing**
 - [ ] **Large-file handling** — opening a very large Markdown file
   blocks the UI while `QTextDocument` lays out every block. Options
   under consideration: `maximumBlockCount`, a `QPlainTextEdit` path
   for oversized files, or section-scoped loading driven by
-  `DocumentStructure`. Deferred.
-- [ ] **Conductor log rotation** — `conductor.log` grows unbounded
-  within a session; cap it or rotate per N entries
+  `DocumentStructure`.
 - [ ] **Theme PR template** — a `.github/PULL_REQUEST_TEMPLATE/theme.md`
   matching the checklist in `creating-themes.md`
 
@@ -176,3 +205,9 @@ on them as objects. Closer to a node editor than a tabbed editor.
 - [x] PowerPoint (`.pptx`)
 - [x] Word (`.docx`)
 - [x] EPUB (`.epub`)
+
+### Media formats (view only)
+- [x] Raster images (`.png`, `.jpg`, `.jpeg`, `.gif`, `.bmp`, `.webp`, `.tiff`, `.tif`, `.ico`, `.ppm`, `.pgm`, `.pbm`)
+- [x] Vector images (`.svg`)
+- [x] Audio (`.mp3`, `.wav`, `.flac`, `.ogg`, `.m4a`, `.aac`, `.opus`)
+- [x] Video (`.mp4`, `.webm`, `.mkv`, `.mov`, `.avi`, `.m4v`)
