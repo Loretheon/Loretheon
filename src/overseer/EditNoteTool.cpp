@@ -81,7 +81,7 @@ QJsonObject EditNoteTool::parametersSchema() const {
   return schema;
 }
 
-OverseerTool::Result EditNoteTool::execute(const QJsonObject &arguments,
+Tool::Result EditNoteTool::execute(const QJsonObject &arguments,
                                            const Context &context) const {
   Result result;
 

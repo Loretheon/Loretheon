@@ -1,8 +1,8 @@
-#include "../../include/overseer/OverseerToolRegistry.h"
+#include "../../include/agent/ToolRegistry.h"
 
-OverseerToolRegistry::OverseerToolRegistry() = default;
+ToolRegistry::ToolRegistry() = default;
 
-void OverseerToolRegistry::registerTool(std::unique_ptr<OverseerTool> tool) {
+void ToolRegistry::registerTool(std::unique_ptr<Tool> tool) {
   if (!tool)
     return;
 
@@ -18,7 +18,7 @@ void OverseerToolRegistry::registerTool(std::unique_ptr<OverseerTool> tool) {
   m_tools.push_back(std::move(tool));
 }
 
-QJsonArray OverseerToolRegistry::schemas() const {
+QJsonArray ToolRegistry::schemas() const {
   QJsonArray result;
 
   for (const auto &tool : m_tools) {
@@ -29,7 +29,7 @@ QJsonArray OverseerToolRegistry::schemas() const {
   return result;
 }
 
-OverseerTool *OverseerToolRegistry::find(const QString &name) const {
+Tool *ToolRegistry::find(const QString &name) const {
   for (const auto &tool : m_tools) {
     if (tool && tool->name() == name)
       return tool.get();
@@ -37,14 +37,14 @@ OverseerTool *OverseerToolRegistry::find(const QString &name) const {
   return nullptr;
 }
 
-OverseerTool::Result
-OverseerToolRegistry::execute(const QString &name,
+Tool::Result
+ToolRegistry::execute(const QString &name,
                               const QJsonObject &arguments,
-                              const OverseerTool::Context &context) const {
-  OverseerTool *tool = find(name);
+                              const Tool::Context &context) const {
+  Tool *tool = find(name);
 
   if (!tool) {
-    OverseerTool::Result result;
+    Tool::Result result;
     result.ok = false;
     result.error = QStringLiteral("Unknown tool '%1'.").arg(name);
     return result;
@@ -53,7 +53,7 @@ OverseerToolRegistry::execute(const QString &name,
   return tool->execute(arguments, context);
 }
 
-QString OverseerToolRegistry::categoryFor(const QString &name) const {
-  OverseerTool *tool = find(name);
+QString ToolRegistry::categoryFor(const QString &name) const {
+  Tool *tool = find(name);
   return tool ? tool->category() : QStringLiteral("other");
 }

@@ -1,10 +1,10 @@
 #pragma once
 
+#include "../agent/Tool.h"
 #include "ConductorQueue.h"
 #include "ConductorRoster.h"
 #include "DependencyGraph.h"
-#include "OverseerTool.h"
-#include "OverseerToolRegistry.h"
+#include "ToolRegistry.h"
 #include "SessionSettings.h"
 #include "ThemeAware.h"
 #include "TranscriptEvent.h"
@@ -303,7 +303,7 @@ private:
 
   QLabel *m_sessionHeader = nullptr;
 
-  OverseerToolRegistry m_tools;
+  ToolRegistry m_tools;
 
   InferenceService::RequestToken m_activeConductorToken;
   QString m_activeRequestId;

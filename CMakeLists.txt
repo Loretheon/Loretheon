@@ -5,6 +5,8 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(QuaZip-Qt6 REQUIRED)
+find_package(OpenMP REQUIRED)
+find_package(faiss REQUIRED)
 find_package(Qt6 6.4 REQUIRED COMPONENTS
         Core Gui Widgets PrintSupport Pdf PdfWidgets Network Multimedia
         MultimediaWidgets Svg SvgWidgets Xml Concurrent)
@@ -14,15 +16,15 @@ qt_standard_project_setup()
 set(EPISTEME_NODE_BIN ""
         CACHE PATH "Directory containing Node.js command-line tools")
 
-if(NOT EPISTEME_NODE_BIN)
-    if(DEFINED ENV{NVM_BIN} AND EXISTS "$ENV{NVM_BIN}")
+if (NOT EPISTEME_NODE_BIN)
+    if (DEFINED ENV{NVM_BIN} AND EXISTS "$ENV{NVM_BIN}")
         set(EPISTEME_NODE_BIN "$ENV{NVM_BIN}")
-    endif()
-endif()
+    endif ()
+endif ()
 
-if(EPISTEME_NODE_BIN)
+if (EPISTEME_NODE_BIN)
     list(PREPEND CMAKE_PROGRAM_PATH "${EPISTEME_NODE_BIN}")
-endif()
+endif ()
 
 find_program(TREE_SITTER_CLI
         NAMES tree-sitter
@@ -68,9 +70,9 @@ function(lore_external name dir)
     cmake_parse_arguments(EE "" "" "BYPRODUCTS;EXTRA_CMAKE_ARGS" ${ARGN})
 
     set(_build_byproducts "")
-    foreach(_byproduct ${EE_BYPRODUCTS})
+    foreach (_byproduct ${EE_BYPRODUCTS})
         list(APPEND _build_byproducts "${EPISTEME_EXTERNAL_PREFIX}/${_byproduct}")
-    endforeach()
+    endforeach ()
 
     ExternalProject_Add(ext_${name}
             SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/${dir}"
@@ -90,11 +92,11 @@ endfunction()
 function(lore_import_static target ep_target relative_path)
     set(_abs "${EPISTEME_EXTERNAL_PREFIX}/${relative_path}")
 
-    if(NOT TARGET ${target})
+    if (NOT TARGET ${target})
         add_library(${target} STATIC IMPORTED GLOBAL)
         set_target_properties(${target} PROPERTIES IMPORTED_LOCATION "${_abs}")
         add_dependencies(${target} ${ep_target})
-    endif()
+    endif ()
 endfunction()
 
 function(lore_ts_grammar name subdir header_subdir)
@@ -103,7 +105,7 @@ function(lore_ts_grammar name subdir header_subdir)
     set(_gen_scanner "${_src_dir}/src/scanner.c")
     set(_header "${_src_dir}/${header_subdir}/tree-sitter-${name}.h")
 
-    if(NOT EXISTS "${_gen_parser}")
+    if (NOT EXISTS "${_gen_parser}")
         add_custom_command(
                 OUTPUT "${_gen_parser}"
                 COMMAND "${TREE_SITTER_CLI}" generate
@@ -112,13 +114,13 @@ function(lore_ts_grammar name subdir header_subdir)
                 COMMENT "Generating tree-sitter-${name} parser"
                 VERBATIM
         )
-    endif()
+    endif ()
 
     set(_sources "${_gen_parser}")
 
-    if(EXISTS "${_gen_scanner}")
+    if (EXISTS "${_gen_scanner}")
         list(APPEND _sources "${_gen_scanner}")
-    endif()
+    endif ()
 
     add_library(tree-sitter-${name} STATIC ${_sources})
 
@@ -130,7 +132,7 @@ function(lore_ts_grammar name subdir header_subdir)
             POSITION_INDEPENDENT_CODE ON
             DEFINE_SYMBOL "")
 
-    if(EXISTS "${_header}")
+    if (EXISTS "${_header}")
         set(_header_dest
                 "${EPISTEME_EXTERNAL_PREFIX}/include/tree_sitter/tree-sitter-${name}.h")
 
@@ -143,7 +145,7 @@ function(lore_ts_grammar name subdir header_subdir)
                 COMMENT "Installing tree-sitter-${name} header"
                 VERBATIM
         )
-    endif()
+    endif ()
 endfunction()
 
 lore_external(edlib edlib
@@ -176,15 +178,15 @@ lore_external(lunasvg lunasvg
         -DBUILD_SHARED_LIBS=OFF
         -DLUNASVG_BUILD_EXAMPLES=OFF)
 
-lore_import_static(ep_edlib                 ext_edlib                 lib/libedlib.a)
-lore_import_static(ep_tree_sitter           ext_tree-sitter           lib/libtree-sitter.a)
-lore_import_static(ep_tree_sitter_markdown  ext_tree-sitter-markdown  lib/libtree-sitter-markdown.a)
-lore_import_static(ep_tree_sitter_md_inline ext_tree-sitter-markdown  lib/libtree-sitter-markdown-inline.a)
-lore_import_static(ep_lunasvg                ext_lunasvg               lib/liblunasvg.a)
-lore_import_static(ep_plutovg                ext_lunasvg               lib/libplutovg.a)
+lore_import_static(ep_edlib ext_edlib lib/libedlib.a)
+lore_import_static(ep_tree_sitter ext_tree-sitter lib/libtree-sitter.a)
+lore_import_static(ep_tree_sitter_markdown ext_tree-sitter-markdown lib/libtree-sitter-markdown.a)
+lore_import_static(ep_tree_sitter_md_inline ext_tree-sitter-markdown lib/libtree-sitter-markdown-inline.a)
+lore_import_static(ep_lunasvg ext_lunasvg lib/liblunasvg.a)
+lore_import_static(ep_plutovg ext_lunasvg lib/libplutovg.a)
 
-lore_ts_grammar(dot      tree-sitter-dot      bindings/c)
-lore_ts_grammar(mermaid  tree-sitter-mermaid  bindings/c)
+lore_ts_grammar(dot tree-sitter-dot bindings/c)
+lore_ts_grammar(mermaid tree-sitter-mermaid bindings/c)
 
 add_subdirectory(
         external/QF-ML
@@ -315,12 +317,12 @@ add_executable(Lore
         include/overseer/OverseerStorage.h
         src/overseer/OverseerWidget.cpp
         include/overseer/OverseerWidget.h
-        src/overseer/OverseerTool.cpp
-        include/overseer/OverseerTool.h
-        src/overseer/OverseerToolRegistry.cpp
-        include/overseer/OverseerToolRegistry.h
-        src/overseer/OverseerTools.cpp
-        include/overseer/OverseerTools.h
+        src/agent/Tool.cpp
+        include/agent/Tool.h
+        src/agent/ToolRegistry.cpp
+        include/agent/ToolRegistry.h
+        src/agent/tools/Tools.cpp
+        include/agent/tools/Tools.h
         src/overseer/OverseerOverviewEditor.cpp
         include/overseer/OverseerOverviewEditor.h
         src/text/DocumentArea.cpp
@@ -454,6 +456,31 @@ add_executable(Lore
         include/voice/SpeechPanel.h
         include/voice/LiveDictateCommand.cpp
         include/voice/LiveDictateCommand.h
+        src/search/VectorIndex.cpp
+        include/search/VectorIndex.h
+        include/search/SearchHit.h
+        src/search/ScopeIndex.cpp
+        include/search/ScopeIndex.h
+        src/search/SearchService.cpp
+        include/search/SearchService.h
+        src/search/SearchDialog.cpp
+        include/search/SearchDialog.h
+        src/search/SearchPage.cpp
+        include/search/SearchPage.h
+        src/search/RetrievalLoop.cpp
+        include/search/RetrievalLoop.h
+        src/text/LoreTrigger.cpp
+        include/text/LoreTrigger.h
+        src/search/LoreInputDialog.cpp
+        include/text/LoreInputDialog.h
+        src/agent/StructuredSchema.cpp
+        include/agent/StructuredSchema.h
+        src/agent/StructuredSchemaRegistry.cpp
+        include/agent/StructuredSchemaRegistry.h
+        src/agent/StructuredCall.cpp
+        include/agent/StructuredCall.h
+        src/agent/schemas/SufficiencySchema.cpp
+        include/agent/schemas/SufficiencySchema.h
 )
 
 add_dependencies(Lore
@@ -487,6 +514,10 @@ target_include_directories(Lore PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include/ai/history
         ${CMAKE_CURRENT_SOURCE_DIR}/include/ai/chat
         ${CMAKE_CURRENT_SOURCE_DIR}/include/ai/edit
+        ${CMAKE_CURRENT_SOURCE_DIR}/include/search
+        ${CMAKE_CURRENT_SOURCE_DIR}/include/agent
+        ${CMAKE_CURRENT_SOURCE_DIR}/include/agent/tools
+        ${CMAKE_CURRENT_SOURCE_DIR}/include/agent/schemas
         ${CMAKE_CURRENT_SOURCE_DIR}/include/voice
         ${CMAKE_CURRENT_SOURCE_DIR}/include/ingest
         ${CMAKE_CURRENT_SOURCE_DIR}/external/QF-ML/include
@@ -531,4 +562,6 @@ target_link_libraries(Lore PRIVATE
         ep_lunasvg
         ep_plutovg
         QuaZip::QuaZip
+        faiss
+        OpenMP::OpenMP_CXX
 )

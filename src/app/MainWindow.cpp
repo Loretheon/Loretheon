@@ -1,18 +1,8 @@
 #include "MainWindow.h"
-#include "../../include/ingest/Extractors.h"
-#include "../../include/ingest/IngestRegistry.h"
-#include "../../include/ingest/IngestService.h"
-#include "../../include/ingest/NoteWriter.h"
-#include "../../include/voice/DictateCommand.h"
-#include "../../include/voice/ReadAloudCommand.h"
-#include "../../include/voice/SpeechController.h"
-#include "../../include/voice/SpeechPanel.h"
-#include "../../include/voice/VoiceCommandRegistry.h"
 #include "ChatWidget.h"
 #include "DocumentArea.h"
 #include "EditSession.h"
 #include "FileWidget.h"
-#include "LiveDictateCommand.h"
 #include "LlmSettingsPanel.h"
 #include "NotificationService.h"
 #include "OverseerPage.h"
@@ -26,6 +16,22 @@
 #include "app/QfPaths.h"
 #include "inference/InferenceService.h"
 #include "ui/ModelDialog.h"
+#include "../../include/ingest/Extractors.h"
+#include "../../include/ingest/IngestRegistry.h"
+#include "../../include/ingest/IngestService.h"
+#include "../../include/ingest/NoteWriter.h"
+#include "../../include/search/RetrievalLoop.h"
+#include "../../include/search/ScopeIndex.h"
+#include "../../include/search/SearchPage.h"
+#include "../../include/search/SearchService.h"
+#include "../../include/text/LoreInputDialog.h"
+#include "../../include/text/LoreTrigger.h"
+#include "../../include/voice/DictateCommand.h"
+#include "../../include/voice/LiveDictateCommand.h"
+#include "../../include/voice/ReadAloudCommand.h"
+#include "../../include/voice/SpeechController.h"
+#include "../../include/voice/SpeechPanel.h"
+#include "../../include/voice/VoiceCommandRegistry.h"
 
 #include <QDir>
 #include <QDirIterator>
@@ -50,6 +56,7 @@
 #include <QSplitter>
 #include <QStackedWidget>
 #include <QStatusBar>
+#include <QTextCursor>
 #include <QThreadPool>
 #include <QToolBar>
 #include <QToolButton>
@@ -60,7 +67,7 @@ namespace {
 
 constexpr auto NormalThemeKey = "theme";
 constexpr auto OverseerThemeKey = "overseer/theme";
-constexpr auto ModeKey = "overseer/mode";
+constexpr auto ModeKey = "ui/mode";
 
 constexpr int ImportConcurrency = 4;
 
@@ -138,8 +145,8 @@ MainWindow::MainWindow() {
   m_inferenceService = new InferenceService(this);
 
   m_inferenceService->initialize(
-    LlamaManager::Backend::Vulkan, QString(),
-    InferenceService::SttModel::Nemotron35, configuredLlm());
+      LlamaManager::Backend::Vulkan, QString(),
+      InferenceService::SttModel::Nemotron35, configuredLlm());
 
   m_editSession = new EditSession(nullptr, this);
 
@@ -153,12 +160,15 @@ MainWindow::MainWindow() {
 
   buildNormalPage();
   buildOverseerPage();
+
   buildIngestLayer();
   buildSpeechLayer();
+  buildSearchLayer();
 
   m_centralStack = new QStackedWidget(this);
   m_centralStack->addWidget(m_normalPage);
   m_centralStack->addWidget(m_overseerPage);
+  m_centralStack->addWidget(m_searchPage);
 
   setCentralWidget(m_centralStack);
 
@@ -185,20 +195,26 @@ MainWindow::MainWindow() {
   if (!ThemeRegistry::instance().contains(m_currentOverseerTheme))
     m_currentOverseerTheme = ThemeRegistry::instance().defaultOverseerName();
 
-  const bool overseerMode = settings.value(ModeKey, false).toBool();
+  const int storedMode = settings.value(ModeKey, 0).toInt();
 
-  m_centralStack->setCurrentIndex(overseerMode ? 1 : 0);
+  switch (storedMode) {
+  case 1:
+    m_overseerModeAct->setChecked(true);
+    break;
+  case 2:
+    m_searchModeAct->setChecked(true);
+    break;
+  default:
+    m_normalModeAct->setChecked(true);
+    break;
+  }
 
   applyNormalTheme(m_currentNormalTheme);
   applyOverseerTheme(m_currentOverseerTheme);
 
   ThemeRegistry::instance().setActiveTheme(
-      overseerMode ? m_currentOverseerTheme : m_currentNormalTheme);
-
-  if (m_toggleModeAct) {
-    QSignalBlocker blocker(m_toggleModeAct);
-    m_toggleModeAct->setChecked(overseerMode);
-  }
+      m_centralStack->currentIndex() == 1 ? m_currentOverseerTheme
+                                          : m_currentNormalTheme);
 
   setWindowTitle(tr("Lore"));
   setMinimumSize(800, 800);
@@ -546,12 +562,8 @@ void MainWindow::buildOverseerPage() {
             if (m_documentManager)
               m_documentManager->openFile(absolutePath);
 
-            if (m_centralStack)
-              m_centralStack->setCurrentIndex(0);
-
-            if (m_toggleModeAct) {
-              QSignalBlocker blocker(m_toggleModeAct);
-              m_toggleModeAct->setChecked(false);
+            if (m_normalModeAct) {
+              m_normalModeAct->setChecked(true);
             }
           });
 }
@@ -565,8 +577,183 @@ void MainWindow::bindCurrentEditor(TextEdit *editor) {
 
   if (m_chatWidget)
     m_chatWidget->setActiveEditor(editor);
-}
 
+  if (m_loreTriggers.contains(editor)) {
+    return;
+  }
+
+  auto *trigger = new LoreTrigger(editor, this);
+
+  connect(trigger, &LoreTrigger::triggerDetected, this,
+          [this, editor](int position) {
+            const QPoint globalPos =
+                editor->mapToGlobal(editor->cursorRect().bottomRight());
+
+            LoreInputDialog dialog(globalPos, this);
+
+            if (dialog.exec() != QDialog::Accepted) {
+              return;
+            }
+
+            const QString query = dialog.request();
+
+            if (query.isEmpty()) {
+              return;
+            }
+
+            if (!m_searchService || !m_inferenceService) {
+              return;
+            }
+
+            auto *loop = new RetrievalLoop(m_searchService,
+                                           m_inferenceService, this);
+
+            // The anchor tracks the streamed text inside the editor.
+            // The same pattern as LiveDictateCommand: a start position
+            // and a length, replaced on each delta, cleared on finish.
+            auto anchorStart = std::make_shared<int>(position);
+            auto anchorLength = std::make_shared<int>(0);
+
+            connect(loop, &RetrievalLoop::stageChanged, this,
+        [editor, anchorStart, anchorLength](const QString &label) {
+          QTextDocument *document = editor->document();
+          if (!document) {
+            return;
+          }
+
+          QTextCursor cursor(document);
+
+          if (*anchorLength > 0) {
+            const int end = *anchorStart + *anchorLength;
+            cursor.setPosition(*anchorStart);
+            cursor.setPosition(end, QTextCursor::KeepAnchor);
+            cursor.removeSelectedText();
+          }
+
+          cursor.setPosition(*anchorStart);
+
+          const QString placeholder =
+              QStringLiteral("*%1*").arg(label);
+
+          cursor.insertText(placeholder);
+
+          *anchorLength = placeholder.length();
+        });
+
+
+
+            connect(loop, &RetrievalLoop::answerChunk, this,
+                    [editor, anchorStart, anchorLength](const QString &chunk) {
+                      Q_UNUSED(chunk);
+
+                      // The loop's buffer is authoritative; recompute
+                      // the replacement from scratch on every delta by
+                      // asking the loop for its accumulated text is not
+                      // available here, so we accumulate locally.
+                    });
+
+            // Replace the interim on every answerChunk. RetrievalLoop
+            // gives us only the delta, so we keep our own accumulator.
+            auto accumulated = std::make_shared<QString>();
+
+            connect(loop, &RetrievalLoop::answerChunk, this,
+                    [editor, anchorStart, anchorLength,
+                     accumulated](const QString &chunk) {
+                      *accumulated += chunk;
+
+                      QTextDocument *document = editor->document();
+                      if (!document) {
+                        return;
+                      }
+
+                      QTextCursor cursor(document);
+
+                      if (*anchorLength > 0) {
+                        const int end =
+                            *anchorStart + *anchorLength;
+                        cursor.setPosition(*anchorStart);
+                        cursor.setPosition(end, QTextCursor::KeepAnchor);
+                        cursor.removeSelectedText();
+                      }
+
+                      cursor.setPosition(*anchorStart);
+                      cursor.insertText(*accumulated);
+
+                      *anchorLength = accumulated->length();
+
+                      QTextCursor visible(document);
+                      visible.setPosition(*anchorStart + *anchorLength);
+                      editor->setTextCursor(visible);
+                    });
+
+            connect(loop, &RetrievalLoop::finished, this,
+                    [editor, anchorStart, anchorLength, loop](
+                        const QString &answer) {
+                      // The interim text on screen is already the
+                      // final answer's prefix; replace it with the
+                      // final text in one shot in case the final call
+                      // delivered a slightly different string.
+                      QTextDocument *document = editor->document();
+                      if (document) {
+                        QTextCursor cursor(document);
+
+                        if (*anchorLength > 0) {
+                          const int end =
+                              *anchorStart + *anchorLength;
+                          cursor.setPosition(*anchorStart);
+                          cursor.setPosition(end,
+                                             QTextCursor::KeepAnchor);
+                          cursor.removeSelectedText();
+                        }
+
+                        cursor.setPosition(*anchorStart);
+                        cursor.insertText(answer);
+
+                        QTextCursor visible(document);
+                        visible.setPosition(*anchorStart + answer.length());
+                        editor->setTextCursor(visible);
+                      }
+
+                      *anchorLength = 0;
+
+                      loop->deleteLater();
+                    });
+
+            connect(loop, &RetrievalLoop::failed, this,
+                    [editor, anchorStart, anchorLength, loop](
+                        const QString &reason) {
+                      QTextDocument *document = editor->document();
+                      if (document) {
+                        QTextCursor cursor(document);
+
+                        if (*anchorLength > 0) {
+                          const int end =
+                              *anchorStart + *anchorLength;
+                          cursor.setPosition(*anchorStart);
+                          cursor.setPosition(end,
+                                             QTextCursor::KeepAnchor);
+                          cursor.removeSelectedText();
+                        }
+
+                        cursor.setPosition(*anchorStart);
+                        cursor.insertText(QStringLiteral("> ") + reason);
+
+                        QTextCursor visible(document);
+                        visible.setPosition(*anchorStart +
+                                            reason.length() + 2);
+                        editor->setTextCursor(visible);
+                      }
+
+                      *anchorLength = 0;
+
+                      loop->deleteLater();
+                    });
+
+            loop->start(query);
+          });
+
+  m_loreTriggers.insert(editor, trigger);
+}
 void MainWindow::createActions() {
   auto getSafeIcon = [](const QString &themeIcon,
                         const QString &fallbackPath = "") -> QIcon {
@@ -630,7 +817,7 @@ void MainWindow::createActions() {
                   tr("&Save"), this);
   m_saveAct->setShortcuts(QKeySequence::Save);
   connect(m_saveAct, &QAction::triggered, this, [this]() {
-    if (m_centralStack->currentIndex() == 1) {
+    if (m_centralStack && m_centralStack->currentIndex() == 1) {
       if (m_overseerPage)
         m_overseerPage->saveAll();
     } else {
@@ -641,7 +828,7 @@ void MainWindow::createActions() {
   m_saveAllAct = new QAction(tr("Save A&ll"), this);
   m_saveAllAct->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_S));
   connect(m_saveAllAct, &QAction::triggered, this, [this]() {
-    if (m_centralStack->currentIndex() == 1) {
+    if (m_centralStack && m_centralStack->currentIndex() == 1) {
       if (m_overseerPage)
         m_overseerPage->saveAll();
     } else {
@@ -670,12 +857,26 @@ void MainWindow::createActions() {
   connect(m_settingsAct, &QAction::triggered, this,
           &MainWindow::openSettings);
 
-  m_toggleModeAct = new QAction(tr("&Overseer Mode"), this);
-  m_toggleModeAct->setCheckable(true);
-  m_toggleModeAct->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_O));
-  m_toggleModeAct->setStatusTip(tr("Switch between normal and Overseer mode"));
-  connect(m_toggleModeAct, &QAction::toggled, this,
-          &MainWindow::onModeToggled);
+  m_modeGroup = new QActionGroup(this);
+  m_modeGroup->setExclusive(true);
+
+  m_normalModeAct = new QAction(tr("Normal"), this);
+  m_normalModeAct->setCheckable(true);
+  m_normalModeAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_1));
+  m_modeGroup->addAction(m_normalModeAct);
+
+  m_overseerModeAct = new QAction(tr("Overseer"), this);
+  m_overseerModeAct->setCheckable(true);
+  m_overseerModeAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_2));
+  m_modeGroup->addAction(m_overseerModeAct);
+
+  m_searchModeAct = new QAction(tr("@Lore"), this);
+  m_searchModeAct->setCheckable(true);
+  m_searchModeAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_3));
+  m_modeGroup->addAction(m_searchModeAct);
+
+  connect(m_modeGroup, &QActionGroup::triggered, this,
+          &MainWindow::onModeActionTriggered);
 
   m_toggleSpeechAct = new QAction(tr("Voice Panel"), this);
   m_toggleSpeechAct->setShortcut(
@@ -685,6 +886,15 @@ void MainWindow::createActions() {
   connect(m_toggleSpeechAct, &QAction::triggered, this,
           &MainWindow::onToggleSpeechPanel);
 
+  m_rebuildIndexAct = new QAction(tr("Rebuild Search Index"), this);
+  m_rebuildIndexAct->setStatusTip(
+      tr("Re-walk the notes folder and rebuild the search index"));
+  connect(m_rebuildIndexAct, &QAction::triggered, this, [this]() {
+    if (m_scopeIndex) {
+      m_scopeIndex->rebuild(notesRootPath());
+    }
+  });
+
   m_aboutAct = new QAction(getSafeIcon("help-about", ":/icons/help-about.png"),
                            tr("&About"), this);
   connect(m_aboutAct, &QAction::triggered, this, &MainWindow::about);
@@ -693,6 +903,9 @@ void MainWindow::createActions() {
   connect(m_aboutQtAct, &QAction::triggered, this, &MainWindow::aboutQt);
 
   addAction(m_toggleSpeechAct);
+  addAction(m_normalModeAct);
+  addAction(m_overseerModeAct);
+  addAction(m_searchModeAct);
 }
 
 void MainWindow::createToolbar() {
@@ -704,11 +917,17 @@ void MainWindow::createToolbar() {
   m_topToolBar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
 
   m_modeButton = new QToolButton(m_topToolBar);
-  m_modeButton->setObjectName(QStringLiteral("overseerModeButton"));
-  m_modeButton->setDefaultAction(m_toggleModeAct);
+  m_modeButton->setObjectName(QStringLiteral("modeButton"));
+  m_modeButton->setPopupMode(QToolButton::InstantPopup);
   m_modeButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-  m_modeButton->setIcon(QIcon::fromTheme(QStringLiteral("view-grid")));
-  m_modeButton->setText(tr("Overseer"));
+  m_modeButton->setText(tr("Normal"));
+
+  m_modeMenu = new QMenu(m_modeButton);
+  m_modeMenu->addAction(m_normalModeAct);
+  m_modeMenu->addAction(m_overseerModeAct);
+  m_modeMenu->addAction(m_searchModeAct);
+
+  m_modeButton->setMenu(m_modeMenu);
 
   m_topToolBar->addWidget(m_modeButton);
 }
@@ -732,7 +951,9 @@ void MainWindow::createMenus() {
   m_fileMenu->addAction(m_exitAct);
 
   m_viewMenu = menuBar()->addMenu(tr("&View"));
-  m_viewMenu->addAction(m_toggleModeAct);
+  m_viewMenu->addAction(m_normalModeAct);
+  m_viewMenu->addAction(m_overseerModeAct);
+  m_viewMenu->addAction(m_searchModeAct);
   m_viewMenu->addSeparator();
   m_viewMenu->addAction(m_toggleSpeechAct);
 
@@ -742,6 +963,8 @@ void MainWindow::createMenus() {
   m_toolsMenu->addAction(m_llmSettingsAct);
   m_toolsMenu->addSeparator();
   m_toolsMenu->addAction(m_manageModelsAct);
+  m_toolsMenu->addSeparator();
+  m_toolsMenu->addAction(m_rebuildIndexAct);
 
   m_themeMenu = menuBar()->addMenu(tr("&Theme"));
 
@@ -782,40 +1005,70 @@ void MainWindow::createMenus() {
   m_helpMenu->addAction(m_aboutQtAct);
 }
 
-void MainWindow::onModeToggled(bool overseerMode) {
-  const int targetIndex = overseerMode ? 1 : 0;
+void MainWindow::onModeActionTriggered(QAction *action) {
+  if (action == m_overseerModeAct) {
+    setMode(Mode::Overseer);
+  } else if (action == m_searchModeAct) {
+    setMode(Mode::Search);
+  } else {
+    setMode(Mode::Normal);
+  }
+}
 
-  if (m_centralStack->currentIndex() == targetIndex)
+void MainWindow::setMode(Mode mode) {
+  if (!m_centralStack) {
     return;
+  }
 
-  if (targetIndex == 1) {
-    if (!confirmDiscardChanges(tr("Normal mode"))) {
-      QSignalBlocker blocker(m_toggleModeAct);
-      m_toggleModeAct->setChecked(false);
+  const int targetIndex = static_cast<int>(mode);
+
+  if (m_centralStack->currentIndex() != targetIndex) {
+    if (targetIndex == static_cast<int>(Mode::Overseer) &&
+        !confirmDiscardChanges(tr("Normal mode"))) {
+      m_normalModeAct->setChecked(true);
       return;
     }
-  } else {
-    if (m_overseerPage && !confirmDiscardChanges(tr("Overseer mode"))) {
-      QSignalBlocker blocker(m_toggleModeAct);
-      m_toggleModeAct->setChecked(true);
+
+    if (targetIndex != static_cast<int>(Mode::Overseer) &&
+        m_overseerPage && m_centralStack->currentIndex() == 1 &&
+        !confirmDiscardChanges(tr("Overseer mode"))) {
+      m_overseerModeAct->setChecked(true);
       return;
+    }
+
+    m_centralStack->setCurrentIndex(targetIndex);
+  }
+
+  if (mode == Mode::Overseer) {
+    ThemeRegistry::instance().setActiveTheme(m_currentOverseerTheme);
+  } else {
+    ThemeRegistry::instance().setActiveTheme(m_currentNormalTheme);
+  }
+
+  if (m_modeButton) {
+    switch (mode) {
+    case Mode::Overseer:
+      m_modeButton->setText(tr("Overseer"));
+      m_modeButton->setIcon(QIcon::fromTheme(QStringLiteral("view-grid")));
+      break;
+    case Mode::Search:
+      m_modeButton->setText(tr("@Lore"));
+      m_modeButton->setIcon(QIcon::fromTheme(QStringLiteral("edit-find")));
+      break;
+    case Mode::Normal:
+    default:
+      m_modeButton->setText(tr("Normal"));
+      m_modeButton->setIcon(QIcon::fromTheme(QStringLiteral("document-edit")));
+      break;
     }
   }
 
-  m_centralStack->setCurrentIndex(targetIndex);
-
-  ThemeRegistry::instance().setActiveTheme(
-      overseerMode ? m_currentOverseerTheme : m_currentNormalTheme);
-
-  if (m_modeButton) {
-    m_modeButton->setText(overseerMode ? tr("Normal") : tr("Overseer"));
-    m_modeButton->setIcon(
-        QIcon::fromTheme(overseerMode ? QStringLiteral("go-home")
-                                      : QStringLiteral("view-grid")));
+  if (mode == Mode::Search && m_searchPage) {
+    m_searchPage->focusQuery();
   }
 
   QSettings settings;
-  settings.setValue(ModeKey, overseerMode);
+  settings.setValue(ModeKey, targetIndex);
 }
 
 bool MainWindow::confirmDiscardChanges(const QString &areaName) {
@@ -933,7 +1186,9 @@ void MainWindow::closeEvent(QCloseEvent *event) {
   }
 
   QSettings settings;
-  settings.setValue(ModeKey, m_centralStack->currentIndex() == 1);
+  if (m_centralStack) {
+    settings.setValue(ModeKey, m_centralStack->currentIndex());
+  }
 
   event->accept();
 }
@@ -1283,6 +1538,7 @@ void MainWindow::buildSpeechLayer() {
         m_documentArea ? m_documentArea->currentEditor() : nullptr);
   }
 }
+
 void MainWindow::onToggleSpeechPanel() {
   if (!m_speechPanel) {
     return;
@@ -1308,4 +1564,66 @@ void MainWindow::onCurrentEditorChangedForSpeech(TextEdit *editor) {
   context.editor = editor;
   context.inference = m_inferenceService;
   m_speechPanel->setContext(context);
+}
+
+void MainWindow::buildSearchLayer() {
+  m_scopeIndex = std::make_unique<ScopeIndex>(m_inferenceService);
+
+  const QString indexDir =
+      QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) +
+      QStringLiteral("/search");
+
+  m_scopeIndex->setIndexDirectory(indexDir);
+
+  if (!m_scopeIndex->load()) {
+    qDebug() << "[MainWindow] No search index on disk yet.";
+  }
+
+  m_searchService =
+      new SearchService(m_inferenceService, m_scopeIndex.get(), this);
+
+  m_searchPage =
+      new SearchPage(m_searchService, m_inferenceService, this);
+
+  connect(m_searchPage, &SearchPage::openRequested, this,
+          &MainWindow::onSearchOpenRequested);
+
+  connect(m_scopeIndex.get(), &ScopeIndex::progress, this,
+          [this](int current, int total) {
+            statusBar()->showMessage(
+                tr("Indexing %1 / %2").arg(current).arg(total));
+          });
+
+  connect(m_scopeIndex.get(), &ScopeIndex::finished, this,
+          [this](int scopes) {
+            if (scopes < 0) {
+              statusBar()->showMessage(tr("Index build failed."), 5000);
+            } else {
+              statusBar()->showMessage(
+                  tr("Index built: %1 scopes.").arg(scopes), 5000);
+            }
+          });
+}
+
+void MainWindow::onSearchRequested() {
+  if (m_searchModeAct) {
+    m_searchModeAct->setChecked(true);
+  }
+  setMode(Mode::Search);
+}
+
+void MainWindow::onSearchOpenRequested(const QString &filePath,
+                                       const QString &scopeId) {
+  Q_UNUSED(scopeId);
+
+  if (filePath.isEmpty() || !m_documentManager) {
+    return;
+  }
+
+  m_documentManager->openFile(filePath);
+
+  if (m_normalModeAct) {
+    m_normalModeAct->setChecked(true);
+  }
+  setMode(Mode::Normal);
 }

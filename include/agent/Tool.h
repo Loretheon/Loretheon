@@ -8,7 +8,7 @@
 class TextDocument;
 class TextEdit;
 
-class OverseerTool {
+class Tool {
 public:
   struct Result {
     bool ok = false;
@@ -39,7 +39,7 @@ public:
         requestScopedEdit;
   };
 
-  virtual ~OverseerTool() = default;
+  virtual ~Tool() = default;
 
   virtual QString name() const = 0;
 

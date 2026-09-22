@@ -11,7 +11,7 @@
 #include <QVector>
 
 class InferenceService;
-class OverseerToolRegistry;
+class ToolRegistry;
 class PayloadLogger;
 
 class FileAgent : public QObject {
@@ -33,7 +33,7 @@ public:
 
   FileAgent(const QString &id, const QString &domain,
             InferenceService *inferenceService,
-            OverseerToolRegistry *tools,
+            ToolRegistry *tools,
             PayloadLogger *logger,
             QObject *parent = nullptr);
 
@@ -123,7 +123,7 @@ private:
   QString m_outputFolder;
 
   InferenceService *m_inferenceService = nullptr;
-  OverseerToolRegistry *m_tools = nullptr;
+  ToolRegistry *m_tools = nullptr;
   PayloadLogger *m_logger = nullptr;
 
   QVector<Task> m_queue;

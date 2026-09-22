@@ -1,8 +1,8 @@
 #pragma once
 
-#include "OverseerTool.h"
+#include "../Tool.h"
 
-class ListDirectoryTool : public OverseerTool {
+class ListDirectoryTool : public Tool {
 public:
   QString name() const override { return QStringLiteral("list_directory"); }
   QString description() const override;
@@ -11,7 +11,7 @@ public:
                  const Context &context) const override;
 };
 
-class ReadFileTool : public OverseerTool {
+class ReadFileTool : public Tool {
 public:
   QString name() const override { return QStringLiteral("read_file"); }
   QString description() const override;
@@ -20,7 +20,7 @@ public:
                  const Context &context) const override;
 };
 
-class ReadNotesFileTool : public OverseerTool {
+class ReadNotesFileTool : public Tool {
 public:
   QString name() const override { return QStringLiteral("read_notes_file"); }
   QString description() const override;
@@ -29,7 +29,7 @@ public:
                  const Context &context) const override;
 };
 
-class WriteFileTool : public OverseerTool {
+class WriteFileTool : public Tool {
 public:
   QString name() const override { return QStringLiteral("write_file"); }
   QString description() const override;
@@ -38,7 +38,7 @@ public:
                  const Context &context) const override;
 };
 
-class CreateDirectoryTool : public OverseerTool {
+class CreateDirectoryTool : public Tool {
 public:
   QString name() const override { return QStringLiteral("create_directory"); }
   QString description() const override;
@@ -47,7 +47,7 @@ public:
                  const Context &context) const override;
 };
 
-class OpenFileTool : public OverseerTool {
+class OpenFileTool : public Tool {
 public:
   QString name() const override { return QStringLiteral("open_file"); }
   QString description() const override;
@@ -57,7 +57,7 @@ public:
                  const Context &context) const override;
 };
 
-class CloseFileTool : public OverseerTool {
+class CloseFileTool : public Tool {
 public:
   QString name() const override { return QStringLiteral("close_file"); }
   QString description() const override;
@@ -72,7 +72,7 @@ public:
 // session, propose_session_memory_fact for facts that belong to this
 // session only.
 
-class ProposeGlobalMemoryFactTool : public OverseerTool {
+class ProposeGlobalMemoryFactTool : public Tool {
 public:
   QString name() const override {
     return QStringLiteral("propose_global_memory_fact");
@@ -83,7 +83,7 @@ public:
                  const Context &context) const override;
 };
 
-class ProposeSessionMemoryFactTool : public OverseerTool {
+class ProposeSessionMemoryFactTool : public Tool {
 public:
   QString name() const override {
     return QStringLiteral("propose_session_memory_fact");
@@ -94,7 +94,7 @@ public:
                  const Context &context) const override;
 };
 
-class OverseerTools {
+class Tools {
 public:
-  static void installAll(class OverseerToolRegistry &registry);
+  static void installAll(class ToolRegistry &registry);
 };

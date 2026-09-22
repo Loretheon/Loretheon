@@ -1,8 +1,8 @@
 #pragma once
 
-#include "OverseerTool.h"
+#include "../agent/Tool.h"
 
-class EditWorkstationFileTool : public OverseerTool {
+class EditWorkstationFileTool : public Tool {
 public:
   QString name() const override {
     return QStringLiteral("edit_workstation_file");

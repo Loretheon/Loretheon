@@ -1,6 +1,6 @@
 #pragma once
 
-#include "OverseerTool.h"
+#include "../agent/Tool.h"
 
 // A tool that proposes a durable fact for the user to accept into the
 // global Memory file. It does not write anything; it just returns a
@@ -9,7 +9,7 @@
 // The actual write to memory.md happens when the user clicks ✓ on the
 // proposal card in the transcript.
 
-class ProposeMemoryFactTool : public OverseerTool {
+class ProposeMemoryFactTool : public Tool {
 public:
   QString name() const override {
     return QStringLiteral("propose_memory_fact");

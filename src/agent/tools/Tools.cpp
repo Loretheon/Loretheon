@@ -1,6 +1,6 @@
-#include "../../include/overseer/OverseerTools.h"
+#include "../../../include/agent/tools/Tools.h"
 
-#include "../../include/overseer/OverseerToolRegistry.h"
+#include "../../../include/agent/ToolRegistry.h"
 #include "EditNoteTool.h"
 #include "EditWorkstationFileTool.h"
 
@@ -117,15 +117,15 @@ QString safeResolveNotes(const QString &path, const QString &notesRoot) {
   return canonicalPath;
 }
 
-OverseerTool::Result makeError(const QString &message) {
-  OverseerTool::Result result;
+Tool::Result makeError(const QString &message) {
+  Tool::Result result;
   result.ok = false;
   result.error = message;
   return result;
 }
 
-OverseerTool::Result makeOk(const QString &output) {
-  OverseerTool::Result result;
+Tool::Result makeOk(const QString &output) {
+  Tool::Result result;
   result.ok = true;
   result.output = output;
   return result;
@@ -197,7 +197,7 @@ QJsonObject ListDirectoryTool::parametersSchema() const {
   return schema;
 }
 
-OverseerTool::Result
+Tool::Result
 ListDirectoryTool::execute(const QJsonObject &arguments,
                            const Context &context) const {
   const QString relative = arguments.value(QStringLiteral("path")).toString();
@@ -263,7 +263,7 @@ QJsonObject ReadFileTool::parametersSchema() const {
   return schema;
 }
 
-OverseerTool::Result
+Tool::Result
 ReadFileTool::execute(const QJsonObject &arguments,
                       const Context &context) const {
   const QString relative = arguments.value(QStringLiteral("path")).toString();
@@ -330,7 +330,7 @@ QJsonObject ReadNotesFileTool::parametersSchema() const {
   return schema;
 }
 
-OverseerTool::Result
+Tool::Result
 ReadNotesFileTool::execute(const QJsonObject &arguments,
                            const Context &context) const {
   const QString requested = arguments.value(QStringLiteral("path")).toString();
@@ -412,7 +412,7 @@ QJsonObject WriteFileTool::parametersSchema() const {
   return schema;
 }
 
-OverseerTool::Result
+Tool::Result
 WriteFileTool::execute(const QJsonObject &arguments,
                        const Context &context) const {
   const QString relative = arguments.value(QStringLiteral("path")).toString();
@@ -481,7 +481,7 @@ QJsonObject CreateDirectoryTool::parametersSchema() const {
   return schema;
 }
 
-OverseerTool::Result
+Tool::Result
 CreateDirectoryTool::execute(const QJsonObject &arguments,
                              const Context &context) const {
   const QString relative = arguments.value(QStringLiteral("path")).toString();
@@ -512,7 +512,7 @@ QJsonObject ProposeGlobalMemoryFactTool::parametersSchema() const {
   return factRationaleSchema();
 }
 
-OverseerTool::Result
+Tool::Result
 ProposeGlobalMemoryFactTool::execute(const QJsonObject &arguments,
                                      const Context &context) const {
   Q_UNUSED(context);
@@ -540,7 +540,7 @@ QJsonObject ProposeSessionMemoryFactTool::parametersSchema() const {
   return factRationaleSchema();
 }
 
-OverseerTool::Result
+Tool::Result
 ProposeSessionMemoryFactTool::execute(const QJsonObject &arguments,
                                       const Context &context) const {
   Q_UNUSED(context);
@@ -555,7 +555,7 @@ ProposeSessionMemoryFactTool::execute(const QJsonObject &arguments,
   return makeOk(QStringLiteral("Proposed session memory fact."));
 }
 
-void OverseerTools::installAll(OverseerToolRegistry &registry) {
+void Tools::installAll(ToolRegistry &registry) {
   registry.registerTool(std::make_unique<ListDirectoryTool>());
   registry.registerTool(std::make_unique<ReadFileTool>());
   registry.registerTool(std::make_unique<ReadNotesFileTool>());

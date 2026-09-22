@@ -1,6 +1,7 @@
 #ifndef MAINWINDOW_H
 #define MAINWINDOW_H
 
+#include <QHash>
 #include <QMainWindow>
 #include <QSet>
 #include <QString>
@@ -18,6 +19,7 @@ class TextDocument;
 class FileWidget;
 class ChatWidget;
 class EditSession;
+class LoreTrigger;
 class ModelDialog;
 class LlmSettingsPanel;
 class OverseerPage;
@@ -32,7 +34,12 @@ class SpeechController;
 class SpeechPanel;
 class VoiceCommandRegistry;
 
+class ScopeIndex;
+class SearchPage;
+class SearchService;
+
 class QAction;
+class QActionGroup;
 class QMenu;
 class QProgressDialog;
 class QStackedWidget;
@@ -57,7 +64,8 @@ private slots:
   void openSettings();
   void onThemeSelected(const QString &theme);
   void onOverseerThemeSelected(const QString &theme);
-  void onModeToggled(bool overseerMode);
+
+  void onModeActionTriggered(QAction *action);
 
   void onImportRequested(const QString &path);
   void onImportAllRequested(const QStringList &paths);
@@ -67,13 +75,22 @@ private slots:
   void onToggleSpeechPanel();
   void onCurrentEditorChangedForSpeech(TextEdit *editor);
 
+  void onSearchRequested();
+  void onSearchOpenRequested(const QString &filePath,
+                             const QString &scopeId);
+
 private:
+  enum class Mode { Normal = 0, Overseer = 1, Search = 2 };
+
   void createActions();
   void createMenus();
   void createToolbar();
 
   void buildNormalPage();
   void buildOverseerPage();
+  void buildSearchLayer();
+
+  void setMode(Mode mode);
 
   bool loadThemeFromResource(const QString &name);
   bool loadAllThemes();
@@ -117,6 +134,7 @@ private:
   ChatWidget *m_chatWidget = nullptr;
 
   OverseerPage *m_overseerPage = nullptr;
+  SearchPage *m_searchPage = nullptr;
 
   QStackedWidget *m_centralStack = nullptr;
   QToolBar *m_topToolBar = nullptr;
@@ -139,6 +157,7 @@ private:
   QMenu *m_toolsMenu = nullptr;
   QMenu *m_themeMenu = nullptr;
   QMenu *m_viewMenu = nullptr;
+  QMenu *m_modeMenu = nullptr;
   QMenu *m_helpMenu = nullptr;
 
   QAction *m_newTextAct = nullptr;
@@ -153,8 +172,14 @@ private:
   QAction *m_manageModelsAct = nullptr;
   QAction *m_llmSettingsAct = nullptr;
   QAction *m_settingsAct = nullptr;
-  QAction *m_toggleModeAct = nullptr;
+
+  QActionGroup *m_modeGroup = nullptr;
+  QAction *m_normalModeAct = nullptr;
+  QAction *m_overseerModeAct = nullptr;
+  QAction *m_searchModeAct = nullptr;
+
   QAction *m_toggleSpeechAct = nullptr;
+  QAction *m_rebuildIndexAct = nullptr;
   QAction *m_aboutAct = nullptr;
   QAction *m_aboutQtAct = nullptr;
 
@@ -177,6 +202,11 @@ private:
   VoiceCommandRegistry *m_voiceCommands = nullptr;
   SpeechPanel *m_speechPanel = nullptr;
   TextEdit *m_currentSpeechEditor = nullptr;
+
+  std::unique_ptr<ScopeIndex> m_scopeIndex;
+  SearchService *m_searchService = nullptr;
+
+  QHash<TextEdit *, LoreTrigger *> m_loreTriggers;
 };
 
 #endif // MAINWINDOW_H

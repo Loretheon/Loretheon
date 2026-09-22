@@ -1,8 +1,8 @@
 #pragma once
 
-#include "OverseerTool.h"
+#include "../agent/Tool.h"
 
-class CloseFileTool : public OverseerTool {
+class CloseFileTool : public Tool {
 public:
   QString name() const override { return QStringLiteral("close_file"); }
 

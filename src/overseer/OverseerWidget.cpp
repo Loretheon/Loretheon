@@ -1,5 +1,6 @@
 #include "OverseerWidget.h"
 
+#include "../../include/agent/tools/Tools.h"
 #include "AutomationStrip.h"
 #include "ChatWidgetSerialization.h"
 #include "EditNoteReviewDialog.h"
@@ -12,7 +13,6 @@
 #include "OverseerSessionList.h"
 #include "OverseerSidePanel.h"
 #include "OverseerStorage.h"
-#include "OverseerTools.h"
 #include "OverviewPanel.h"
 #include "PathUtils.h"
 #include "PayloadLogger.h"
@@ -68,7 +68,7 @@ OverseerWidget::OverseerWidget(InferenceService *inferenceService,
     : QWidget(parent), m_inferenceService(inferenceService) {
   OverseerStorage::ensureRoot();
 
-  OverseerTools::installAll(m_tools);
+  Tools::installAll(m_tools);
 
   m_payloadLogger = new PayloadLogger(this);
 

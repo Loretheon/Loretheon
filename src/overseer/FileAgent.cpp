@@ -1,6 +1,6 @@
 #include "../../include/overseer/FileAgent.h"
 
-#include "../../include/overseer/OverseerToolRegistry.h"
+#include "../../include/agent/ToolRegistry.h"
 #include "PayloadLogger.h"
 
 #include "inference/InferenceService.h"
@@ -17,7 +17,7 @@
 
 FileAgent::FileAgent(const QString &id, const QString &domain,
                      InferenceService *inferenceService,
-                     OverseerToolRegistry *tools,
+                     ToolRegistry *tools,
                      PayloadLogger *logger,
                      QObject *parent)
     : QObject(parent), m_id(id), m_domain(domain),
@@ -464,7 +464,7 @@ void FileAgent::applyToolCall(const QJsonObject &toolCall) {
     return;
   }
 
-  OverseerTool::Context context;
+  Tool::Context context;
   context.outputFolder = m_outputFolder;
 
   logAgent(QStringLiteral("TOOL_CALL"),
@@ -490,7 +490,7 @@ void FileAgent::applyToolCall(const QJsonObject &toolCall) {
     }
   }
 
-  const OverseerTool::Result result =
+  const Tool::Result result =
       m_tools->execute(toolName, args, context);
 
   logAgent(QStringLiteral("TOOL_RESULT"),

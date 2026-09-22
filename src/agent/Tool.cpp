@@ -1,6 +1,6 @@
-#include "../../include/overseer/OverseerTool.h"
+#include "../../include/agent/Tool.h"
 
-QJsonObject OverseerTool::toSchema() const {
+QJsonObject Tool::toSchema() const {
   QJsonObject function;
 
   function.insert(QStringLiteral("name"), name());
