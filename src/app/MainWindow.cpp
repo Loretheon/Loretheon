@@ -16,6 +16,7 @@
 #include "app/QfPaths.h"
 #include "inference/InferenceService.h"
 #include "ui/ModelDialog.h"
+#include "../../include/avatar/AvatarWidget.h"
 #include "../../include/ingest/Extractors.h"
 #include "../../include/ingest/IngestRegistry.h"
 #include "../../include/ingest/IngestService.h"
@@ -51,6 +52,7 @@
 #include <QPalette>
 #include <QProgressDialog>
 #include <QRegularExpression>
+#include <QResizeEvent>
 #include <QScreen>
 #include <QSettings>
 #include <QSplitter>
@@ -60,6 +62,7 @@
 #include <QThreadPool>
 #include <QToolBar>
 #include <QToolButton>
+#include <QUrl>
 #include <QVBoxLayout>
 #include <QWidget>
 
@@ -70,6 +73,9 @@ constexpr auto OverseerThemeKey = "overseer/theme";
 constexpr auto ModeKey = "ui/mode";
 
 constexpr int ImportConcurrency = 4;
+constexpr int AvatarMargin = 24;
+constexpr int AvatarWidth = 320;
+constexpr int AvatarHeight = 480;
 
 InferenceService::LlmConfig configuredLlm() {
   InferenceService::LlmConfig config;
@@ -178,6 +184,8 @@ MainWindow::MainWindow() {
   createActions();
   createToolbar();
   createMenus();
+
+  buildAvatarOverlay();
 
   QSettings settings;
 
@@ -608,52 +616,37 @@ void MainWindow::bindCurrentEditor(TextEdit *editor) {
             auto *loop = new RetrievalLoop(m_searchService,
                                            m_inferenceService, this);
 
-            // The anchor tracks the streamed text inside the editor.
-            // The same pattern as LiveDictateCommand: a start position
-            // and a length, replaced on each delta, cleared on finish.
             auto anchorStart = std::make_shared<int>(position);
             auto anchorLength = std::make_shared<int>(0);
 
             connect(loop, &RetrievalLoop::stageChanged, this,
-        [editor, anchorStart, anchorLength](const QString &label) {
-          QTextDocument *document = editor->document();
-          if (!document) {
-            return;
-          }
+                    [editor, anchorStart,
+                     anchorLength](const QString &label) {
+                      QTextDocument *document = editor->document();
+                      if (!document) {
+                        return;
+                      }
 
-          QTextCursor cursor(document);
+                      QTextCursor cursor(document);
 
-          if (*anchorLength > 0) {
-            const int end = *anchorStart + *anchorLength;
-            cursor.setPosition(*anchorStart);
-            cursor.setPosition(end, QTextCursor::KeepAnchor);
-            cursor.removeSelectedText();
-          }
+                      if (*anchorLength > 0) {
+                        const int end = *anchorStart + *anchorLength;
+                        cursor.setPosition(*anchorStart);
+                        cursor.setPosition(end,
+                                           QTextCursor::KeepAnchor);
+                        cursor.removeSelectedText();
+                      }
 
-          cursor.setPosition(*anchorStart);
+                      cursor.setPosition(*anchorStart);
 
-          const QString placeholder =
-              QStringLiteral("*%1*").arg(label);
+                      const QString placeholder =
+                          QStringLiteral("*%1*").arg(label);
 
-          cursor.insertText(placeholder);
+                      cursor.insertText(placeholder);
 
-          *anchorLength = placeholder.length();
-        });
-
-
-
-            connect(loop, &RetrievalLoop::answerChunk, this,
-                    [editor, anchorStart, anchorLength](const QString &chunk) {
-                      Q_UNUSED(chunk);
-
-                      // The loop's buffer is authoritative; recompute
-                      // the replacement from scratch on every delta by
-                      // asking the loop for its accumulated text is not
-                      // available here, so we accumulate locally.
+                      *anchorLength = placeholder.length();
                     });
 
-            // Replace the interim on every answerChunk. RetrievalLoop
-            // gives us only the delta, so we keep our own accumulator.
             auto accumulated = std::make_shared<QString>();
 
             connect(loop, &RetrievalLoop::answerChunk, this,
@@ -689,10 +682,6 @@ void MainWindow::bindCurrentEditor(TextEdit *editor) {
             connect(loop, &RetrievalLoop::finished, this,
                     [editor, anchorStart, anchorLength, loop](
                         const QString &answer) {
-                      // The interim text on screen is already the
-                      // final answer's prefix; replace it with the
-                      // final text in one shot in case the final call
-                      // delivered a slightly different string.
                       QTextDocument *document = editor->document();
                       if (document) {
                         QTextCursor cursor(document);
@@ -754,6 +743,7 @@ void MainWindow::bindCurrentEditor(TextEdit *editor) {
 
   m_loreTriggers.insert(editor, trigger);
 }
+
 void MainWindow::createActions() {
   auto getSafeIcon = [](const QString &themeIcon,
                         const QString &fallbackPath = "") -> QIcon {
@@ -1193,6 +1183,12 @@ void MainWindow::closeEvent(QCloseEvent *event) {
   event->accept();
 }
 
+void MainWindow::resizeEvent(QResizeEvent *event) {
+  QMainWindow::resizeEvent(event);
+
+  repositionAvatar();
+}
+
 void MainWindow::buildIngestLayer() {
   QThreadPool::globalInstance()->setMaxThreadCount(ImportConcurrency);
 
@@ -1603,6 +1599,31 @@ void MainWindow::buildSearchLayer() {
                   tr("Index built: %1 scopes.").arg(scopes), 5000);
             }
           });
+}
+
+void MainWindow::buildAvatarOverlay() {
+  m_avatar = new AvatarWidget(this);
+
+  m_avatar->setFixedSize(AvatarWidth, AvatarHeight);
+
+  m_avatar->setModel(
+    QStringLiteral("qrc:/avatar/vita/Vita.glb"));
+
+  repositionAvatar();
+
+  m_avatar->show();
+  m_avatar->raise();
+}
+
+void MainWindow::repositionAvatar() {
+  if (!m_avatar) {
+    return;
+  }
+
+  const int x = width() - m_avatar->width() - AvatarMargin;
+  const int y = height() - m_avatar->height() - AvatarMargin;
+
+  m_avatar->move(qMax(AvatarMargin, x), qMax(AvatarMargin, y));
 }
 
 void MainWindow::onSearchRequested() {

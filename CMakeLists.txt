@@ -9,7 +9,8 @@ find_package(OpenMP REQUIRED)
 find_package(faiss REQUIRED)
 find_package(Qt6 6.4 REQUIRED COMPONENTS
         Core Gui Widgets PrintSupport Pdf PdfWidgets Network Multimedia
-        MultimediaWidgets Svg SvgWidgets Xml Concurrent)
+        MultimediaWidgets Svg SvgWidgets Xml Concurrent
+        Quick QuickWidgets Quick3D)
 set(CMAKE_AUTORCC ON)
 qt_standard_project_setup()
 
@@ -280,6 +281,8 @@ add_executable(Lore
         include/ai/chat/ChatWidgetEditFlow.h
         resources/themes/resources.qrc
         resources/icons/resources.qrc
+        resources/avatar/vita/resources.qrc
+        resources/avatar/resources.qrc
         src/file/DirectoryExplorerSettings.cpp
         include/file/DirectoryExplorerSettings.h
         src/text/formats/DotSyntaxHighlighter.cpp
@@ -481,6 +484,10 @@ add_executable(Lore
         include/agent/StructuredCall.h
         src/agent/schemas/SufficiencySchema.cpp
         include/agent/schemas/SufficiencySchema.h
+        src/avatar/AvatarWidget.cpp
+        include/avatar/AvatarWidget.h
+        src/avatar/AvatarWidget.cpp
+        include/avatar/AvatarWidget.h
 )
 
 add_dependencies(Lore
@@ -520,6 +527,7 @@ target_include_directories(Lore PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include/agent/schemas
         ${CMAKE_CURRENT_SOURCE_DIR}/include/voice
         ${CMAKE_CURRENT_SOURCE_DIR}/include/ingest
+        ${CMAKE_CURRENT_SOURCE_DIR}/include/avatar
         ${CMAKE_CURRENT_SOURCE_DIR}/external/QF-ML/include
         ${CMAKE_CURRENT_SOURCE_DIR}/external/edlib/edlib/include
         ${CMAKE_CURRENT_SOURCE_DIR}/external/tree-sitter/lib/include
@@ -552,6 +560,9 @@ target_link_libraries(Lore PRIVATE
         Qt6::SvgWidgets
         Qt6::Xml
         Qt6::Concurrent
+        Qt6::Quick
+        Qt6::QuickWidgets
+        Qt6::Quick3D
         qf-inference
         ep_edlib
         ep_tree_sitter

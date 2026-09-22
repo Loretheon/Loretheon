@@ -24,6 +24,7 @@ class ModelDialog;
 class LlmSettingsPanel;
 class OverseerPage;
 class ToastStack;
+class AvatarWidget;
 
 class IngestRegistry;
 class IngestService;
@@ -42,6 +43,7 @@ class QAction;
 class QActionGroup;
 class QMenu;
 class QProgressDialog;
+class QResizeEvent;
 class QStackedWidget;
 class QToolBar;
 class QToolButton;
@@ -55,6 +57,7 @@ public:
 
 protected:
   void closeEvent(QCloseEvent *event) override;
+  void resizeEvent(QResizeEvent *event) override;
 
 private slots:
   void about();
@@ -89,6 +92,9 @@ private:
   void buildNormalPage();
   void buildOverseerPage();
   void buildSearchLayer();
+  void buildAvatarOverlay();
+
+  void repositionAvatar();
 
   void setMode(Mode mode);
 
@@ -141,6 +147,7 @@ private:
   QToolButton *m_modeButton = nullptr;
 
   ToastStack *m_toastStack = nullptr;
+  AvatarWidget *m_avatar = nullptr;
 
   InferenceService *m_inferenceService = nullptr;
   ModelDialog *m_modelDialog = nullptr;
