@@ -12,9 +12,13 @@
 class InferenceService;
 class VectorIndex;
 
-// Walks a notes directory, extracts scopes from each Markdown file,
+// Walks one or more roots, extracts scopes from each Markdown file,
 // embeds them, and stores the vectors in a FAISS index with a JSON
 // sidecar that maps vector id back to file and scope.
+//
+// The primary root is the user's notes folder. Additional roots carry
+// the assistant's memory directory and any other tree the caller wants
+// searchable. Everything lands in the same index.
 //
 // The index lives under a caller-provided directory. That directory
 // holds two files:
@@ -45,11 +49,17 @@ public:
   void setIndexDirectory(const QString &directory);
   QString indexDirectory() const { return m_indexDirectory; }
 
+  // Extra roots walked in addition to the primary notes root. The
+  // assistant memory directory is passed here. Roots that do not exist
+  // are skipped silently.
+  void setAdditionalRoots(const QStringList &roots);
+  QStringList additionalRoots() const { return m_additionalRoots; }
+
   // Load from disk if present, otherwise start empty. Returns true if
   // an index was successfully loaded.
   bool load();
 
-  // Full rebuild: clear, walk the directory, embed every scope, save.
+  // Full rebuild: clear, walk every root, embed every scope, save.
   // Returns the number of scopes indexed, or -1 on failure.
   int rebuild(const QString &notesRoot);
 
@@ -66,7 +76,8 @@ public:
   VectorIndex *vectors() const { return m_vectors.get(); }
 
 signals:
-  // Progress during a rebuild. current and total are scope counts.
+  // Progress during a rebuild. current and total are file counts across
+  // every root.
   void progress(int current, int total);
 
   // Emitted once when a rebuild finishes. scopes is the count, or -1
@@ -76,6 +87,9 @@ signals:
 private:
   // Recursively collect .md files under root.
   QStringList collectMarkdownFiles(const QString &root) const;
+
+  // Collect from every configured root. Skips missing roots.
+  QStringList collectAllMarkdownFiles(const QString &notesRoot) const;
 
   // Extract scopes from a single file. Returns an empty list on failure.
   QVector<Entry> extractScopes(const QString &absolutePath) const;
@@ -93,6 +107,7 @@ private:
   InferenceService *m_inference = nullptr;
 
   QString m_indexDirectory;
+  QStringList m_additionalRoots;
 
   std::unique_ptr<VectorIndex> m_vectors;
   QVector<Entry> m_entries;   // index by vector id

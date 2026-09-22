@@ -1,10 +1,23 @@
 #pragma once
 
+#include <QPoint>
 #include <QQuickWidget>
+
+#include "AvatarConfig.h"
+#include "AvatarResizeGrip.h"
 
 // A QQuickWidget that hosts the 3D avatar scene. The scene is defined
 // in resources/avatar/AvatarOverlay.qml, which instantiates the
-// Balsam-generated RiggedFigure component.
+// Balsam-generated Vita component.
+//
+// The widget is free-floating: its geometry is owned by whoever
+// constructs it, and it does not re-anchor itself when the main window
+// resizes. Four corner grips are shown when resizable() is true. When
+// the user drags a grip, the widget resizes about the opposite corner
+// and emits geometryChanged().
+//
+// Dragging the body of the widget moves it, and turns her to face the
+// direction she is being dragged.
 class AvatarWidget : public QQuickWidget {
   Q_OBJECT
 
@@ -12,22 +25,58 @@ public:
   explicit AvatarWidget(QWidget *parent = nullptr);
   ~AvatarWidget() override;
 
-  // Retained for API compatibility. The model is baked into the QML.
+  void applyConfig(const AvatarConfig &config);
+
+  void setResizable(bool resizable);
+  bool isResizable() const { return m_resizable; }
+
+  QSize defaultSize() const { return m_config.widgetSize; }
+
   void setModel(const QString &source);
 
   void setMouthOpen(float value);
   void setExpression(const QString &name);
   void playMotion(const QString &name);
-
-  // Drive the mouth from a viseme shape. shape is one of "A", "E",
-  // "I", "O", "U", "M", "sil". Call this as the viseme timeline
-  // advances during speech.
   void applyViseme(const QString &shape);
 
-  signals:
-    void modelLoaded();
+  void placeByBottomRightOffset(const QPoint &offset);
+  QPoint bottomRightOffset() const;
+
+signals:
+  void geometryChanged();
+
+  void modelLoaded();
   void modelFailed(const QString &error);
 
+protected:
+  void resizeEvent(QResizeEvent *event) override;
+  void mousePressEvent(QMouseEvent *event) override;
+  void mouseMoveEvent(QMouseEvent *event) override;
+  void mouseReleaseEvent(QMouseEvent *event) override;
+
+private slots:
+  void onGripDragged(const QSize &newSize, AvatarResizeGrip::Corner corner);
+
 private:
+  void pushConfigToQml();
+  void layoutGrips();
+  void pushFacingToQml();
+
   QString m_modelSource;
+
+  AvatarConfig m_config;
+
+  AvatarResizeGrip *m_gripTopLeft = nullptr;
+  AvatarResizeGrip *m_gripTopRight = nullptr;
+  AvatarResizeGrip *m_gripBottomLeft = nullptr;
+  AvatarResizeGrip *m_gripBottomRight = nullptr;
+
+  bool m_resizable = false;
+  bool m_configPending = false;
+
+  // Body-drag state.
+  bool m_dragging = false;
+  QPoint m_dragOrigin;
+  QPoint m_dragStartPosition;
+  qreal m_facing = 0.0;
 };

@@ -1,4 +1,4 @@
-#include "../../include/search/ScopeIndex.h"
+#include "../../include/assistant/MemoryIndex.h"
 
 #include "../../include/search/VectorIndex.h"
 
@@ -18,12 +18,11 @@
 
 namespace {
 
+constexpr const char *kIndexDir = ".index";
 constexpr const char *kIndexFile = "faiss.index";
 constexpr const char *kSidecarFile = "sidecar.json";
-constexpr int kMinBodyLength = 24;
+constexpr int kMinBodyLength = 12;
 
-// Strip leading '#' characters and surrounding whitespace from a
-// heading line. Returns empty for a line that is not a heading.
 QString cleanHeading(const QString &line) {
   QString trimmed = line.trimmed();
   if (!trimmed.startsWith(QChar('#'))) {
@@ -35,8 +34,6 @@ QString cleanHeading(const QString &line) {
   return trimmed.trimmed();
 }
 
-// Find the first line in [start, end) that begins with '#'. Returns the
-// cleaned heading text, or empty if none.
 QString headingForRange(const QString &text, int start, int end) {
   const int safeStart = qBound(0, start, text.size());
   const int safeEnd = qBound(safeStart, end, text.size());
@@ -68,111 +65,53 @@ QString headingForRange(const QString &text, int start, int end) {
 
 } // namespace
 
-ScopeIndex::ScopeIndex(InferenceService *inference, QObject *parent)
+MemoryIndex::MemoryIndex(InferenceService *inference, QObject *parent)
     : QObject(parent), m_inference(inference),
       m_vectors(std::make_unique<VectorIndex>()) {}
 
-ScopeIndex::~ScopeIndex() = default;
+MemoryIndex::~MemoryIndex() = default;
 
-void ScopeIndex::setIndexDirectory(const QString &directory) {
-  m_indexDirectory = directory;
+void MemoryIndex::setMemoryRoot(const QString &root) { m_memoryRoot = root; }
+
+QString MemoryIndex::indexDirectory() const {
+  if (m_memoryRoot.isEmpty()) {
+    return {};
+  }
+  return QDir(m_memoryRoot).filePath(QString::fromLatin1(kIndexDir));
 }
 
-void ScopeIndex::setAdditionalRoots(const QStringList &roots) {
-  m_additionalRoots = roots;
-}
-
-bool ScopeIndex::load() {
-  if (m_indexDirectory.isEmpty()) {
-    qWarning() << "[ScopeIndex] No index directory set";
-    return false;
-  }
-
-  const QString indexPath =
-      QDir(m_indexDirectory).filePath(kIndexFile);
-  const QString sidecarPath =
-      QDir(m_indexDirectory).filePath(kSidecarFile);
-
-  if (!QFileInfo::exists(indexPath) || !QFileInfo::exists(sidecarPath)) {
-    qDebug() << "[ScopeIndex] No existing index to load";
-    return false;
-  }
-
-  if (!m_vectors->load(indexPath)) {
-    qWarning() << "[ScopeIndex] Failed to load FAISS index";
-    return false;
-  }
-
-  if (!loadSidecar(sidecarPath)) {
-    qWarning() << "[ScopeIndex] Failed to load sidecar";
-    m_vectors->clear();
-    return false;
-  }
-
-  if (m_vectors->size() != m_entries.size()) {
-    qWarning() << "[ScopeIndex] Vector count" << m_vectors->size()
-               << "does not match sidecar" << m_entries.size()
-               << "— discarding";
-    m_vectors->clear();
-    m_entries.clear();
-    return false;
-  }
-
-  qDebug() << "[ScopeIndex] Loaded" << m_vectors->size() << "vectors";
-  return true;
-}
-
-QStringList ScopeIndex::collectMarkdownFiles(const QString &root) const {
+QStringList MemoryIndex::collectMarkdownFiles() const {
   QStringList files;
 
-  if (root.isEmpty() || !QFileInfo::exists(root)) {
+  if (m_memoryRoot.isEmpty() || !QFileInfo::exists(m_memoryRoot)) {
     return files;
   }
 
-  QDirIterator it(root, QStringList{QStringLiteral("*.md")},
+  QDirIterator it(m_memoryRoot, QStringList{QStringLiteral("*.md")},
                   QDir::Files | QDir::Readable,
                   QDirIterator::Subdirectories);
 
   while (it.hasNext()) {
-    files.append(it.next());
-  }
+    const QString path = it.next();
 
-  return files;
-}
-
-QStringList ScopeIndex::collectAllMarkdownFiles(
-    const QString &notesRoot) const {
-  QStringList files = collectMarkdownFiles(notesRoot);
-
-  for (const QString &root : m_additionalRoots) {
-    const QStringList extra = collectMarkdownFiles(root);
-
-    if (extra.isEmpty()) {
-      qDebug() << "[ScopeIndex] No markdown under additional root:" << root;
+    // Do not index anything under the .index folder itself.
+    if (path.contains(QStringLiteral("/.index/"))) {
       continue;
     }
 
-    qDebug() << "[ScopeIndex] Collected" << extra.size()
-             << "files from additional root:" << root;
-
-    for (const QString &path : extra) {
-      if (!files.contains(path)) {
-        files.append(path);
-      }
-    }
+    files.append(path);
   }
 
   files.sort(Qt::CaseInsensitive);
   return files;
 }
 
-QVector<ScopeIndex::Entry> ScopeIndex::extractScopes(
+QVector<MemoryIndex::Entry> MemoryIndex::extractScopes(
     const QString &absolutePath) const {
   QVector<Entry> entries;
 
   QFile file(absolutePath);
   if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
-    qWarning() << "[ScopeIndex] Cannot read" << absolutePath;
     return entries;
   }
 
@@ -189,22 +128,52 @@ QVector<ScopeIndex::Entry> ScopeIndex::extractScopes(
   const DocumentNode &root = structure.root();
 
   if (!root.isValid()) {
+    // If the memory file has no Markdown structure, index the whole
+    // body as a single scope so nothing is lost.
+    if (text.trimmed().length() >= kMinBodyLength) {
+      Entry entry;
+      entry.filePath = absolutePath;
+      entry.scopeId = QStringLiteral("document");
+      entry.body = text.trimmed();
+      entry.contentHash = QString();
+      entries.append(entry);
+    }
     return entries;
   }
 
   collectNodes(root, text, absolutePath, entries);
 
+  if (entries.isEmpty() && text.trimmed().length() >= kMinBodyLength) {
+    Entry entry;
+    entry.filePath = absolutePath;
+    entry.scopeId = QStringLiteral("document");
+    entry.body = text.trimmed();
+    entry.contentHash = QString();
+    entries.append(entry);
+  }
+
   return entries;
 }
 
-void ScopeIndex::collectNodes(const DocumentNode &node,
-                              const QString &documentText,
-                              const QString &filePath,
-                              QVector<Entry> &out) const {
+void MemoryIndex::collectNodes(const DocumentNode &node,
+                               const QString &documentText,
+                               const QString &filePath,
+                               QVector<Entry> &out) const {
   if (node.isRoot() && node.isValid()) {
-    // The root node covers the whole document. Skip it: the sections
-    // below carry the retrievable text.
-  } else if (node.isValid() && !node.id.isEmpty()) {
+    // The root carries the whole document. Emit it, because memory
+    // files have no scope tree most of the time.
+    if (documentText.trimmed().length() >= kMinBodyLength) {
+      Entry entry;
+      entry.filePath = filePath;
+      entry.scopeId = QStringLiteral("document");
+      entry.body = documentText.trimmed();
+      entry.contentHash = node.contentHash;
+      out.append(entry);
+    }
+    return;
+  }
+
+  if (node.isValid() && !node.id.isEmpty()) {
     const int start = qBound(0, node.start, documentText.size());
     const int end = qBound(start, node.end, documentText.size());
 
@@ -228,40 +197,70 @@ void ScopeIndex::collectNodes(const DocumentNode &node,
   }
 }
 
-int ScopeIndex::rebuild(const QString &notesRoot) {
-  if (m_indexDirectory.isEmpty()) {
-    qWarning() << "[ScopeIndex] No index directory set";
+bool MemoryIndex::load() {
+  const QString dir = indexDirectory();
+
+  if (dir.isEmpty()) {
+    return false;
+  }
+
+  const QString indexPath = QDir(dir).filePath(kIndexFile);
+  const QString sidecarPath = QDir(dir).filePath(kSidecarFile);
+
+  if (!QFileInfo::exists(indexPath) || !QFileInfo::exists(sidecarPath)) {
+    return false;
+  }
+
+  if (!m_vectors->load(indexPath)) {
+    return false;
+  }
+
+  if (!loadSidecar(sidecarPath)) {
+    m_vectors->clear();
+    return false;
+  }
+
+  if (m_vectors->size() != m_entries.size()) {
+    m_vectors->clear();
+    m_entries.clear();
+    return false;
+  }
+
+  qDebug() << "[MemoryIndex] Loaded" << m_vectors->size() << "vectors";
+  return true;
+}
+
+int MemoryIndex::rebuild() {
+  const QString dir = indexDirectory();
+
+  if (dir.isEmpty()) {
     emit finished(-1);
     return -1;
   }
 
   if (!m_inference || !m_inference->isEmbedderReady()) {
-    qWarning() << "[ScopeIndex] Embedder is not ready";
     emit finished(-1);
     return -1;
   }
 
   m_dimensions = m_inference->embedderDimensions();
+
   if (m_dimensions <= 0) {
-    qWarning() << "[ScopeIndex] Invalid embedder dimensions";
     emit finished(-1);
     return -1;
   }
 
   if (!m_vectors->create(m_dimensions)) {
-    qWarning() << "[ScopeIndex] Failed to create FAISS index";
     emit finished(-1);
     return -1;
   }
 
   m_entries.clear();
 
-  const QStringList files = collectAllMarkdownFiles(notesRoot);
-
-  qDebug() << "[ScopeIndex] Rebuilding from" << files.size() << "files";
+  const QStringList files = collectMarkdownFiles();
 
   int processed = 0;
-  const int total = files.size();
+  const int total = qMax(1, files.size());
 
   for (const QString &path : files) {
     const QVector<Entry> scopes = extractScopes(path);
@@ -274,6 +273,7 @@ int ScopeIndex::rebuild(const QString &notesRoot) {
       }
 
       const int64_t id = m_vectors->add(vector);
+
       if (id < 0) {
         continue;
       }
@@ -285,52 +285,41 @@ int ScopeIndex::rebuild(const QString &notesRoot) {
     emit progress(processed, total);
   }
 
-  QDir().mkpath(m_indexDirectory);
+  QDir().mkpath(dir);
 
-  const QString indexPath =
-      QDir(m_indexDirectory).filePath(kIndexFile);
-  const QString sidecarPath =
-      QDir(m_indexDirectory).filePath(kSidecarFile);
+  const QString indexPath = QDir(dir).filePath(kIndexFile);
+  const QString sidecarPath = QDir(dir).filePath(kSidecarFile);
 
-  if (!m_vectors->save(indexPath)) {
-    qWarning() << "[ScopeIndex] Failed to save FAISS index";
-    emit finished(-1);
-    return -1;
-  }
-
-  if (!saveSidecar(sidecarPath)) {
-    qWarning() << "[ScopeIndex] Failed to save sidecar";
+  if (!m_vectors->save(indexPath) || !saveSidecar(sidecarPath)) {
     emit finished(-1);
     return -1;
   }
 
   const int scopes = static_cast<int>(m_entries.size());
-  qDebug() << "[ScopeIndex] Rebuild complete:" << scopes << "scopes";
+  qDebug() << "[MemoryIndex] Rebuild complete:" << scopes << "scopes";
 
   emit finished(scopes);
   return scopes;
 }
 
-bool ScopeIndex::isReady() const {
+bool MemoryIndex::isReady() const {
   return m_vectors && m_vectors->isValid() && m_vectors->size() > 0;
 }
 
-int64_t ScopeIndex::vectorCount() const {
+int64_t MemoryIndex::vectorCount() const {
   return m_vectors ? m_vectors->size() : 0;
 }
 
-int64_t ScopeIndex::scopeCount() const {
-  return m_entries.size();
-}
+int64_t MemoryIndex::scopeCount() const { return m_entries.size(); }
 
-ScopeIndex::Entry ScopeIndex::entryFor(int64_t vectorId) const {
+MemoryIndex::Entry MemoryIndex::entryFor(int64_t vectorId) const {
   if (vectorId < 0 || vectorId >= m_entries.size()) {
     return {};
   }
   return m_entries.at(static_cast<int>(vectorId));
 }
 
-bool ScopeIndex::saveSidecar(const QString &path) const {
+bool MemoryIndex::saveSidecar(const QString &path) const {
   QJsonArray array;
 
   for (const Entry &entry : m_entries) {
@@ -349,6 +338,7 @@ bool ScopeIndex::saveSidecar(const QString &path) const {
   root.insert(QStringLiteral("entries"), array);
 
   QFile file(path);
+
   if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
     return false;
   }
@@ -358,8 +348,9 @@ bool ScopeIndex::saveSidecar(const QString &path) const {
   return true;
 }
 
-bool ScopeIndex::loadSidecar(const QString &path) {
+bool MemoryIndex::loadSidecar(const QString &path) {
   QFile file(path);
+
   if (!file.open(QIODevice::ReadOnly)) {
     return false;
   }
@@ -368,8 +359,7 @@ bool ScopeIndex::loadSidecar(const QString &path) {
   file.close();
 
   QJsonParseError error;
-  const QJsonDocument document =
-      QJsonDocument::fromJson(data, &error);
+  const QJsonDocument document = QJsonDocument::fromJson(data, &error);
 
   if (error.error != QJsonParseError::NoError || !document.isObject()) {
     return false;
@@ -378,12 +368,10 @@ bool ScopeIndex::loadSidecar(const QString &path) {
   const QJsonObject root = document.object();
 
   if (root.value(QStringLiteral("version")).toInt() != kSidecarVersion) {
-    qDebug() << "[ScopeIndex] Sidecar version mismatch";
     return false;
   }
 
-  m_dimensions =
-      root.value(QStringLiteral("dimensions")).toInt(m_dimensions);
+  m_dimensions = root.value(QStringLiteral("dimensions")).toInt(m_dimensions);
 
   const QJsonArray array = root.value(QStringLiteral("entries")).toArray();
 

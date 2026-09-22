@@ -25,6 +25,7 @@ class LlmSettingsPanel;
 class OverseerPage;
 class ToastStack;
 class AvatarWidget;
+class LoreAssistant;
 
 class IngestRegistry;
 class IngestService;
@@ -94,8 +95,6 @@ private:
   void buildSearchLayer();
   void buildAvatarOverlay();
 
-  void repositionAvatar();
-
   void setMode(Mode mode);
 
   bool loadThemeFromResource(const QString &name);
@@ -148,6 +147,7 @@ private:
 
   ToastStack *m_toastStack = nullptr;
   AvatarWidget *m_avatar = nullptr;
+  LoreAssistant *m_assistant = nullptr;
 
   InferenceService *m_inferenceService = nullptr;
   ModelDialog *m_modelDialog = nullptr;

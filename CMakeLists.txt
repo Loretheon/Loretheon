@@ -488,6 +488,29 @@ add_executable(Lore
         include/avatar/AvatarWidget.h
         src/avatar/AvatarWidget.cpp
         include/avatar/AvatarWidget.h
+        include/assistant/AssistantProfile.cpp
+        include/assistant/AssistantProfile.h
+        include/assistant/AssistantMemory.cpp
+        include/assistant/AssistantMemory.h
+        include/assistant/AssistantContext.cpp
+        include/assistant/AssistantContext.h
+        include/assistant/AssistantActivity.cpp
+        include/assistant/AssistantActivity.h
+        include/assistant/AssistantTool.cpp
+        include/assistant/AssistantTool.h
+        include/assistant/AssistantToolRegistry.cpp
+        include/assistant/AssistantToolRegistry.h
+        include/assistant/tools/AssistantTools.cpp
+        include/assistant/tools/AssistantTools.h
+        include/assistant/MemoryIndex.cpp
+        include/assistant/MemoryIndex.h
+        include/assistant/SpeechAnimator.cpp
+        include/assistant/SpeechAnimator.h
+        include/assistant/LoreAssistant.cpp
+        include/assistant/LoreAssistant.h
+        include/avatar/AvatarConfig.h
+        include/avatar/AvatarResizeGrip.cpp
+        include/avatar/AvatarResizeGrip.h
 )
 
 add_dependencies(Lore

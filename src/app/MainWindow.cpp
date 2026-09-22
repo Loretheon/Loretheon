@@ -16,6 +16,8 @@
 #include "app/QfPaths.h"
 #include "inference/InferenceService.h"
 #include "ui/ModelDialog.h"
+#include "../../include/assistant/LoreAssistant.h"
+#include "../../include/avatar/AvatarConfig.h"
 #include "../../include/avatar/AvatarWidget.h"
 #include "../../include/ingest/Extractors.h"
 #include "../../include/ingest/IngestRegistry.h"
@@ -60,6 +62,7 @@
 #include <QStatusBar>
 #include <QTextCursor>
 #include <QThreadPool>
+#include <QTimer>
 #include <QToolBar>
 #include <QToolButton>
 #include <QUrl>
@@ -73,9 +76,11 @@ constexpr auto OverseerThemeKey = "overseer/theme";
 constexpr auto ModeKey = "ui/mode";
 
 constexpr int ImportConcurrency = 4;
-constexpr int AvatarMargin = 24;
-constexpr int AvatarWidth = 320;
-constexpr int AvatarHeight = 480;
+
+// The one place avatar sizing is defined. Change a value here and
+// everything downstream follows: the QQuickWidget's size, where it
+// sits in the window, and how the figure is framed inside it.
+const AvatarConfig kAvatarConfig{};
 
 InferenceService::LlmConfig configuredLlm() {
   InferenceService::LlmConfig config;
@@ -137,7 +142,11 @@ QString expandTokens(const QString &qss,
 
 } // namespace
 
-MainWindow::~MainWindow() = default;
+MainWindow::~MainWindow() {
+  if (m_assistant) {
+    m_assistant->stop();
+  }
+}
 
 MainWindow::MainWindow() {
   setCorner(Qt::TopLeftCorner, Qt::LeftDockWidgetArea);
@@ -186,6 +195,25 @@ MainWindow::MainWindow() {
   createMenus();
 
   buildAvatarOverlay();
+
+  {
+    LoreAssistant::Config config;
+    config.inference = m_inferenceService;
+    config.avatar = m_avatar;
+    config.documents = m_documentManager;
+    config.search = m_searchService;
+    config.root = QStandardPaths::writableLocation(
+                      QStandardPaths::AppDataLocation) +
+                  QStringLiteral("/assistant");
+
+    m_assistant = new LoreAssistant(config, this);
+    m_assistant->start();
+  }
+
+  QTimer::singleShot(1500, this, [this]() {
+    if (m_assistant)
+      m_assistant->say(QStringLiteral("hello welcome to Lore"));
+  });
 
   QSettings settings;
 
@@ -1186,7 +1214,6 @@ void MainWindow::closeEvent(QCloseEvent *event) {
 void MainWindow::resizeEvent(QResizeEvent *event) {
   QMainWindow::resizeEvent(event);
 
-  repositionAvatar();
 }
 
 void MainWindow::buildIngestLayer() {
@@ -1565,11 +1592,19 @@ void MainWindow::onCurrentEditorChangedForSpeech(TextEdit *editor) {
 void MainWindow::buildSearchLayer() {
   m_scopeIndex = std::make_unique<ScopeIndex>(m_inferenceService);
 
-  const QString indexDir =
-      QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) +
-      QStringLiteral("/search");
+  const QString appData =
+      QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+
+  const QString indexDir = appData + QStringLiteral("/search");
 
   m_scopeIndex->setIndexDirectory(indexDir);
+
+  // Index the assistant's memory alongside the notes vault. Recall
+  // from the assistant depends on this.
+  const QString assistantRoot =
+      appData + QStringLiteral("/assistant");
+
+  m_scopeIndex->setAdditionalRoots({assistantRoot});
 
   if (!m_scopeIndex->load()) {
     qDebug() << "[MainWindow] No search index on disk yet.";
@@ -1604,27 +1639,37 @@ void MainWindow::buildSearchLayer() {
 void MainWindow::buildAvatarOverlay() {
   m_avatar = new AvatarWidget(this);
 
-  m_avatar->setFixedSize(AvatarWidth, AvatarHeight);
+  m_avatar->applyConfig(kAvatarConfig);
 
-  m_avatar->setModel(
-    QStringLiteral("qrc:/avatar/vita/Vita.glb"));
+  QSettings settings;
+  const QSize storedSize =
+      settings.value(QStringLiteral("avatar/size"), kAvatarConfig.widgetSize)
+          .toSize();
+  const QPoint storedOffset =
+      settings.value(QStringLiteral("avatar/offset"),
+                     QPoint(kAvatarConfig.margin, kAvatarConfig.margin))
+          .toPoint();
 
-  repositionAvatar();
+  m_avatar->resize(storedSize);
+  m_avatar->setResizable(true);
+  m_avatar->placeByBottomRightOffset(storedOffset);
+
+  connect(m_avatar, &AvatarWidget::geometryChanged, this, [this]() {
+    if (!m_avatar) {
+      return;
+    }
+    QSettings s;
+    s.setValue(QStringLiteral("avatar/size"), m_avatar->size());
+    s.setValue(QStringLiteral("avatar/offset"),
+               m_avatar->bottomRightOffset());
+  });
+
+  m_avatar->setModel(QStringLiteral("qrc:/avatar/vita/Vita.glb"));
 
   m_avatar->show();
   m_avatar->raise();
 }
 
-void MainWindow::repositionAvatar() {
-  if (!m_avatar) {
-    return;
-  }
-
-  const int x = width() - m_avatar->width() - AvatarMargin;
-  const int y = height() - m_avatar->height() - AvatarMargin;
-
-  m_avatar->move(qMax(AvatarMargin, x), qMax(AvatarMargin, y));
-}
 
 void MainWindow::onSearchRequested() {
   if (m_searchModeAct) {
