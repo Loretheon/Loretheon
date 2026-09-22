@@ -9,12 +9,6 @@
 
 namespace {
 
-// Split a block of prose into sentences. Rules:
-//   - Terminator is one of . ! ? or an ellipsis.
-//   - Trailing quote or bracket marks are kept with the sentence.
-//   - Whitespace between sentences is discarded.
-//   - A sentence shorter than the minimum is glued to the next one so
-//     TTS does not emit a stream of two-word clips.
 QStringList splitIntoSentences(const QString &text) {
   constexpr int kMinSentenceLength = 12;
 
@@ -29,34 +23,19 @@ QStringList splitIntoSentences(const QString &text) {
     raw.append(it.next().captured(0).trimmed());
   }
 
-  // Catch any trailing fragment without a terminator.
-  const int matchedLength = [&]() {
-    int total = 0;
-    for (const QString &s : raw) total += s.length();
-    return total;
-  }();
-  Q_UNUSED(matchedLength);
-
   QStringList merged;
   QString pending;
 
   for (const QString &sentence : raw) {
-    if (sentence.isEmpty()) {
-      continue;
-    }
-
+    if (sentence.isEmpty()) continue;
     pending += pending.isEmpty() ? sentence : QStringLiteral(" ") + sentence;
-
     if (pending.length() >= kMinSentenceLength) {
       merged.append(pending);
       pending.clear();
     }
   }
 
-  if (!pending.isEmpty()) {
-    merged.append(pending);
-  }
-
+  if (!pending.isEmpty()) merged.append(pending);
   return merged;
 }
 
@@ -65,49 +44,47 @@ QStringList splitIntoSentences(const QString &text) {
 SpeechController::SpeechController(InferenceService *inference,
                                    QObject *parent)
     : QObject(parent), m_inference(inference) {
+  m_recorder = std::make_unique<AudioRecorder>();
+
+  connect(m_recorder.get(), &AudioRecorder::audioChunkReady, this,
+          &SpeechController::onAudioChunkReady);
 
   if (m_inference) {
     connect(m_inference, &InferenceService::ttsSentenceFinished, this,
             &SpeechController::speakNextSentence);
+    connect(m_inference, &InferenceService::liveSegment, this,
+            &SpeechController::onLiveSegment);
+    connect(m_inference, &InferenceService::sttStreamOpened, this,
+            &SpeechController::onStreamOpened);
+    connect(m_inference, &InferenceService::sttStreamClosed, this,
+            &SpeechController::onStreamClosed);
   }
-
-
-  m_recorder = std::make_unique<AudioRecorder>();
 }
 
 SpeechController::~SpeechController() = default;
 
 bool SpeechController::beginCapture() {
-  if (m_capturing) {
-    return true;
-  }
-
+  if (m_capturing || m_liveCapturing || m_liveStarting) return false;
   if (!m_recorder) {
     emit transcriptionFailed(tr("No audio recorder available."));
     return false;
   }
-
   if (!m_inference || !m_inference->isSttReady()) {
     emit transcriptionFailed(tr("Speech recognition is not ready."));
     return false;
   }
 
   ++m_captureToken;
-
   m_recorder->startRecording();
   m_capturing = true;
-
   emit stateChanged();
   return true;
 }
 
 void SpeechController::endCapture() {
-  if (!m_capturing || !m_recorder) {
-    return;
-  }
+  if (!m_capturing || !m_recorder) return;
 
   m_capturing = false;
-
   const std::vector<float> pcm = m_recorder->stopRecording();
 
   if (pcm.empty()) {
@@ -121,8 +98,6 @@ void SpeechController::endCapture() {
 
   const quint64 token = m_captureToken;
 
-  // Transcription is synchronous and blocking. Run it on a worker and
-  // marshal the result back.
   QtConcurrent::run([this, pcm, token]() {
     QString text;
     QString error;
@@ -131,18 +106,13 @@ void SpeechController::endCapture() {
       error = tr("Inference service unavailable.");
     } else {
       text = m_inference->transcribe(pcm);
-      if (text.isEmpty()) {
-        error = tr("No speech recognised.");
-      }
+      if (text.isEmpty()) error = tr("No speech recognised.");
     }
 
     QMetaObject::invokeMethod(
         this,
         [this, text, error, token]() {
-          if (token != m_captureToken) {
-            // A newer capture superseded this one.
-            return;
-          }
+          if (token != m_captureToken) return;
           onTranscriptionReady(text, error);
         },
         Qt::QueuedConnection);
@@ -150,21 +120,85 @@ void SpeechController::endCapture() {
 }
 
 void SpeechController::cancelCapture() {
-  if (!m_recorder) {
-    return;
-  }
-
+  if (!m_recorder) return;
   ++m_captureToken;
-
   m_capturing = false;
   m_transcribing = false;
-
+  m_liveCapturing = false;
+  m_liveStarting = false;
   m_recorder->stopRecording();
+  if (m_inference) m_inference->stopSttStreaming();
   emit stateChanged();
 }
 
 bool SpeechController::isCapturing() const { return m_capturing; }
 bool SpeechController::isTranscribing() const { return m_transcribing; }
+bool SpeechController::isLiveCapturing() const { return m_liveCapturing; }
+bool SpeechController::isLiveStarting() const { return m_liveStarting; }
+
+void SpeechController::startLiveCapture() {
+  if (m_liveCapturing || m_liveStarting) return;
+  if (m_capturing || m_transcribing) return;
+  if (!m_inference || !m_inference->isSttReady()) {
+    emit transcriptionFailed(tr("Speech recognition is not ready."));
+    return;
+  }
+
+  if (!m_inference->startSttStreaming()) {
+    emit transcriptionFailed(tr("Could not start live streaming."));
+    return;
+  }
+
+  m_liveStarting = true;
+  m_liveCapturing = false;
+  emit stateChanged();
+}
+
+void SpeechController::stopLiveCapture() {
+  if (!m_liveCapturing && !m_liveStarting) return;
+
+  m_liveStarting = false;
+
+  if (m_recorder) m_recorder->stopRecording();
+
+  if (m_inference) m_inference->stopSttStreaming();
+}
+
+void SpeechController::onStreamOpened() {
+  if (!m_liveStarting) {
+    return;
+  }
+
+  m_liveStarting = false;
+  m_liveCapturing = true;
+
+  if (m_recorder) {
+    m_recorder->startRecording();
+  }
+
+  emit stateChanged();
+}
+
+void SpeechController::onStreamClosed() {
+  const bool wasActive = m_liveCapturing || m_liveStarting;
+
+  m_liveCapturing = false;
+  m_liveStarting = false;
+
+  if (wasActive) {
+    emit stateChanged();
+  }
+}
+
+void SpeechController::onAudioChunkReady(const std::vector<float> &chunk) {
+  if (!m_liveCapturing || !m_inference) return;
+  m_inference->feedSttAudio(chunk);
+}
+
+void SpeechController::onLiveSegment(const QString &text, bool isFinal) {
+  if (text.isEmpty()) return;
+  emit liveTranscribed(text, isFinal);
+}
 
 void SpeechController::onTranscriptionReady(const QString &text,
                                             const QString &error) {
@@ -188,15 +222,11 @@ void SpeechController::speakText(const QString &text) {
   stopSpeaking();
 
   m_sentenceQueue = splitIntoSentences(text);
-
-  if (m_sentenceQueue.isEmpty()) {
-    return;
-  }
+  if (m_sentenceQueue.isEmpty()) return;
 
   m_speaking = true;
   emit speakingStarted();
   emit stateChanged();
-
   speakNextSentence();
 }
 
@@ -224,11 +254,7 @@ void SpeechController::speakNextSentence() {
 void SpeechController::stopSpeaking() {
   m_sentenceQueue.clear();
   m_currentSentence.clear();
-
-  if (m_inference) {
-    m_inference->stopSpeech();
-  }
-
+  if (m_inference) m_inference->stopSpeech();
   if (m_speaking) {
     m_speaking = false;
     emit speakingFinished();

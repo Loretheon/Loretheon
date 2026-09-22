@@ -452,6 +452,8 @@ add_executable(Lore
         include/voice/ReadAloudCommand.h
         include/voice/SpeechPanel.cpp
         include/voice/SpeechPanel.h
+        include/voice/LiveDictateCommand.cpp
+        include/voice/LiveDictateCommand.h
 )
 
 add_dependencies(Lore

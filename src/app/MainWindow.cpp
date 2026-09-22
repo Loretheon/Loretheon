@@ -1,8 +1,18 @@
 #include "MainWindow.h"
+#include "../../include/ingest/Extractors.h"
+#include "../../include/ingest/IngestRegistry.h"
+#include "../../include/ingest/IngestService.h"
+#include "../../include/ingest/NoteWriter.h"
+#include "../../include/voice/DictateCommand.h"
+#include "../../include/voice/ReadAloudCommand.h"
+#include "../../include/voice/SpeechController.h"
+#include "../../include/voice/SpeechPanel.h"
+#include "../../include/voice/VoiceCommandRegistry.h"
 #include "ChatWidget.h"
 #include "DocumentArea.h"
 #include "EditSession.h"
 #include "FileWidget.h"
+#include "LiveDictateCommand.h"
 #include "LlmSettingsPanel.h"
 #include "NotificationService.h"
 #include "OverseerPage.h"
@@ -16,15 +26,6 @@
 #include "app/QfPaths.h"
 #include "inference/InferenceService.h"
 #include "ui/ModelDialog.h"
-#include "../../include/ingest/Extractors.h"
-#include "../../include/ingest/IngestRegistry.h"
-#include "../../include/ingest/IngestService.h"
-#include "../../include/ingest/NoteWriter.h"
-#include "../../include/voice/DictateCommand.h"
-#include "../../include/voice/ReadAloudCommand.h"
-#include "../../include/voice/SpeechController.h"
-#include "../../include/voice/SpeechPanel.h"
-#include "../../include/voice/VoiceCommandRegistry.h"
 
 #include <QDir>
 #include <QDirIterator>
@@ -1255,9 +1256,6 @@ void MainWindow::reportImportSummary(int succeeded, int failed, int total) {
 void MainWindow::buildSpeechLayer() {
   m_speechController = new SpeechController(m_inferenceService, this);
 
-  // TTS defaults to disabled in TtsManager. Nothing else turns it on,
-  // and SpeechController::speakText bails when it is off. Enable it
-  // once here so Read Aloud works out of the box.
   if (m_inferenceService) {
     m_inferenceService->setTtsEnabled(true);
   }
@@ -1265,6 +1263,8 @@ void MainWindow::buildSpeechLayer() {
   m_voiceCommands = new VoiceCommandRegistry(this);
   m_voiceCommands->add(
       std::make_unique<DictateCommand>(m_speechController));
+  m_voiceCommands->add(
+      std::make_unique<LiveDictateCommand>(m_speechController));
   m_voiceCommands->add(
       std::make_unique<ReadAloudCommand>(m_speechController));
 
@@ -1279,13 +1279,10 @@ void MainWindow::buildSpeechLayer() {
                   m_documentArea ? m_documentArea->currentEditor() : nullptr);
             });
 
-    // Seed the initial context. If no document is open yet, this passes
-    // nullptr and the commands stay disabled until one is.
     onCurrentEditorChangedForSpeech(
         m_documentArea ? m_documentArea->currentEditor() : nullptr);
   }
 }
-
 void MainWindow::onToggleSpeechPanel() {
   if (!m_speechPanel) {
     return;

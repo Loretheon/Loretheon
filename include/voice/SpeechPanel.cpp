@@ -114,12 +114,23 @@ void SpeechPanel::refresh() {
 }
 
 QString SpeechPanel::statusForCommand(VoiceCommand *command) const {
-  if (!command || !command->isRunning()) {
+  if (!command) {
     return {};
   }
+
+  if (!command->isRunning()) {
+    return {};
+  }
+
+  // The live dictate command reports running the moment the worker is
+  // asked to open. Surface the "starting" phase distinctly so the user
+  // does not speak into a stream that is not yet decoding.
+  if (m_controller && m_controller->isLiveStarting()) {
+    return tr("starting");
+  }
+
   return tr("running");
 }
-
 VoiceCommand *SpeechPanel::selectedCommand() const {
   if (!m_registry || !m_list->currentItem()) {
     return nullptr;
