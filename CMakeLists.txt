@@ -11,8 +11,10 @@ find_package(Qt6 6.4 REQUIRED COMPONENTS
         Core Gui Widgets PrintSupport Pdf PdfWidgets Network Multimedia
         MultimediaWidgets Svg SvgWidgets Xml Concurrent
         Quick QuickWidgets Quick3D)
-set(CMAKE_AUTORCC ON)
+
 qt_standard_project_setup()
+
+set(CMAKE_AUTORCC ON)
 
 set(EPISTEME_NODE_BIN ""
         CACHE PATH "Directory containing Node.js command-line tools")
@@ -189,10 +191,32 @@ lore_import_static(ep_plutovg ext_lunasvg lib/libplutovg.a)
 lore_ts_grammar(dot tree-sitter-dot bindings/c)
 lore_ts_grammar(mermaid tree-sitter-mermaid bindings/c)
 
+
+# =============================================================================
+# ozz-animation
+# =============================================================================
+#
+# Runtime only. The offline tools (gltf2ozz) are built separately in
+# external/ozz-animation/build-tools and are not part of the Lore build.
+
+set(OZZ_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+set(OZZ_BUILD_SAMPLES OFF CACHE BOOL "" FORCE)
+set(OZZ_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(OZZ_BUILD_HOWTOS OFF CACHE BOOL "" FORCE)
+set(OZZ_BUILD_GLTF OFF CACHE BOOL "" FORCE)
+set(OZZ_BUILD_FBX OFF CACHE BOOL "" FORCE)
+
+add_subdirectory(
+        external/ozz-animation
+        ${CMAKE_BINARY_DIR}/ozz
+)
+
+
 add_subdirectory(
         external/QF-ML
         ${EPISTEME_EXTERNAL_BUILD_DIR}/QF-ML
 )
+
 
 add_executable(Lore
         src/main.cpp
@@ -283,6 +307,7 @@ add_executable(Lore
         resources/icons/resources.qrc
         resources/avatar/vita/resources.qrc
         resources/avatar/resources.qrc
+        resources/avatar/ccbase/resources.qrc
         src/file/DirectoryExplorerSettings.cpp
         include/file/DirectoryExplorerSettings.h
         src/text/formats/DotSyntaxHighlighter.cpp
@@ -511,6 +536,8 @@ add_executable(Lore
         include/avatar/AvatarConfig.h
         include/avatar/AvatarResizeGrip.cpp
         include/avatar/AvatarResizeGrip.h
+        include/avatar/AvatarController.cpp
+        include/avatar/AvatarController.h
 )
 
 add_dependencies(Lore
@@ -598,4 +625,6 @@ target_link_libraries(Lore PRIVATE
         QuaZip::QuaZip
         faiss
         OpenMP::OpenMP_CXX
+        ozz_animation
+        ozz_base
 )

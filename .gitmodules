@@ -30,3 +30,7 @@
 	ignore = dirty
 [submodule "external/QF-ML/"]
 	branch = tools
+[submodule "external/ozz-animation"]
+	path = external/ozz-animation
+	url = https://github.com/guillaumeblanc/ozz-animation.git
+	ignore = dirty

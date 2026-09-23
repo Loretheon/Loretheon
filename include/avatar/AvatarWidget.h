@@ -6,9 +6,12 @@
 #include "AvatarConfig.h"
 #include "AvatarResizeGrip.h"
 
+class AvatarController;
+
 // A QQuickWidget that hosts the 3D avatar scene. The scene is defined
-// in resources/avatar/AvatarOverlay.qml, which instantiates the
-// Balsam-generated Vita component.
+// in resources/avatar/AvatarOverlay.qml. The CC Base model is loaded
+// from QML via RuntimeLoader, and AvatarController binds ozz clips to
+// the skeleton joints that the loader creates.
 //
 // The widget is free-floating: its geometry is owned by whoever
 // constructs it, and it does not re-anchor itself when the main window
@@ -56,11 +59,17 @@ protected:
 
 private slots:
   void onGripDragged(const QSize &newSize, AvatarResizeGrip::Corner corner);
+  void onModelLoaded();
 
 private:
   void pushConfigToQml();
-  void layoutGrips();
   void pushFacingToQml();
+  void layoutGrips();
+
+  // Called once the QML model has finished loading. Loads the ozz
+  // archives and binds them to the joint nodes the RuntimeLoader
+  // created.
+  void attachControllerToScene();
 
   QString m_modelSource;
 
@@ -73,6 +82,10 @@ private:
 
   bool m_resizable = false;
   bool m_configPending = false;
+
+  AvatarController *m_controller = nullptr;
+  bool m_archivesLoaded = false;
+  bool m_controllerReady = false;
 
   // Body-drag state.
   bool m_dragging = false;

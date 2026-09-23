@@ -1,5 +1,7 @@
 #include "../../include/avatar/AvatarWidget.h"
 
+#include "../../include/avatar/AvatarController.h"
+
 #include <QDebug>
 #include <QMouseEvent>
 #include <QQuickItem>
@@ -10,15 +12,19 @@
 
 namespace {
 
-// How many degrees she turns per pixel of horizontal drag. Small, so
-// a drag across the whole widget rotates her by a plausible amount
-// rather than spinning her.
+// How many degrees she turns per pixel of horizontal drag.
 constexpr qreal kDegreesPerPixel = 0.35;
 
-// Clamp so she never turns past side-on. Beyond ±80° she reads as
-// facing away from the camera, which looks wrong for a corner
-// companion.
+// Clamp so she never turns past side-on.
 constexpr qreal kMaxFacingDegrees = 80.0;
+
+// Resource paths for the CC Base model and its ozz archives.
+constexpr auto kAvatarResourceRoot = ":/avatar/ccbase";
+constexpr auto kAvatarSkeletonPath = ":/avatar/ccbase/skeleton.ozz";
+
+// RuntimeLoader::Success. The enum is Null=0, Success=1, Loading=2,
+// Error=3 in Qt 6.4.
+constexpr int kRuntimeLoaderSuccess = 1;
 
 } // namespace
 
@@ -27,6 +33,8 @@ AvatarWidget::AvatarWidget(QWidget *parent) : QQuickWidget(parent) {
   setClearColor(Qt::transparent);
 
   setResizeMode(QQuickWidget::SizeRootObjectToView);
+
+  m_controller = new AvatarController(this);
 
   connect(this, &QQuickWidget::statusChanged, this,
           [this](QQuickWidget::Status status) {
@@ -48,6 +56,41 @@ AvatarWidget::AvatarWidget(QWidget *parent) : QQuickWidget(parent) {
             }
 
             pushFacingToQml();
+
+            QQuickItem *root = rootObject();
+
+            if (!root) {
+              qWarning() << "[AvatarWidget] No QML root after Ready.";
+              return;
+            }
+
+            // Load the ozz archives now. They do not depend on the
+            // model load; they are independent of the scene graph.
+            if (!m_archivesLoaded) {
+              if (!m_controller->loadArchives(
+                      QString::fromLatin1(kAvatarSkeletonPath),
+                      QString::fromLatin1(kAvatarResourceRoot))) {
+                qWarning() << "[AvatarWidget] Controller failed to load"
+                              " ozz archives.";
+                return;
+              }
+
+              m_archivesLoaded = true;
+            }
+
+            // The model load is asynchronous. Connect to the QML
+            // signal and attach when it fires. If it already fired
+            // before this connection was made, the status check
+            // below catches that.
+            connect(root, SIGNAL(modelLoaded()), this,
+                    SLOT(onModelLoaded()), Qt::UniqueConnection);
+
+            const QVariant loaderStatus = root->property("modelLoaderStatus");
+
+            if (loaderStatus.isValid() &&
+                loaderStatus.toInt() == kRuntimeLoaderSuccess) {
+              attachControllerToScene();
+        }
           });
 
   setSource(QUrl(QStringLiteral("qrc:/avatar/AvatarOverlay.qml")));
@@ -74,6 +117,46 @@ AvatarWidget::AvatarWidget(QWidget *parent) : QQuickWidget(parent) {
 }
 
 AvatarWidget::~AvatarWidget() = default;
+
+void AvatarWidget::onModelLoaded() {
+  qDebug() << "[AvatarWidget] Model load signal received.";
+
+  attachControllerToScene();
+}
+
+void AvatarWidget::attachControllerToScene() {
+  if (m_controllerReady) {
+    return;
+  }
+
+  if (!m_archivesLoaded) {
+    qWarning() << "[AvatarWidget] attachControllerToScene: archives not"
+                  " loaded yet. Deferring.";
+    return;
+  }
+
+  QQuickItem *root = rootObject();
+
+  if (!root) {
+    qWarning() << "[AvatarWidget] attachControllerToScene: no QML root.";
+    return;
+  }
+
+  if (!m_controller->attachToScene(root, QStringLiteral("modelRoot"))) {
+    qWarning() << "[AvatarWidget] Controller failed to attach to the"
+                  " scene graph.";
+    return;
+  }
+
+  m_controller->playClip(QStringLiteral("idle"));
+  m_controller->start();
+
+  m_controllerReady = true;
+
+  emit modelLoaded();
+
+  qDebug() << "[AvatarWidget] Controller attached and playing idle.";
+}
 
 void AvatarWidget::applyConfig(const AvatarConfig &config) {
   m_config = config;
@@ -203,15 +286,10 @@ void AvatarWidget::onGripDragged(const QSize &newSize,
 
 void AvatarWidget::mousePressEvent(QMouseEvent *event) {
   if (event->button() != Qt::LeftButton) {
-    // Do not chain to the QML base. Nothing inside her is
-    // interactive, and chaining would hand the event to the View3D,
-    // which would then swallow the drag.
     event->ignore();
     return;
   }
 
-  // Grips consume their own presses, so a press reaching here did
-  // not land on a grip. It is a body drag.
   m_dragging = true;
   m_dragOrigin = event->globalPosition().toPoint();
   m_dragStartPosition = pos();
@@ -230,8 +308,6 @@ void AvatarWidget::mouseMoveEvent(QMouseEvent *event) {
 
   move(m_dragStartPosition + delta);
 
-  // Turn her toward the direction of the drag. Horizontal movement
-  // dominates; vertical drags do not change facing.
   if (delta.x() != 0) {
     m_facing = qBound(-kMaxFacingDegrees,
                       delta.x() * kDegreesPerPixel,
@@ -250,8 +326,6 @@ void AvatarWidget::mouseReleaseEvent(QMouseEvent *event) {
 
   m_dragging = false;
 
-  // Return to face the camera when the drag ends. She is a companion
-  // in the corner, not a character you steer.
   m_facing = 0.0;
   pushFacingToQml();
 
@@ -287,26 +361,19 @@ void AvatarWidget::setModel(const QString &source) {
 }
 
 void AvatarWidget::setMouthOpen(float value) {
-  QQuickItem *root = rootObject();
-
-  if (!root) {
-    return;
-  }
-
-  root->setProperty("mouthA", value);
+  Q_UNUSED(value);
 }
 
 void AvatarWidget::setExpression(const QString &name) {
-  QQuickItem *root = rootObject();
-
-  if (!root) {
-    return;
-  }
-
-  root->setProperty("expression", name);
+  Q_UNUSED(name);
 }
 
 void AvatarWidget::playMotion(const QString &name) {
+  if (m_controller && m_controller->isLoaded()) {
+    m_controller->playClip(name);
+    return;
+  }
+
   QQuickItem *root = rootObject();
 
   if (!root) {
@@ -318,6 +385,9 @@ void AvatarWidget::playMotion(const QString &name) {
 }
 
 void AvatarWidget::applyViseme(const QString &shape) {
+  // The viseme path is still QML until the morph target driving moves
+  // into C++. The QML stub keeps the log quiet. When morph targets
+  // are wired, this routes through m_controller.
   QQuickItem *root = rootObject();
 
   if (!root) {
