@@ -75,12 +75,21 @@ constexpr auto NormalThemeKey = "theme";
 constexpr auto OverseerThemeKey = "overseer/theme";
 constexpr auto ModeKey = "ui/mode";
 
+constexpr auto AvatarSizeKey = "avatar/size";
+constexpr auto AvatarOffsetKey = "avatar/offset";
+
 constexpr int ImportConcurrency = 4;
 
 // The one place avatar sizing is defined. Change a value here and
 // everything downstream follows: the QQuickWidget's size, where it
 // sits in the window, and how the figure is framed inside it.
 const AvatarConfig kAvatarConfig{};
+
+// Minimum fraction of the avatar's area that must remain inside the
+// main window for a stored or dragged position to be considered
+// valid. Below this, the position is reset to the default corner.
+// 0.35 means at least a third of her has to be visible.
+constexpr double kMinVisibleFraction = 0.35;
 
 InferenceService::LlmConfig configuredLlm() {
   InferenceService::LlmConfig config;
@@ -138,6 +147,70 @@ QString expandTokens(const QString &qss,
   }
 
   return out;
+}
+
+// Given the main window's rectangle and the avatar's rectangle, return
+// true if at least kMinVisibleFraction of the avatar's area is inside
+// the window.
+bool avatarIsMostlyVisible(const QRect &window, const QRect &avatar) {
+  if (window.isEmpty() || avatar.isEmpty()) {
+    return false;
+  }
+
+  const QRect overlap = window.intersected(avatar);
+
+  if (overlap.isEmpty()) {
+    return false;
+  }
+
+  const double avatarArea =
+      static_cast<double>(avatar.width()) * avatar.height();
+
+  const double overlapArea =
+      static_cast<double>(overlap.width()) * overlap.height();
+
+  return overlapArea / avatarArea >= kMinVisibleFraction;
+}
+
+// Clamp the given offset so that at least kMinVisibleFraction of an
+// avatar of the given size remains inside a window of the given size.
+// Offsets are measured from the window's bottom-right corner, so a
+// smaller x or y means the avatar is further from that corner.
+QPoint clampAvatarOffset(const QSize &windowSize, const QSize &avatarSize,
+                         const QPoint &offset) {
+  if (windowSize.isEmpty() || avatarSize.isEmpty()) {
+    return offset;
+  }
+
+  // Where the avatar's top-left would land, in window coordinates.
+  const int x = windowSize.width() - avatarSize.width() - offset.x();
+  const int y = windowSize.height() - avatarSize.height() - offset.y();
+
+  const QRect avatarRect(QPoint(x, y), avatarSize);
+  const QRect windowRect(QPoint(0, 0), windowSize);
+
+  if (avatarIsMostlyVisible(windowRect, avatarRect)) {
+    return offset;
+  }
+
+  // Compute the minimum required overlap in pixels to meet the
+  // fraction, then move the avatar so it has that much.
+  const int minOverlapX =
+      static_cast<int>(avatarSize.width() * kMinVisibleFraction);
+  const int minOverlapY =
+      static_cast<int>(avatarSize.height() * kMinVisibleFraction);
+
+  // Clamp left edge so that at least minOverlapX is visible.
+  int clampedX = x;
+  clampedX = qMax(clampedX, -avatarSize.width() + minOverlapX);
+  clampedX = qMin(clampedX, windowSize.width() - minOverlapX);
+
+  int clampedY = y;
+  clampedY = qMax(clampedY, -avatarSize.height() + minOverlapY);
+  clampedY = qMin(clampedY, windowSize.height() - minOverlapY);
+
+  return QPoint(windowSize.width() - avatarSize.width() - clampedX,
+                windowSize.height() - avatarSize.height() - clampedY);
 }
 
 } // namespace
@@ -1214,6 +1287,12 @@ void MainWindow::closeEvent(QCloseEvent *event) {
 void MainWindow::resizeEvent(QResizeEvent *event) {
   QMainWindow::resizeEvent(event);
 
+  if (m_avatar) {
+    const QPoint clamped =
+        clampAvatarOffset(size(), m_avatar->size(),
+                          m_avatar->bottomRightOffset());
+    m_avatar->placeByBottomRightOffset(clamped);
+  }
 }
 
 void MainWindow::buildIngestLayer() {
@@ -1642,13 +1721,29 @@ void MainWindow::buildAvatarOverlay() {
   m_avatar->applyConfig(kAvatarConfig);
 
   QSettings settings;
-  const QSize storedSize =
-      settings.value(QStringLiteral("avatar/size"), kAvatarConfig.widgetSize)
-          .toSize();
-  const QPoint storedOffset =
-      settings.value(QStringLiteral("avatar/offset"),
+
+  QSize storedSize =
+      settings.value(AvatarSizeKey, kAvatarConfig.widgetSize).toSize();
+
+  // Clamp the stored size to the configured bounds. A settings file
+  // written by an older build, or by a bad drag, may be out of range.
+  if (storedSize.width() < kAvatarConfig.minSize.width() ||
+      storedSize.height() < kAvatarConfig.minSize.height() ||
+      storedSize.width() > kAvatarConfig.maxSize.width() ||
+      storedSize.height() > kAvatarConfig.maxSize.height()) {
+    qWarning() << "[MainWindow] Stored avatar size" << storedSize
+               << "is out of bounds; resetting to default.";
+    storedSize = kAvatarConfig.widgetSize;
+  }
+
+  QPoint storedOffset =
+      settings.value(AvatarOffsetKey,
                      QPoint(kAvatarConfig.margin, kAvatarConfig.margin))
           .toPoint();
+
+  // Clamp the stored offset so she is at least partly visible. This
+  // rescues a settings file that already has a bad position on disk.
+  storedOffset = clampAvatarOffset(size(), storedSize, storedOffset);
 
   m_avatar->resize(storedSize);
   m_avatar->setResizable(true);
@@ -1658,10 +1753,20 @@ void MainWindow::buildAvatarOverlay() {
     if (!m_avatar) {
       return;
     }
+
+    // Clamp before saving, so a drag that pushes her off-screen does
+    // not persist a bad position. She is clamped on restore too, but
+    // keeping the saved value sane means the settings file stays
+    // readable.
+    const QPoint clamped =
+        clampAvatarOffset(size(), m_avatar->size(),
+                          m_avatar->bottomRightOffset());
+
+    m_avatar->placeByBottomRightOffset(clamped);
+
     QSettings s;
-    s.setValue(QStringLiteral("avatar/size"), m_avatar->size());
-    s.setValue(QStringLiteral("avatar/offset"),
-               m_avatar->bottomRightOffset());
+    s.setValue(AvatarSizeKey, m_avatar->size());
+    s.setValue(AvatarOffsetKey, clamped);
   });
 
   m_avatar->setModel(QStringLiteral("qrc:/avatar/vita/Vita.glb"));
@@ -1669,7 +1774,6 @@ void MainWindow::buildAvatarOverlay() {
   m_avatar->show();
   m_avatar->raise();
 }
-
 
 void MainWindow::onSearchRequested() {
   if (m_searchModeAct) {
