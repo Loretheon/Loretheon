@@ -74,19 +74,6 @@ public:
                  const AssistantToolContext &context) const override;
 };
 
-class SetExpressionTool : public AssistantTool {
-public:
-  QString name() const override {
-    return QStringLiteral("set_expression");
-  }
-  QString description() const override;
-  QString category() const override { return QStringLiteral("avatar"); }
-  bool isDestructive() const override { return false; }
-  QJsonObject parametersSchema() const override;
-  Result execute(const QJsonObject &arguments,
-                 const AssistantToolContext &context) const override;
-};
-
 class AssistantTools {
 public:
   static void installAll(AssistantToolRegistry &registry);

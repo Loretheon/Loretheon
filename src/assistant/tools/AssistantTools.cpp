@@ -430,55 +430,6 @@ AssistantTool::Result SpeakTool::execute(
 }
 
 // ---------------------------------------------------------------------
-// SetExpressionTool
-// ---------------------------------------------------------------------
-
-QString SetExpressionTool::description() const {
-  return QStringLiteral(
-      "Change the avatar's facial expression. The expression persists "
-      "until you change it again or the next utterance begins. Use it "
-      "to react to the conversation. Valid names depend on the model "
-      "currently loaded.");
-}
-
-QJsonObject SetExpressionTool::parametersSchema() const {
-  QJsonObject name;
-  name.insert(QStringLiteral("type"), QStringLiteral("string"));
-  name.insert(QStringLiteral("description"),
-              QStringLiteral("The expression name."));
-
-  QJsonObject properties;
-  properties.insert(QStringLiteral("name"), name);
-
-  QJsonObject schema;
-  schema.insert(QStringLiteral("type"), QStringLiteral("object"));
-  schema.insert(QStringLiteral("properties"), properties);
-  schema.insert(QStringLiteral("required"),
-                QJsonArray{QStringLiteral("name")});
-
-  return schema;
-}
-
-AssistantTool::Result SetExpressionTool::execute(
-    const QJsonObject &arguments,
-    const AssistantToolContext &context) const {
-  if (!context.avatar) {
-    return makeError(QStringLiteral("Avatar is not available."));
-  }
-
-  const QString name =
-      arguments.value(QStringLiteral("name")).toString().trimmed();
-
-  if (name.isEmpty()) {
-    return makeError(QStringLiteral("'name' is empty."));
-  }
-
-  context.avatar->setExpression(name);
-
-  return makeOk(QStringLiteral("Expression set to '%1'.").arg(name));
-}
-
-// ---------------------------------------------------------------------
 // Installation
 // ---------------------------------------------------------------------
 
@@ -489,7 +440,6 @@ void AssistantTools::installAll(AssistantToolRegistry &registry) {
   registry.registerTool(std::make_unique<RememberFactTool>());
   registry.registerTool(std::make_unique<ChangeSettingTool>());
   registry.registerTool(std::make_unique<SpeakTool>());
-  registry.registerTool(std::make_unique<SetExpressionTool>());
 }
 
 } // namespace assistant

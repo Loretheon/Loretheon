@@ -1,21 +1,5 @@
 #include "MainWindow.h"
-#include "ChatWidget.h"
-#include "DocumentArea.h"
-#include "EditSession.h"
-#include "FileWidget.h"
-#include "LlmSettingsPanel.h"
-#include "NotificationService.h"
-#include "OverseerPage.h"
-#include "Settings.h"
-#include "SettingsDialog.h"
-#include "TextEdit.h"
-#include "TextWidget.h"
-#include "ThemeRegistry.h"
-#include "ThemeTokens.h"
-#include "ToastStack.h"
-#include "app/QfPaths.h"
-#include "inference/InferenceService.h"
-#include "ui/ModelDialog.h"
+
 #include "../../include/assistant/LoreAssistant.h"
 #include "../../include/avatar/AvatarConfig.h"
 #include "../../include/avatar/AvatarWidget.h"
@@ -35,6 +19,25 @@
 #include "../../include/voice/SpeechController.h"
 #include "../../include/voice/SpeechPanel.h"
 #include "../../include/voice/VoiceCommandRegistry.h"
+#include "AssistantIcon.h"
+#include "AssistantWidget.h"
+#include "ChatWidget.h"
+#include "DocumentArea.h"
+#include "EditSession.h"
+#include "FileWidget.h"
+#include "LlmSettingsPanel.h"
+#include "NotificationService.h"
+#include "OverseerPage.h"
+#include "Settings.h"
+#include "SettingsDialog.h"
+#include "TextEdit.h"
+#include "TextWidget.h"
+#include "ThemeRegistry.h"
+#include "ThemeTokens.h"
+#include "ToastStack.h"
+#include "app/QfPaths.h"
+#include "inference/InferenceService.h"
+#include "ui/ModelDialog.h"
 
 #include <QDir>
 #include <QDirIterator>
@@ -182,7 +185,6 @@ QPoint clampAvatarOffset(const QSize &windowSize, const QSize &avatarSize,
     return offset;
   }
 
-  // Where the avatar's top-left would land, in window coordinates.
   const int x = windowSize.width() - avatarSize.width() - offset.x();
   const int y = windowSize.height() - avatarSize.height() - offset.y();
 
@@ -193,14 +195,11 @@ QPoint clampAvatarOffset(const QSize &windowSize, const QSize &avatarSize,
     return offset;
   }
 
-  // Compute the minimum required overlap in pixels to meet the
-  // fraction, then move the avatar so it has that much.
   const int minOverlapX =
       static_cast<int>(avatarSize.width() * kMinVisibleFraction);
   const int minOverlapY =
       static_cast<int>(avatarSize.height() * kMinVisibleFraction);
 
-  // Clamp left edge so that at least minOverlapX is visible.
   int clampedX = x;
   clampedX = qMax(clampedX, -avatarSize.width() + minOverlapX);
   clampedX = qMin(clampedX, windowSize.width() - minOverlapX);
@@ -220,12 +219,27 @@ MainWindow::~MainWindow() {
     m_assistant->stop();
   }
 
+  if (m_assistantWidget) {
+    m_assistantWidget->hide();
+    // Explicit delete. The panel has no QWidget parent.
+    delete m_assistantWidget;
+    m_assistantWidget = nullptr;
+  }
+
+  if (m_assistantIcon) {
+    m_assistantIcon->hide();
+    // Explicit delete. The icon has no QWidget parent.
+    delete m_assistantIcon;
+    m_assistantIcon = nullptr;
+  }
+
   if (m_avatar) {
     m_avatar->close();
     delete m_avatar;
     m_avatar = nullptr;
   }
 }
+
 MainWindow::MainWindow() {
   setCorner(Qt::TopLeftCorner, Qt::LeftDockWidgetArea);
   setCorner(Qt::BottomLeftCorner, Qt::LeftDockWidgetArea);
@@ -282,6 +296,7 @@ MainWindow::MainWindow() {
     config.inference = m_inferenceService;
     config.avatar = m_avatar;
     config.documents = m_documentManager;
+    config.documentArea = m_documentArea;
     config.search = m_searchService;
     config.root = QStandardPaths::writableLocation(
                       QStandardPaths::AppDataLocation) +
@@ -289,12 +304,41 @@ MainWindow::MainWindow() {
 
     m_assistant = new LoreAssistant(config, this);
     m_assistant->start();
+
+    // Top-level windows, no QWidget parent. They are owned by
+    // MainWindow via explicit deletes in ~MainWindow. A QWidget parent
+    // would make them transients of MainWindow, and the window manager
+    // would minimise them along with the main window.
+    m_assistantWidget = new AssistantWidget(nullptr);
+    m_assistantIcon = new AssistantIcon(nullptr);
+
+    m_assistantWidget->setAssistant(m_assistant);
+    m_assistantWidget->setSpeechController(m_speechController);
+
+    connect(m_assistantWidget, &AssistantWidget::messageSubmitted,
+            this, &MainWindow::onAssistantMessageSubmitted);
+
+    connect(m_assistantIcon, &AssistantIcon::clicked,
+            this, &MainWindow::onAssistantIconClicked);
+
+    connect(m_assistant, &LoreAssistant::assistantChunk,
+            m_assistantWidget, &AssistantWidget::appendAssistantChunk);
+
+    connect(m_assistant, &LoreAssistant::assistantStatus,
+            m_assistantWidget, &AssistantWidget::appendStatusMessage);
+
+    connect(m_assistant, &LoreAssistant::assistantTurnFinished, this,
+            [this]() {
+              if (m_assistantWidget) {
+                m_assistantWidget->setBusy(false);
+              }
+            });
+
+    // The icon is deliberately not shown here. It is shown by
+    // changeEvent when the main window is minimised, and hidden when
+    // the main window is restored.
   }
 
-  // Speak the greeting when TTS is actually ready, not on a fixed
-  // timer. HeadTTS is a child process; how long it takes to come up
-  // depends on the machine. A fixed delay races it and the sentence
-  // is dropped if the socket is not yet connected.
   connect(m_inferenceService, &InferenceService::ttsReady, this,
           [this]() {
             if (m_assistant) {
@@ -344,8 +388,8 @@ MainWindow::MainWindow() {
   setMinimumSize(800, 800);
 
   QScreen *screen = QGuiApplication::primaryScreen();
-  // if (screen)
-  //   setGeometry(screen->availableGeometry());
+  if (screen)
+    setGeometry(screen->availableGeometry());
 
   // The window has its final size now. Place the avatar against it.
   positionAvatarOverlay();
@@ -379,7 +423,7 @@ void MainWindow::createAvatarOverlay() {
       storedSize.width() > kAvatarConfig.maxSize.width() ||
       storedSize.height() > kAvatarConfig.maxSize.height()) {
     storedSize = kAvatarConfig.widgetSize;
-      }
+  }
 
   m_avatar->resize(storedSize);
   m_avatar->setResizable(true);
@@ -388,15 +432,12 @@ void MainWindow::createAvatarOverlay() {
 
   // Deliberately not shown yet. showEvent places it and shows it.
 }
+
 void MainWindow::positionAvatarOverlay() {
   if (!m_avatar) {
     return;
   }
 
-  // The avatar is a top-level window. Place it so its bottom-right
-  // corner is a fixed offset inside the main window's bottom-right
-  // corner. The offset is constant; the main window's size and
-  // aspect ratio play no part.
   const QRect frame = frameGeometry();
 
   const int margin = kAvatarConfig.margin;
@@ -411,6 +452,16 @@ void MainWindow::positionAvatarOverlay() {
     m_avatar->show();
     m_avatar->raise();
   }
+}
+
+void MainWindow::positionAssistantIcon() {
+  if (!m_assistantIcon) {
+    return;
+  }
+
+  // The icon is a top-level window anchored to the primary screen,
+  // not to the main window. Anchor and nothing else.
+  m_assistantIcon->anchorToScreen();
 }
 
 bool MainWindow::loadThemeFromResource(const QString &name) {
@@ -553,6 +604,12 @@ void MainWindow::applyNormalTheme(const QString &name) {
   if (m_documentArea)
     m_documentArea->setThemeTokens(tokens);
 
+  if (m_assistantWidget) {
+    m_assistantWidget->setStyleSheet(combined);
+    m_assistantWidget->setPalette(paletteForTokens(tokens));
+    m_assistantWidget->setThemeTokens(tokens);
+  }
+
   m_currentNormalTheme = name;
 
   QSettings settings;
@@ -583,6 +640,12 @@ void MainWindow::applyOverseerTheme(const QString &name) {
 
   if (m_overseerPage)
     m_overseerPage->setThemeTokens(tokens);
+
+  if (m_assistantWidget) {
+    m_assistantWidget->setStyleSheet(combined);
+    m_assistantWidget->setPalette(paletteForTokens(tokens));
+    m_assistantWidget->setThemeTokens(tokens);
+  }
 
   m_currentOverseerTheme = name;
 
@@ -1079,30 +1142,6 @@ void MainWindow::createActions() {
   addAction(m_searchModeAct);
 }
 
-void MainWindow::createToolbar() {
-  m_topToolBar = addToolBar(tr("Main"));
-  m_topToolBar->setObjectName(QStringLiteral("mainToolBar"));
-  m_topToolBar->setMovable(false);
-  m_topToolBar->setFloatable(false);
-  m_topToolBar->setIconSize(QSize(18, 18));
-  m_topToolBar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-
-  m_modeButton = new QToolButton(m_topToolBar);
-  m_modeButton->setObjectName(QStringLiteral("modeButton"));
-  m_modeButton->setPopupMode(QToolButton::InstantPopup);
-  m_modeButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-  m_modeButton->setText(tr("Normal"));
-
-  m_modeMenu = new QMenu(m_modeButton);
-  m_modeMenu->addAction(m_normalModeAct);
-  m_modeMenu->addAction(m_overseerModeAct);
-  m_modeMenu->addAction(m_searchModeAct);
-
-  m_modeButton->setMenu(m_modeMenu);
-
-  m_topToolBar->addWidget(m_modeButton);
-}
-
 void MainWindow::createMenus() {
   m_fileMenu = menuBar()->addMenu(tr("&File"));
 
@@ -1354,6 +1393,10 @@ void MainWindow::closeEvent(QCloseEvent *event) {
       event->ignore();
       return;
     }
+  }
+
+  if (m_assistantWidget && m_assistantWidget->isOpen()) {
+    m_assistantWidget->close();
   }
 
   if (m_avatar) {
@@ -1776,8 +1819,6 @@ void MainWindow::buildSearchLayer() {
 
   m_scopeIndex->setIndexDirectory(indexDir);
 
-  // Index the assistant's memory alongside the notes vault. Recall
-  // from the assistant depends on this.
   const QString assistantRoot =
       appData + QStringLiteral("/assistant");
 
@@ -1813,7 +1854,6 @@ void MainWindow::buildSearchLayer() {
           });
 }
 
-
 void MainWindow::onSearchRequested() {
   if (m_searchModeAct) {
     m_searchModeAct->setChecked(true);
@@ -1835,4 +1875,93 @@ void MainWindow::onSearchOpenRequested(const QString &filePath,
     m_normalModeAct->setChecked(true);
   }
   setMode(Mode::Normal);
+}
+
+void MainWindow::onAssistantMessageSubmitted(const QString &text) {
+  if (!m_assistant || !m_assistantWidget) {
+    return;
+  }
+
+  m_assistantWidget->appendUserMessage(text);
+  m_assistantWidget->setBusy(true);
+  m_assistant->handleUserMessage(text);
+}
+
+void MainWindow::onAssistantIconClicked() {
+  if (!m_assistantWidget) {
+    return;
+  }
+
+  m_assistantWidget->toggle();
+}
+
+void MainWindow::createToolbar() {
+  m_topToolBar = addToolBar(tr("Main"));
+  m_topToolBar->setObjectName(QStringLiteral("mainToolBar"));
+  m_topToolBar->setMovable(false);
+  m_topToolBar->setFloatable(false);
+  m_topToolBar->setIconSize(QSize(18, 18));
+  m_topToolBar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+
+  m_modeButton = new QToolButton(m_topToolBar);
+  m_modeButton->setObjectName(QStringLiteral("modeButton"));
+  m_modeButton->setPopupMode(QToolButton::InstantPopup);
+  m_modeButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+  m_modeButton->setText(tr("Normal"));
+
+  m_modeMenu = new QMenu(m_modeButton);
+  m_modeMenu->addAction(m_normalModeAct);
+  m_modeMenu->addAction(m_overseerModeAct);
+  m_modeMenu->addAction(m_searchModeAct);
+
+  m_modeButton->setMenu(m_modeMenu);
+
+  m_topToolBar->addWidget(m_modeButton);
+
+  auto *spacer = new QWidget(m_topToolBar);
+  spacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+  m_topToolBar->addWidget(spacer);
+
+  m_talkToLoreAct = new QAction(tr("Talk to Lore"), this);
+  m_talkToLoreAct->setToolTip(tr("Talk to Lore"));
+
+  auto *loreButton = new QToolButton(m_topToolBar);
+  loreButton->setObjectName(QStringLiteral("talkToLoreButton"));
+  loreButton->setDefaultAction(m_talkToLoreAct);
+  loreButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+  loreButton->setAutoRaise(true);
+  loreButton->setText(tr("Lore"));
+
+  connect(m_talkToLoreAct, &QAction::triggered, this,
+          &MainWindow::onTalkToLoreClicked);
+
+  m_topToolBar->addWidget(loreButton);
+}
+
+void MainWindow::onTalkToLoreClicked() {
+  if (!m_assistantWidget) {
+    return;
+  }
+
+  m_assistantWidget->toggle();
+}
+
+void MainWindow::changeEvent(QEvent *event) {
+  QMainWindow::changeEvent(event);
+
+  if (event->type() != QEvent::WindowStateChange) {
+    return;
+  }
+
+  if (isMinimized()) {
+    if (m_assistantIcon) {
+      m_assistantIcon->anchorToScreen();
+      m_assistantIcon->show();
+      m_assistantIcon->raise();
+    }
+  } else {
+    if (m_assistantIcon) {
+      m_assistantIcon->hide();
+    }
+  }
 }

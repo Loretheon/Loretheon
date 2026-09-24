@@ -1,6 +1,7 @@
 #ifndef MAINWINDOW_H
 #define MAINWINDOW_H
 
+
 #include <QHash>
 #include <QMainWindow>
 #include <QSet>
@@ -13,6 +14,8 @@
 #include "ThemeManager.h"
 #include "inference/InferenceService.h"
 
+class AssistantIcon;
+class AssistantWidget;
 class DocumentArea;
 class TextEdit;
 class TextDocument;
@@ -42,6 +45,7 @@ class SearchService;
 
 class QAction;
 class QActionGroup;
+class QEvent;
 class QMenu;
 class QProgressDialog;
 class QResizeEvent;
@@ -57,6 +61,7 @@ public:
   ~MainWindow() override;
 
 protected:
+  void changeEvent(QEvent *event) override;
   void closeEvent(QCloseEvent *event) override;
   void resizeEvent(QResizeEvent *event) override;
   void showEvent(QShowEvent *event) override;
@@ -84,6 +89,10 @@ private slots:
   void onSearchOpenRequested(const QString &filePath,
                              const QString &scopeId);
 
+  void onAssistantMessageSubmitted(const QString &text);
+  void onAssistantIconClicked();
+  void onTalkToLoreClicked();
+
 private:
   enum class Mode { Normal = 0, Overseer = 1, Search = 2 };
   bool m_avatarPlaced = false;
@@ -101,6 +110,9 @@ private:
   // a null avatar or places the widget against the wrong window size.
   void createAvatarOverlay();
   void positionAvatarOverlay();
+
+  // The icon is screen-anchored. Called when the icon is shown.
+  void positionAssistantIcon();
 
   void setMode(Mode mode);
 
@@ -154,7 +166,10 @@ private:
 
   ToastStack *m_toastStack = nullptr;
   AvatarWidget *m_avatar = nullptr;
+
   LoreAssistant *m_assistant = nullptr;
+  AssistantWidget *m_assistantWidget = nullptr;
+  AssistantIcon *m_assistantIcon = nullptr;
 
   InferenceService *m_inferenceService = nullptr;
   ModelDialog *m_modelDialog = nullptr;
@@ -165,6 +180,7 @@ private:
 
   QString m_currentNormalTheme;
   QString m_currentOverseerTheme;
+
 
   QMenu *m_fileMenu = nullptr;
   QMenu *m_newMenu = nullptr;
@@ -196,6 +212,8 @@ private:
   QAction *m_rebuildIndexAct = nullptr;
   QAction *m_aboutAct = nullptr;
   QAction *m_aboutQtAct = nullptr;
+
+  QAction *m_talkToLoreAct = nullptr;
 
   std::unique_ptr<IngestRegistry> m_ingestRegistry;
   std::unique_ptr<NoteWriter> m_noteWriter;

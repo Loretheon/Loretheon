@@ -562,6 +562,10 @@ add_executable(Lore
         include/avatar/AvatarMoveGrip.h
         src/avatar/VisemeTable.cpp
         include/avatar/VisemeTable.h
+        src/assistant/AssistantWidget.cpp
+        include/assistant/AssistantWidget.h
+        src/assistant/AssistantIcon.cpp
+        include/assistant/AssistantIcon.h
 )
 
 add_dependencies(Lore
@@ -602,6 +606,8 @@ target_include_directories(Lore PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include/voice
         ${CMAKE_CURRENT_SOURCE_DIR}/include/ingest
         ${CMAKE_CURRENT_SOURCE_DIR}/include/avatar
+        ${CMAKE_CURRENT_SOURCE_DIR}/include/assistant
+        ${CMAKE_CURRENT_SOURCE_DIR}/include/assistant/tools
         ${CMAKE_CURRENT_SOURCE_DIR}/external/QF-ML/include
         ${CMAKE_CURRENT_SOURCE_DIR}/external/edlib/edlib/include
         ${CMAKE_CURRENT_SOURCE_DIR}/external/tree-sitter/lib/include
