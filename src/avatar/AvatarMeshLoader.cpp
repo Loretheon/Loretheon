@@ -379,10 +379,6 @@ bool readIndexAccessor(const tinygltf::Model &model, int accessorIndex,
   return true;
 }
 
-// Read the morph target name at the given index. Blender writes
-// these at the mesh level, in mesh.extras["targetNames"], not on the
-// primitive. Fall back to the primitive first for exports that put
-// them there, then to the mesh.
 QString morphTargetName(const tinygltf::Mesh &mesh,
                         const tinygltf::Primitive &primitive,
                         int targetIndex) {
@@ -503,12 +499,95 @@ bool AvatarMeshLoader::load(const QString &path, AvatarMeshData &out,
     return fail(QStringLiteral("GLB has no meshes: %1").arg(path));
   }
 
-  out.materialNames.clear();
-  out.materialNames.reserve(static_cast<int>(model.materials.size()));
+  // -----------------------------------------------------------------
+  // Textures. The images are read straight out of the buffer views,
+  // not through tinygltf's image loader, because the loader is a no-op
+  // in this build. The encoded bytes are kept as-is; decoding is the
+  // renderer's job.
+  // -----------------------------------------------------------------
+
+  out.textures.clear();
+  out.textures.reserve(static_cast<int>(model.images.size()));
+
+  for (int i = 0; i < static_cast<int>(model.images.size()); ++i) {
+    const tinygltf::Image &image = model.images[static_cast<size_t>(i)];
+
+    AvatarTexture tex;
+    tex.name = QString::fromStdString(image.name);
+    tex.mimeType = QString::fromStdString(image.mimeType);
+
+    if (image.bufferView >= 0 &&
+        image.bufferView < static_cast<int>(model.bufferViews.size())) {
+      const tinygltf::BufferView &view =
+          model.bufferViews[static_cast<size_t>(image.bufferView)];
+
+      if (view.buffer >= 0 &&
+          view.buffer < static_cast<int>(model.buffers.size())) {
+        const tinygltf::Buffer &buffer =
+            model.buffers[static_cast<size_t>(view.buffer)];
+
+        const size_t start = static_cast<size_t>(view.byteOffset);
+        const size_t length = static_cast<size_t>(view.byteLength);
+
+        if (start + length <= buffer.data.size()) {
+          tex.bytes = QByteArray(
+              reinterpret_cast<const char *>(buffer.data.data() + start),
+              static_cast<qsizetype>(length));
+        } else {
+          qWarning() << "[AvatarMeshLoader] Texture buffer view out of"
+                     << "bounds:" << i;
+        }
+      }
+    }
+
+    out.textures.append(tex);
+  }
+
+  // Material list. Each material keeps its name and the index of its
+  // base color texture, or -1.
+  out.materials.clear();
+  out.materials.reserve(static_cast<int>(model.materials.size()));
 
   for (const tinygltf::Material &mat : model.materials) {
-    out.materialNames.append(QString::fromStdString(mat.name));
+    AvatarMaterial outMat;
+    outMat.name = QString::fromStdString(mat.name);
+
+    const auto it = mat.pbrMetallicRoughness.baseColorTexture.index;
+
+    if (it >= 0 && it < static_cast<int>(model.textures.size())) {
+      const tinygltf::Texture &tex =
+          model.textures[static_cast<size_t>(it)];
+
+      if (tex.source >= 0 &&
+          tex.source < static_cast<int>(model.images.size())) {
+        outMat.baseColorTextureIndex = tex.source;
+      }
+    }
+
+    if (mat.pbrMetallicRoughness.baseColorFactor.size() == 4) {
+      outMat.baseColorFactor = QVector4D(
+          static_cast<float>(mat.pbrMetallicRoughness.baseColorFactor[0]),
+          static_cast<float>(mat.pbrMetallicRoughness.baseColorFactor[1]),
+          static_cast<float>(mat.pbrMetallicRoughness.baseColorFactor[2]),
+          static_cast<float>(mat.pbrMetallicRoughness.baseColorFactor[3]));
+    }
+
+    out.materials.append(outMat);
   }
+
+  out.materialNames.clear();
+  out.materialNames.reserve(out.materials.size());
+
+  for (const AvatarMaterial &mat : out.materials) {
+    out.materialNames.append(mat.name);
+  }
+
+  qDebug() << "[AvatarMeshLoader] Textures:" << out.textures.size()
+           << "materials:" << out.materials.size();
+
+  // -----------------------------------------------------------------
+  // Meshes and primitives.
+  // -----------------------------------------------------------------
 
   out.meshes.clear();
   out.meshes.reserve(static_cast<int>(model.meshes.size()));
@@ -609,6 +688,10 @@ bool AvatarMeshLoader::load(const QString &path, AvatarMeshData &out,
     out.meshes.append(outMesh);
   }
 
+  // -----------------------------------------------------------------
+  // Skins.
+  // -----------------------------------------------------------------
+
   out.skins.clear();
   out.skins.reserve(static_cast<int>(model.skins.size()));
 
@@ -674,8 +757,6 @@ bool AvatarMeshLoader::load(const QString &path, AvatarMeshData &out,
            << out.skins.size() << "skins."
            << "Face mesh index:" << out.faceMeshIndex;
 
-  // Sanity: report the face mesh's first few morph target names so
-  // the mapping can be verified against the source export.
   if (out.faceMeshIndex >= 0 &&
       out.faceMeshIndex < out.meshes.size()) {
     const AvatarMesh &face = out.meshes.at(out.faceMeshIndex);

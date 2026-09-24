@@ -17,13 +17,16 @@
 // indexing of a uniform mat4 array is not reliable on all GL 3.2
 // drivers.
 //
+// Base color textures are uploaded once, at initialize, from the
+// encoded bytes the loader kept. Decoding is done with QImage. One
+// GL texture per AvatarTexture. A 1x1 white texture stands in for
+// primitives with no base color texture, so the sampler call is
+// always valid and the multiply is a no-op.
+//
 // Morph targets on the face mesh are blended on the CPU. The face
 // primitive's position lives in its own VBO, separate from the
 // interleaved normal/joint/weight buffer, so a viseme change is one
-// glBufferSubData of the position region. This is 4738 vertices of
-// work per viseme change, at viseme rate, which is negligible. The
-// GPU path for a per-frame morph would need an attribute-based vertex
-// index that GLSL 150 does not have.
+// glBufferSubData of the position region.
 class AvatarRenderer : public QObject,
                        protected QOpenGLFunctions_3_2_Core {
   Q_OBJECT
@@ -52,8 +55,6 @@ private:
 
     // Positions only, tightly packed, one vec3 per vertex. This is
     // the buffer that is rewritten when the morph weights change.
-    // Null for non-face primitives, whose positions are in the
-    // interleaved buffer alongside the rest.
     GLuint posVbo = 0;
 
     GLuint ibo = 0;
@@ -62,15 +63,12 @@ private:
     int vertexCount = 0;
     int morphTargetCount = 0;
 
-    // Set only on the face mesh. When true, the renderer can
-    // recompute the displaced positions on the CPU when the morph
-    // weights change and rewrite posVbo.
+    // Index into AvatarMeshData::textures for the base color, or -1.
+    int baseColorTextureIndex = -1;
+
+    // Set only on the face mesh.
     bool isFacePrimitive = false;
 
-    // Source data for the CPU morph blend. Present only on the face
-    // primitive. basePositions is 3 floats per vertex. morphDeltas is
-    // targetCount blocks of 3 floats per vertex, in target-major
-    // order.
     QVector<float> basePositions;
     QVector<float> morphDeltas;
   };
@@ -82,13 +80,15 @@ private:
 
   bool compileShaders();
   bool uploadMesh(const AvatarMesh &mesh, GpuMesh &out,
-                  bool captureMorphSource);
+                bool captureMorphSource,
+                const AvatarMeshData &meshData);
   void freeGpuData();
   void uploadSkinBuffer();
-
-  // Recompute the face position VBO from basePositions, morphDeltas,
-  // and m_morphWeights. One glBufferSubData per face primitive.
   void rebuildFacePositions();
+
+  // Decode every AvatarTexture into a QImage and upload one GL
+  // texture each. Also creates the 1x1 white fallback texture.
+  bool uploadTextures(const AvatarMeshData &meshData);
 
   GLuint m_programId = 0;
   GLint m_uViewProj = -1;
@@ -98,6 +98,14 @@ private:
   GLuint m_skinTbo = 0;
   GLuint m_skinTexture = 0;
   int m_skinCapacity = 0;
+  GLint m_uBaseColor = -1;
+  // One GL texture per AvatarTexture, in the same order. Index is
+  // the image index from the GLB.
+  QVector<GLuint> m_textures;
+
+  // 1x1 white RGBA texture, bound for primitives with no base color
+  // texture so the sampler call is always valid.
+  GLuint m_whiteTexture = 0;
 
   QVector<GpuMesh> m_meshes;
 

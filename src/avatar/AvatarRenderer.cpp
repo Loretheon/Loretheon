@@ -1,6 +1,7 @@
 #include "../../include/avatar/AvatarRenderer.h"
 
 #include <QDebug>
+#include <QImage>
 #include <QOpenGLShader>
 
 namespace {
@@ -9,9 +10,7 @@ constexpr int kSkinCapacity = 256;
 constexpr int kFloatsPerMatrix = 16;
 constexpr int kSkinBufferFloats = kSkinCapacity * kFloatsPerMatrix;
 
-// Interleaved buffer stride: normal (12) + joint indices (8) +
-// joint weights (16) = 36. Positions live in a separate buffer.
-constexpr int kInterleavedStride = 36;
+constexpr int kInterleavedStride = 44;
 
 constexpr auto kVertexShader = R"(
 #version 150 core
@@ -20,11 +19,13 @@ in vec3 aPosition;
 in vec3 aNormal;
 in uvec4 aJointIndices;
 in vec4 aJointWeights;
+in vec2 aTexCoord;
 
 uniform mat4 uViewProj;
 uniform samplerBuffer uSkinBuffer;
 
 out vec3 vNormal;
+out vec2 vTexCoord;
 
 mat4 fetchSkin(int idx) {
     int base = idx * 4;
@@ -51,6 +52,7 @@ void main() {
     gl_Position = uViewProj * skinnedPosition;
 
     vNormal = normalize(mat3(skin) * aNormal);
+    vTexCoord = aTexCoord;
 }
 )";
 
@@ -58,9 +60,11 @@ constexpr auto kFragmentShader = R"(
 #version 150 core
 
 in vec3 vNormal;
+in vec2 vTexCoord;
 out vec4 fragColor;
 
 uniform vec4 uColor;
+uniform sampler2D uBaseColor;
 
 void main() {
     vec3 lightDir = normalize(vec3(0.3, 0.7, 0.6));
@@ -68,7 +72,10 @@ void main() {
     float ambient = 0.35;
     float shade = ambient + lambert * 0.65;
 
-    fragColor = vec4(uColor.rgb * shade, uColor.a);
+    vec4 texel = texture(uBaseColor, vTexCoord);
+
+    fragColor = vec4(texel.rgb * uColor.rgb * shade,
+                     texel.a * uColor.a);
 }
 )";
 
@@ -77,7 +84,7 @@ QVector4D colorForMesh(const QString &name) {
     return QVector4D(0.85f, 0.65f, 0.55f, 1.0f);
   }
   if (name == QStringLiteral("CC_Base_Eye")) {
-    return QVector4D(0.95f, 0.95f, 0.95f, 1.0f);
+    return QVector4D(0.35f, 0.45f, 0.55f, 1.0f);
   }
   if (name == QStringLiteral("CC_Base_EyeOcclusion")) {
     return QVector4D(0.10f, 0.10f, 0.10f, 1.0f);
@@ -118,12 +125,15 @@ bool AvatarRenderer::initialize(const AvatarMeshData &meshData) {
   m_uViewProj = glGetUniformLocation(m_programId, "uViewProj");
   m_uSkinBuffer = glGetUniformLocation(m_programId, "uSkinBuffer");
   m_uColor = glGetUniformLocation(m_programId, "uColor");
+  m_uBaseColor = glGetUniformLocation(m_programId, "uBaseColor");
 
-  if (m_uViewProj < 0 || m_uSkinBuffer < 0 || m_uColor < 0) {
+  if (m_uViewProj < 0 || m_uSkinBuffer < 0 || m_uColor < 0 ||
+      m_uBaseColor < 0) {
     qWarning() << "[AvatarRenderer] Missing uniforms."
                << "uViewProj:" << m_uViewProj
                << "uSkinBuffer:" << m_uSkinBuffer
-               << "uColor:" << m_uColor;
+               << "uColor:" << m_uColor
+               << "uBaseColor:" << m_uBaseColor;
     return false;
   }
 
@@ -149,7 +159,7 @@ bool AvatarRenderer::initialize(const AvatarMeshData &meshData) {
 
     const bool isFace = (mesh.name == QStringLiteral("CC_Base_Body"));
 
-    if (!uploadMesh(mesh, gpuMesh, isFace)) {
+    if (!uploadMesh(mesh, gpuMesh, isFace, meshData)) {
       qWarning() << "[AvatarRenderer] Failed to upload mesh" << mesh.name;
       freeGpuData();
       return false;
@@ -168,59 +178,91 @@ bool AvatarRenderer::initialize(const AvatarMeshData &meshData) {
 
   uploadSkinBuffer();
 
+  if (!uploadTextures(meshData)) {
+    qWarning() << "[AvatarRenderer] Texture upload failed.";
+  }
+
   m_ready = true;
 
   qDebug() << "[AvatarRenderer] Initialized:"
            << m_meshes.size() << "meshes uploaded, skin TBO"
-           << m_skinTbo << "capacity" << m_skinCapacity << "matrices.";
+           << m_skinTbo << "capacity" << m_skinCapacity << "matrices,"
+           << m_textures.size() << "textures.";
 
-  // Morph delta sanity. For a face shape key, the deltas should be
-  // small and confined to the head region (y > 1.3). If deltas are
-  // large, or present below y=1.3, the loader is reading them wrong.
-  if (meshData.faceMeshIndex >= 0 &&
-      meshData.faceMeshIndex < meshData.meshes.size()) {
-    const AvatarMesh &face = meshData.meshes.at(meshData.faceMeshIndex);
+  return true;
+}
 
-    if (!face.primitives.isEmpty()) {
-      const AvatarPrimitive &prim = face.primitives.first();
+bool AvatarRenderer::uploadTextures(const AvatarMeshData &meshData) {
+  m_textures.clear();
+  m_textures.resize(meshData.textures.size());
 
-      float globalMax = 0.0f;
-      float belowMax = 0.0f;
-      int targetOfGlobalMax = -1;
+  for (int i = 0; i < meshData.textures.size(); ++i) {
+    const AvatarTexture &tex = meshData.textures.at(i);
 
-      for (int t = 0; t < prim.morphTargetCount(); ++t) {
-        const QVector<float> &deltas = prim.morphTargets.at(t);
+    m_textures[i] = 0;
 
-        if (deltas.size() != prim.vertexCount() * 3) {
-          continue;
-        }
-
-        for (int i = 0; i < prim.vertexCount(); ++i) {
-          const float dx = deltas[i * 3 + 0];
-          const float dy = deltas[i * 3 + 1];
-          const float dz = deltas[i * 3 + 2];
-
-          const float mag = std::sqrt(dx * dx + dy * dy + dz * dz);
-
-          if (mag > globalMax) {
-            globalMax = mag;
-            targetOfGlobalMax = t;
-          }
-
-          const float y = prim.positions.at(i * 3 + 1);
-
-          if (y < 1.3f && mag > belowMax) {
-            belowMax = mag;
-          }
-        }
-      }
-
-      qDebug() << "[AvatarRenderer] Morph delta sanity:"
-               << "global max:" << globalMax
-               << "at target:" << targetOfGlobalMax
-               << "below y=1.3 max:" << belowMax;
+    if (tex.bytes.isEmpty()) {
+      qWarning() << "[AvatarRenderer] Texture" << i
+                 << tex.name << "has no bytes; skipping.";
+      continue;
     }
+
+    QImage image = QImage::fromData(tex.bytes);
+
+    if (image.isNull()) {
+      qWarning() << "[AvatarRenderer] Texture" << i
+                 << tex.name << "failed to decode.";
+      continue;
+    }
+
+    if (image.format() != QImage::Format_RGBA8888) {
+      image = image.convertToFormat(QImage::Format_RGBA8888);
+    }
+
+    GLuint id = 0;
+    glGenTextures(1, &id);
+    glBindTexture(GL_TEXTURE_2D, id);
+
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA,
+                 image.width(), image.height(), 0,
+                 GL_RGBA, GL_UNSIGNED_BYTE, image.constBits());
+
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
+                    GL_LINEAR_MIPMAP_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+    glGenerateMipmap(GL_TEXTURE_2D);
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+    m_textures[i] = id;
+
+    qDebug() << "[AvatarRenderer] Texture" << i
+             << tex.name
+             << image.width() << "x" << image.height()
+             << "gl id" << id;
   }
+
+  {
+    const unsigned char white[4] = {255, 255, 255, 255};
+
+    glGenTextures(1, &m_whiteTexture);
+    glBindTexture(GL_TEXTURE_2D, m_whiteTexture);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0,
+                 GL_RGBA, GL_UNSIGNED_BYTE, white);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glBindTexture(GL_TEXTURE_2D, 0);
+  }
+
+  qDebug() << "[AvatarRenderer] Textures uploaded:"
+           << m_textures.size() << "white fallback"
+           << m_whiteTexture;
 
   return true;
 }
@@ -270,6 +312,7 @@ bool AvatarRenderer::compileShaders() {
   glBindAttribLocation(m_programId, 1, "aNormal");
   glBindAttribLocation(m_programId, 2, "aJointIndices");
   glBindAttribLocation(m_programId, 3, "aJointWeights");
+  glBindAttribLocation(m_programId, 4, "aTexCoord");
 
   glLinkProgram(m_programId);
 
@@ -296,7 +339,8 @@ bool AvatarRenderer::compileShaders() {
 }
 
 bool AvatarRenderer::uploadMesh(const AvatarMesh &mesh, GpuMesh &out,
-                                bool captureMorphSource) {
+                                bool captureMorphSource,
+                                const AvatarMeshData &meshData) {
   for (const AvatarPrimitive &prim : mesh.primitives) {
     const int vertexCount = prim.vertexCount();
 
@@ -311,7 +355,30 @@ bool AvatarRenderer::uploadMesh(const AvatarMesh &mesh, GpuMesh &out,
     gpuPrim.morphTargetCount = prim.morphTargetCount();
     gpuPrim.isFacePrimitive = captureMorphSource;
 
-    // Build the interleaved buffer: normal, joints, weights.
+    gpuPrim.baseColorTextureIndex = -1;
+
+    if (prim.materialIndex >= 0 &&
+        prim.materialIndex < meshData.materials.size()) {
+      gpuPrim.baseColorTextureIndex =
+          meshData.materials.at(prim.materialIndex).baseColorTextureIndex;
+    }
+
+    if (mesh.name == QStringLiteral("CC_Base_Body")) {
+      qDebug() << "[AvatarRenderer] body prim:"
+               << "materialIndex" << prim.materialIndex
+               << "materialName"
+               << (prim.materialIndex >= 0 &&
+                   prim.materialIndex < meshData.materials.size()
+                       ? meshData.materials.at(prim.materialIndex).name
+                       : QStringLiteral("(none)"))
+               << "textureIndex" << gpuPrim.baseColorTextureIndex
+               << "textureName"
+               << (gpuPrim.baseColorTextureIndex >= 0 &&
+                   gpuPrim.baseColorTextureIndex < meshData.textures.size()
+                       ? meshData.textures.at(gpuPrim.baseColorTextureIndex).name
+                       : QStringLiteral("(none)"));
+    }
+
     QByteArray interleaved;
     interleaved.resize(vertexCount * kInterleavedStride);
 
@@ -322,6 +389,7 @@ bool AvatarRenderer::uploadMesh(const AvatarMesh &mesh, GpuMesh &out,
 
       const int posBase = i * 3;
       const int jointBase = i * 4;
+      const int uvBase = i * 2;
 
       if (prim.normals.size() >= posBase + 3) {
         std::memcpy(base + 0, &prim.normals[posBase], 12);
@@ -334,11 +402,36 @@ bool AvatarRenderer::uploadMesh(const AvatarMesh &mesh, GpuMesh &out,
       if (prim.jointWeights.size() >= jointBase + 4) {
         std::memcpy(base + 20, &prim.jointWeights[jointBase], 16);
       }
+
+      if (prim.uvs.size() >= uvBase + 2) {
+        std::memcpy(base + 36, &prim.uvs[uvBase], 8);
+      }
     }
 
-    // Build the position buffer. For the face primitive, capture the
-    // base positions and morph deltas so the blend can be recomputed
-    // on the CPU.
+    // Diagnostic: print the first 8 UVs as packed, for the head
+    // primitive only. Values outside 0..1 mean the loader read a
+    // non-float accessor without normalizing. Identical values mean
+    // the accessor was not read at all.
+    if (mesh.name == QStringLiteral("CC_Base_Body") &&
+        captureMorphSource) {
+      qDebug() << "[AvatarRenderer] head UVs as packed:";
+
+      const auto *bytes =
+          reinterpret_cast<const unsigned char *>(interleaved.constData());
+
+      for (int i = 0; i < qMin(8, vertexCount); ++i) {
+        const unsigned char *base = bytes + i * kInterleavedStride;
+
+        float u = 0.0f;
+        float v = 0.0f;
+
+        std::memcpy(&u, base + 36, 4);
+        std::memcpy(&v, base + 40, 4);
+
+        qDebug() << "  v" << i << "uv" << u << v;
+      }
+    }
+
     QByteArray positions;
     positions.resize(vertexCount * 3 * static_cast<int>(sizeof(float)));
 
@@ -385,8 +478,6 @@ bool AvatarRenderer::uploadMesh(const AvatarMesh &mesh, GpuMesh &out,
     glBufferData(GL_ARRAY_BUFFER, interleaved.size(),
                  interleaved.constData(), GL_STATIC_DRAW);
 
-    // Normal, joint indices, joint weights. Stride 36, offsets 0,
-    // 12, 20.
     glEnableVertexAttribArray(1);
     glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, kInterleavedStride,
                           reinterpret_cast<void *>(0));
@@ -399,9 +490,10 @@ bool AvatarRenderer::uploadMesh(const AvatarMesh &mesh, GpuMesh &out,
     glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, kInterleavedStride,
                           reinterpret_cast<void *>(20));
 
-    // Position buffer. For face primitives this is separate and
-    // dynamic; for the others it is a static copy and the two-buffer
-    // split is only there so the code path is uniform.
+    glEnableVertexAttribArray(4);
+    glVertexAttribPointer(4, 2, GL_FLOAT, GL_FALSE, kInterleavedStride,
+                          reinterpret_cast<void *>(36));
+
     glGenBuffers(1, &gpuPrim.posVbo);
     glBindBuffer(GL_ARRAY_BUFFER, gpuPrim.posVbo);
     glBufferData(GL_ARRAY_BUFFER, positions.size(), positions.constData(),
@@ -536,17 +628,42 @@ void AvatarRenderer::render(const QMatrix4x4 &viewProjection) {
   glUniformMatrix4fv(m_uViewProj, 1, GL_FALSE,
                      viewProjection.constData());
 
+  // Texture unit 0 is the skin matrix buffer (samplerBuffer).
   glActiveTexture(GL_TEXTURE0);
   glBindTexture(GL_TEXTURE_BUFFER, m_skinTexture);
   glUniform1i(m_uSkinBuffer, 0);
 
+  // Texture unit 1 is the base color texture (sampler2D).
+  glActiveTexture(GL_TEXTURE1);
+  glUniform1i(m_uBaseColor, 1);
+
   int meshCounter = 0;
   int primitiveCounter = 0;
+  int texturedCounter = 0;
 
   for (const GpuMesh &mesh : m_meshes) {
-    QVector4D color = colorForMesh(mesh.name);
+    const QVector4D fallback = colorForMesh(mesh.name);
 
     for (const GpuPrimitive &prim : mesh.primitives) {
+      // Decide the color multiplier and the texture binding. A
+      // primitive with a base color texture uses the texture for
+      // color and sets uColor to white. One without uses the flat
+      // fallback color and samples the 1x1 white texture, which is a
+      // no-op multiply.
+      QVector4D color = fallback;
+      GLuint texture = m_whiteTexture;
+
+      if (prim.baseColorTextureIndex >= 0 &&
+          prim.baseColorTextureIndex < m_textures.size() &&
+          m_textures.at(prim.baseColorTextureIndex) != 0) {
+        texture = m_textures.at(prim.baseColorTextureIndex);
+        color = QVector4D(1.0f, 1.0f, 1.0f, 1.0f);
+        ++texturedCounter;
+      }
+
+      glActiveTexture(GL_TEXTURE1);
+      glBindTexture(GL_TEXTURE_2D, texture);
+
       glUniform4fv(m_uColor, 1, reinterpret_cast<const GLfloat *>(&color));
 
       glBindVertexArray(prim.vao);
@@ -560,6 +677,9 @@ void AvatarRenderer::render(const QMatrix4x4 &viewProjection) {
     ++meshCounter;
   }
 
+  glActiveTexture(GL_TEXTURE1);
+  glBindTexture(GL_TEXTURE_2D, 0);
+  glActiveTexture(GL_TEXTURE0);
   glBindTexture(GL_TEXTURE_BUFFER, 0);
   glUseProgram(0);
 
@@ -570,7 +690,9 @@ void AvatarRenderer::render(const QMatrix4x4 &viewProjection) {
              << "meshes:" << m_meshes.size()
              << "skinning:" << m_skinningMatrices.size()
              << "morph weights:" << m_morphWeights.size()
+             << "textures:" << m_textures.size()
              << "primitives drawn:" << primitiveCounter
+             << "textured:" << texturedCounter
              << "glError:" << err;
   }
 }
@@ -581,6 +703,18 @@ void AvatarRenderer::destroy() {
   }
 
   freeGpuData();
+
+  for (GLuint id : m_textures) {
+    if (id != 0) {
+      glDeleteTextures(1, &id);
+    }
+  }
+  m_textures.clear();
+
+  if (m_whiteTexture != 0) {
+    glDeleteTextures(1, &m_whiteTexture);
+    m_whiteTexture = 0;
+  }
 
   if (m_skinTexture != 0) {
     glDeleteTextures(1, &m_skinTexture);

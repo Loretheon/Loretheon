@@ -1,6 +1,8 @@
 #pragma once
 
+#include <QByteArray>
 #include <QHash>
+#include <QMatrix4x4>
 #include <QString>
 #include <QStringList>
 #include <QVector>
@@ -41,18 +43,32 @@ struct AvatarSkin {
   }
 };
 
+// One decoded texture, kept as its encoded bytes. The loader does not
+// decode. The renderer builds a QImage from bytes at upload time.
+struct AvatarTexture {
+  QString name;
+  QString mimeType;
+  QByteArray bytes;
+};
+
+// One glTF material, flattened. baseColorTextureIndex is an index
+// into AvatarMeshData::textures, or -1.
+struct AvatarMaterial {
+  QString name;
+  int baseColorTextureIndex = -1;
+  QVector4D baseColorFactor = QVector4D(1.0f, 1.0f, 1.0f, 1.0f);
+};
+
 struct AvatarMeshData {
   QVector<AvatarMesh> meshes;
   QVector<AvatarSkin> skins;
+  QVector<AvatarTexture> textures;
+  QVector<AvatarMaterial> materials;
 
   QStringList materialNames;
 
   int faceMeshIndex = -1;
 
-  // Morph target name to index on the face mesh. Built by the loader
-  // from the first primitive that carries named targets. All six
-  // primitives of CC_Base_Body share the same 148 targets in the same
-  // order, so one map is enough.
   QHash<QString, int> faceMorphNameToIndex;
 
   int totalPrimitives() const {
