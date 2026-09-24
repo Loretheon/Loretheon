@@ -1,5 +1,7 @@
 #pragma once
 
+#include "voice/VisemeMap.h"
+
 #include <QElapsedTimer>
 #include <QObject>
 #include <QString>
@@ -9,7 +11,6 @@
 class AvatarWidget;
 class InferenceService;
 
-struct AudioChunk;
 struct Viseme;
 
 // The viseme clock. Subscribes to InferenceService's TTS chunk signals,

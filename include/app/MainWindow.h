@@ -59,7 +59,8 @@ public:
 protected:
   void closeEvent(QCloseEvent *event) override;
   void resizeEvent(QResizeEvent *event) override;
-
+  void showEvent(QShowEvent *event) override;
+  void moveEvent(QMoveEvent *event) override;
 private slots:
   void about();
   void aboutQt();
@@ -85,7 +86,7 @@ private slots:
 
 private:
   enum class Mode { Normal = 0, Overseer = 1, Search = 2 };
-
+  bool m_avatarPlaced = false;
   void createActions();
   void createMenus();
   void createToolbar();
@@ -93,7 +94,13 @@ private:
   void buildNormalPage();
   void buildOverseerPage();
   void buildSearchLayer();
-  void buildAvatarOverlay();
+
+  // The avatar is created early, so LoreAssistant has a valid avatar
+  // pointer, and positioned late, after the window has its final
+  // geometry. Doing both in one call either leaves the assistant with
+  // a null avatar or places the widget against the wrong window size.
+  void createAvatarOverlay();
+  void positionAvatarOverlay();
 
   void setMode(Mode mode);
 

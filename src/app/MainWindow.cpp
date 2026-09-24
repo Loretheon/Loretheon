@@ -219,8 +219,13 @@ MainWindow::~MainWindow() {
   if (m_assistant) {
     m_assistant->stop();
   }
-}
 
+  if (m_avatar) {
+    m_avatar->close();
+    delete m_avatar;
+    m_avatar = nullptr;
+  }
+}
 MainWindow::MainWindow() {
   setCorner(Qt::TopLeftCorner, Qt::LeftDockWidgetArea);
   setCorner(Qt::BottomLeftCorner, Qt::LeftDockWidgetArea);
@@ -267,7 +272,10 @@ MainWindow::MainWindow() {
   createToolbar();
   createMenus();
 
-  buildAvatarOverlay();
+  // Create the avatar now so m_avatar is valid when LoreAssistant is
+  // constructed. Its position is set later, after the window has its
+  // final geometry.
+  createAvatarOverlay();
 
   {
     LoreAssistant::Config config;
@@ -283,10 +291,17 @@ MainWindow::MainWindow() {
     m_assistant->start();
   }
 
-  QTimer::singleShot(1500, this, [this]() {
-    if (m_assistant)
-      m_assistant->say(QStringLiteral("hello welcome to Lore"));
-  });
+  // Speak the greeting when TTS is actually ready, not on a fixed
+  // timer. HeadTTS is a child process; how long it takes to come up
+  // depends on the machine. A fixed delay races it and the sentence
+  // is dropped if the socket is not yet connected.
+  connect(m_inferenceService, &InferenceService::ttsReady, this,
+          [this]() {
+            if (m_assistant) {
+              m_assistant->say(QStringLiteral("hello welcome to Lore"));
+            }
+          },
+          Qt::SingleShotConnection);
 
   QSettings settings;
 
@@ -329,8 +344,73 @@ MainWindow::MainWindow() {
   setMinimumSize(800, 800);
 
   QScreen *screen = QGuiApplication::primaryScreen();
-  if (screen)
-    setGeometry(screen->availableGeometry());
+  // if (screen)
+  //   setGeometry(screen->availableGeometry());
+
+  // The window has its final size now. Place the avatar against it.
+  positionAvatarOverlay();
+}
+
+void MainWindow::createAvatarOverlay() {
+  // No parent. The avatar is its own top-level window, so the main
+  // window's size and aspect ratio cannot reach it. It is frameless,
+  // has no taskbar entry, stays above other windows, and does not
+  // take keyboard focus. That last flag is what keeps the main window
+  // typing as if the avatar were not there.
+  m_avatar = new AvatarWidget(nullptr);
+
+  m_avatar->setWindowFlags(Qt::Tool |
+                           Qt::FramelessWindowHint |
+                           Qt::NoDropShadowWindowHint |
+                           Qt::WindowStaysOnTopHint |
+                           Qt::WindowDoesNotAcceptFocus);
+
+  m_avatar->setAttribute(Qt::WA_TranslucentBackground, true);
+
+  m_avatar->applyConfig(kAvatarConfig);
+
+  QSettings settings;
+
+  QSize storedSize =
+      settings.value(AvatarSizeKey, kAvatarConfig.widgetSize).toSize();
+
+  if (storedSize.width() < kAvatarConfig.minSize.width() ||
+      storedSize.height() < kAvatarConfig.minSize.height() ||
+      storedSize.width() > kAvatarConfig.maxSize.width() ||
+      storedSize.height() > kAvatarConfig.maxSize.height()) {
+    storedSize = kAvatarConfig.widgetSize;
+      }
+
+  m_avatar->resize(storedSize);
+  m_avatar->setResizable(true);
+
+  m_avatar->setModel(QStringLiteral("qrc:/avatar/ccbase/Lore.glb"));
+
+  // Deliberately not shown yet. showEvent places it and shows it.
+}
+void MainWindow::positionAvatarOverlay() {
+  if (!m_avatar) {
+    return;
+  }
+
+  // The avatar is a top-level window. Place it so its bottom-right
+  // corner is a fixed offset inside the main window's bottom-right
+  // corner. The offset is constant; the main window's size and
+  // aspect ratio play no part.
+  const QRect frame = frameGeometry();
+
+  const int margin = kAvatarConfig.margin;
+
+  const QPoint topLeft(frame.right() - m_avatar->width() - margin,
+                       frame.bottom() - m_avatar->height() - margin);
+
+  m_avatar->move(topLeft);
+
+  if (!m_avatarPlaced) {
+    m_avatarPlaced = true;
+    m_avatar->show();
+    m_avatar->raise();
+  }
 }
 
 bool MainWindow::loadThemeFromResource(const QString &name) {
@@ -1276,6 +1356,10 @@ void MainWindow::closeEvent(QCloseEvent *event) {
     }
   }
 
+  if (m_avatar) {
+    m_avatar->close();
+  }
+
   QSettings settings;
   if (m_centralStack) {
     settings.setValue(ModeKey, m_centralStack->currentIndex());
@@ -1284,14 +1368,28 @@ void MainWindow::closeEvent(QCloseEvent *event) {
   event->accept();
 }
 
+void MainWindow::showEvent(QShowEvent *event) {
+  QMainWindow::showEvent(event);
+
+  // The window has been shown and the window manager has applied the
+  // frame. Position the avatar now and show it. It was hidden until
+  // this moment so the user never sees the pre-frame position.
+  positionAvatarOverlay();
+}
+
 void MainWindow::resizeEvent(QResizeEvent *event) {
   QMainWindow::resizeEvent(event);
 
-  if (m_avatar) {
-    const QPoint clamped =
-        clampAvatarOffset(size(), m_avatar->size(),
-                          m_avatar->bottomRightOffset());
-    m_avatar->placeByBottomRightOffset(clamped);
+  if (m_avatarPlaced) {
+    positionAvatarOverlay();
+  }
+}
+
+void MainWindow::moveEvent(QMoveEvent *event) {
+  QMainWindow::moveEvent(event);
+
+  if (m_avatarPlaced) {
+    positionAvatarOverlay();
   }
 }
 
@@ -1715,65 +1813,6 @@ void MainWindow::buildSearchLayer() {
           });
 }
 
-void MainWindow::buildAvatarOverlay() {
-  m_avatar = new AvatarWidget(this);
-
-  m_avatar->applyConfig(kAvatarConfig);
-
-  QSettings settings;
-
-  QSize storedSize =
-      settings.value(AvatarSizeKey, kAvatarConfig.widgetSize).toSize();
-
-  // Clamp the stored size to the configured bounds. A settings file
-  // written by an older build, or by a bad drag, may be out of range.
-  if (storedSize.width() < kAvatarConfig.minSize.width() ||
-      storedSize.height() < kAvatarConfig.minSize.height() ||
-      storedSize.width() > kAvatarConfig.maxSize.width() ||
-      storedSize.height() > kAvatarConfig.maxSize.height()) {
-    qWarning() << "[MainWindow] Stored avatar size" << storedSize
-               << "is out of bounds; resetting to default.";
-    storedSize = kAvatarConfig.widgetSize;
-  }
-
-  QPoint storedOffset =
-      settings.value(AvatarOffsetKey,
-                     QPoint(kAvatarConfig.margin, kAvatarConfig.margin))
-          .toPoint();
-
-  // Clamp the stored offset so she is at least partly visible. This
-  // rescues a settings file that already has a bad position on disk.
-  storedOffset = clampAvatarOffset(size(), storedSize, storedOffset);
-
-  m_avatar->resize(storedSize);
-  m_avatar->setResizable(true);
-  m_avatar->placeByBottomRightOffset(storedOffset);
-
-  connect(m_avatar, &AvatarWidget::geometryChanged, this, [this]() {
-    if (!m_avatar) {
-      return;
-    }
-
-    // Clamp before saving, so a drag that pushes her off-screen does
-    // not persist a bad position. She is clamped on restore too, but
-    // keeping the saved value sane means the settings file stays
-    // readable.
-    const QPoint clamped =
-        clampAvatarOffset(size(), m_avatar->size(),
-                          m_avatar->bottomRightOffset());
-
-    m_avatar->placeByBottomRightOffset(clamped);
-
-    QSettings s;
-    s.setValue(AvatarSizeKey, m_avatar->size());
-    s.setValue(AvatarOffsetKey, clamped);
-  });
-
-  m_avatar->setModel(QStringLiteral("qrc:/avatar/vita/Vita.glb"));
-
-  m_avatar->show();
-  m_avatar->raise();
-}
 
 void MainWindow::onSearchRequested() {
   if (m_searchModeAct) {

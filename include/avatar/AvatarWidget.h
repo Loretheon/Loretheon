@@ -2,25 +2,24 @@
 
 #include <QPoint>
 #include <QQuickWidget>
+#include <QSize>
 
 #include "AvatarConfig.h"
-#include "AvatarResizeGrip.h"
 
 class AvatarController;
+class AvatarSurface;
 
-// A QQuickWidget that hosts the 3D avatar scene. The scene is defined
-// in resources/avatar/AvatarOverlay.qml. The CC Base model is loaded
-// from QML via RuntimeLoader, and AvatarController binds ozz clips to
-// the skeleton joints that the loader creates.
+// A QQuickWidget that hosts the 3D avatar scene.
 //
-// The widget is free-floating: its geometry is owned by whoever
-// constructs it, and it does not re-anchor itself when the main window
-// resizes. Four corner grips are shown when resizable() is true. When
-// the user drags a grip, the widget resizes about the opposite corner
-// and emits geometryChanged().
+// Grip drags are handled here, in the widget's own mouse events, not
+// in QML. The QML grips draw the affordance and set the cursor; they
+// do not drive the drag. Driving a drag from QML fails because the
+// grip item moves while the widget resizes, which moves the local
+// mouse coordinate out from under the handler and produces a runaway
+// resize. QMouseEvent::globalPosition is stable across a resize.
 //
-// Dragging the body of the widget moves it, and turns her to face the
-// direction she is being dragged.
+// Presses in the interior are forwarded to the QML scene, which
+// orbits, pans, and zooms.
 class AvatarWidget : public QQuickWidget {
   Q_OBJECT
 
@@ -53,43 +52,48 @@ signals:
 
 protected:
   void resizeEvent(QResizeEvent *event) override;
+
   void mousePressEvent(QMouseEvent *event) override;
   void mouseMoveEvent(QMouseEvent *event) override;
   void mouseReleaseEvent(QMouseEvent *event) override;
 
 private slots:
-  void onGripDragged(const QSize &newSize, AvatarResizeGrip::Corner corner);
-  void onModelLoaded();
+  void onSurfaceReady();
 
 private:
-  void pushConfigToQml();
-  void pushFacingToQml();
-  void layoutGrips();
+  enum class DragKind {
+    None,
+    Move,
+    ResizeTopLeft,
+    ResizeTopRight,
+    ResizeBottomLeft,
+    ResizeBottomRight,
+  };
 
-  // Called once the QML model has finished loading. Loads the ozz
-  // archives and binds them to the joint nodes the RuntimeLoader
-  // created.
-  void attachControllerToScene();
+  void pushFacingToQml();
+
+  // Which band the widget-local point is in.
+  DragKind bandFor(const QPoint &localPos) const;
+
+  // Apply a resize given the accumulated global delta from press.
+  void applyResize(const QPoint &globalDelta);
 
   QString m_modelSource;
 
   AvatarConfig m_config;
 
-  AvatarResizeGrip *m_gripTopLeft = nullptr;
-  AvatarResizeGrip *m_gripTopRight = nullptr;
-  AvatarResizeGrip *m_gripBottomLeft = nullptr;
-  AvatarResizeGrip *m_gripBottomRight = nullptr;
-
   bool m_resizable = false;
-  bool m_configPending = false;
+
+  // Active drag state. All positions are global (screen) coordinates.
+  DragKind m_drag = DragKind::None;
+  QPoint m_dragOriginGlobal;
+  QPoint m_originTopLeft;
+  QSize m_originSize;
 
   AvatarController *m_controller = nullptr;
-  bool m_archivesLoaded = false;
-  bool m_controllerReady = false;
+  QQuickItem *m_surface = nullptr;
 
-  // Body-drag state.
-  bool m_dragging = false;
-  QPoint m_dragOrigin;
-  QPoint m_dragStartPosition;
+  bool m_surfaceReady = false;
+
   qreal m_facing = 0.0;
 };

@@ -211,6 +211,19 @@ add_subdirectory(
         ${CMAKE_BINARY_DIR}/ozz
 )
 
+# =============================================================================
+# tinygltf (header-only)
+# =============================================================================
+# Used by AvatarMeshLoader to parse Lore.glb.
+#
+# tinygltf is header-only when exactly one translation unit defines
+# TINYGLTF_IMPLEMENTATION. AvatarMeshLoader.cpp does that. Nothing else
+# in the tree includes tiny_gltf.h with that macro, and there is no
+# library to link.
+#
+# The submodule ships no CMakeLists.txt at its root, so it is not
+# added as a subdirectory. Only the include path is needed, and it is
+# declared in target_include_directories below.
 
 add_subdirectory(
         external/QF-ML
@@ -511,33 +524,44 @@ add_executable(Lore
         include/agent/schemas/SufficiencySchema.h
         src/avatar/AvatarWidget.cpp
         include/avatar/AvatarWidget.h
-        src/avatar/AvatarWidget.cpp
-        include/avatar/AvatarWidget.h
-        include/assistant/AssistantProfile.cpp
+        src/assistant/AssistantProfile.cpp
         include/assistant/AssistantProfile.h
-        include/assistant/AssistantMemory.cpp
+        src/assistant/AssistantMemory.cpp
         include/assistant/AssistantMemory.h
-        include/assistant/AssistantContext.cpp
+        src/assistant/AssistantContext.cpp
         include/assistant/AssistantContext.h
-        include/assistant/AssistantActivity.cpp
+        src/assistant/AssistantActivity.cpp
         include/assistant/AssistantActivity.h
-        include/assistant/AssistantTool.cpp
+        src/assistant/AssistantTool.cpp
         include/assistant/AssistantTool.h
-        include/assistant/AssistantToolRegistry.cpp
+        src/assistant/AssistantToolRegistry.cpp
         include/assistant/AssistantToolRegistry.h
-        include/assistant/tools/AssistantTools.cpp
+        src/assistant/tools/AssistantTools.cpp
         include/assistant/tools/AssistantTools.h
-        include/assistant/MemoryIndex.cpp
+        src/assistant/MemoryIndex.cpp
         include/assistant/MemoryIndex.h
-        include/assistant/SpeechAnimator.cpp
+        src/assistant/SpeechAnimator.cpp
         include/assistant/SpeechAnimator.h
-        include/assistant/LoreAssistant.cpp
+        src/assistant/LoreAssistant.cpp
         include/assistant/LoreAssistant.h
         include/avatar/AvatarConfig.h
-        include/avatar/AvatarResizeGrip.cpp
+        src/avatar/AvatarResizeGrip.cpp
         include/avatar/AvatarResizeGrip.h
-        include/avatar/AvatarController.cpp
+        src/avatar/AvatarController.cpp
         include/avatar/AvatarController.h
+        include/avatar/AvatarMeshData.h
+        src/avatar/AvatarMeshLoader.cpp
+        include/avatar/AvatarMeshLoader.h
+        src/avatar/AvatarRenderer.cpp
+        include/avatar/AvatarRenderer.h
+        src/avatar/AvatarSurface.cpp
+        include/avatar/AvatarSurface.h
+        src/avatar/AvatarRenderNode.cpp
+        include/avatar/AvatarRenderNode.h
+        src/avatar/AvatarMoveGrip.cpp
+        include/avatar/AvatarMoveGrip.h
+        src/avatar/VisemeTable.cpp
+        include/avatar/VisemeTable.h
 )
 
 add_dependencies(Lore
@@ -585,6 +609,8 @@ target_include_directories(Lore PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/external/tree-sitter-markdown/tree-sitter-markdown-inline/bindings/c
         ${CMAKE_CURRENT_SOURCE_DIR}/external/lunasvg/include
         ${CMAKE_CURRENT_SOURCE_DIR}/external/lunasvg/plutovg/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/external/tinygltf
+
         ${EPISTEME_EXTERNAL_PREFIX}/include
         ${EPISTEME_EXTERNAL_PREFIX}/include/tree_sitter
         ${EPISTEME_EXTERNAL_PREFIX}/include/lunasvg
@@ -626,5 +652,4 @@ target_link_libraries(Lore PRIVATE
         faiss
         OpenMP::OpenMP_CXX
         ozz_animation
-        ozz_base
 )

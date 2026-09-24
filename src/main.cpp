@@ -3,9 +3,11 @@
 #include <qsettings.h>
 
 #include "../include/app/MainWindow.h"
+#include "AvatarSurface.h"
 #include "Settings.h"
 
 #include <QDirIterator>
+#include <qqml.h>
 
 int main(int argc, char **argv) {
 
@@ -13,6 +15,7 @@ int main(int argc, char **argv) {
   // while (it.hasNext()) {
   //   qDebug() << it.next();
   // }
+  qmlRegisterType<AvatarSurface>("Lore.Avatar", 1, 0, "AvatarSurface");
   QApplication app(argc, argv);
   QCoreApplication::setOrganizationName("Questfarer");
   QCoreApplication::setApplicationName("Lore");

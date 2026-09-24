@@ -1,38 +1,55 @@
 #include "../../include/avatar/AvatarWidget.h"
 
 #include "../../include/avatar/AvatarController.h"
+#include "../../include/avatar/AvatarMeshLoader.h"
+#include "../../include/avatar/AvatarSurface.h"
 
 #include <QDebug>
+#include <QFile>
 #include <QMouseEvent>
 #include <QQuickItem>
 #include <QQmlEngine>
 #include <QQmlContext>
 #include <QResizeEvent>
+#include <QTimer>
 #include <QUrl>
 
 namespace {
 
-// How many degrees she turns per pixel of horizontal drag.
-constexpr qreal kDegreesPerPixel = 0.35;
-
-// Clamp so she never turns past side-on.
-constexpr qreal kMaxFacingDegrees = 80.0;
-
-// Resource paths for the CC Base model and its ozz archives.
-constexpr auto kAvatarResourceRoot = ":/avatar/ccbase";
+constexpr auto kAvatarMeshPath = ":/avatar/ccbase/Lore.glb";
 constexpr auto kAvatarSkeletonPath = ":/avatar/ccbase/skeleton.ozz";
+constexpr auto kAvatarClipDir = ":/avatar/ccbase";
 
-// RuntimeLoader::Success. The enum is Null=0, Success=1, Loading=2,
-// Error=3 in Qt 6.4.
-constexpr int kRuntimeLoaderSuccess = 1;
+constexpr int kCornerBand = 16;
+constexpr int kEdgeBand = 8;
+
+constexpr bool kInteractionEnabled = true;
 
 } // namespace
 
 AvatarWidget::AvatarWidget(QWidget *parent) : QQuickWidget(parent) {
+  // The widget must be translucent so the QML scene's transparent
+  // background reaches the screen instead of being composited over
+  // black. WA_AlwaysStackOnTop forces the QQuickWidget to composite
+  // its FBO with alpha rather than as an opaque blit.
   setAttribute(Qt::WA_AlwaysStackOnTop, true);
+  setAttribute(Qt::WA_TranslucentBackground, true);
+  setAttribute(Qt::WA_NoSystemBackground, true);
+
+  setAutoFillBackground(false);
+
+  {
+    QPalette pal = palette();
+    pal.setColor(QPalette::Window, Qt::transparent);
+    setPalette(pal);
+  }
+
   setClearColor(Qt::transparent);
 
   setResizeMode(QQuickWidget::SizeRootObjectToView);
+
+  setMouseTracking(true);
+
 
   m_controller = new AvatarController(this);
 
@@ -50,11 +67,6 @@ AvatarWidget::AvatarWidget(QWidget *parent) : QQuickWidget(parent) {
 
             qDebug() << "[AvatarWidget] QML ready";
 
-            if (m_configPending) {
-              m_configPending = false;
-              pushConfigToQml();
-            }
-
             pushFacingToQml();
 
             QQuickItem *root = rootObject();
@@ -64,129 +76,77 @@ AvatarWidget::AvatarWidget(QWidget *parent) : QQuickWidget(parent) {
               return;
             }
 
-            // Load the ozz archives now. They do not depend on the
-            // model load; they are independent of the scene graph.
-            if (!m_archivesLoaded) {
-              if (!m_controller->loadArchives(
-                      QString::fromLatin1(kAvatarSkeletonPath),
-                      QString::fromLatin1(kAvatarResourceRoot))) {
-                qWarning() << "[AvatarWidget] Controller failed to load"
-                              " ozz archives.";
-                return;
-              }
+            root->setProperty("resizable", m_resizable);
 
-              m_archivesLoaded = true;
+            m_surface = root->findChild<QQuickItem *>(
+                QStringLiteral("avatarSurface"),
+                Qt::FindChildrenRecursively);
+
+            if (!m_surface) {
+              qWarning() << "[AvatarWidget] No AvatarSurface found in QML.";
+              return;
             }
 
-            // The model load is asynchronous. Connect to the QML
-            // signal and attach when it fires. If it already fired
-            // before this connection was made, the status check
-            // below catches that.
-            connect(root, SIGNAL(modelLoaded()), this,
-                    SLOT(onModelLoaded()), Qt::UniqueConnection);
+            connect(m_surface, SIGNAL(ready()), this,
+                    SLOT(onSurfaceReady()), Qt::UniqueConnection);
 
-            const QVariant loaderStatus = root->property("modelLoaderStatus");
+            AvatarMeshData meshData;
+            QString error;
 
-            if (loaderStatus.isValid() &&
-                loaderStatus.toInt() == kRuntimeLoaderSuccess) {
-              attachControllerToScene();
-        }
+            if (!AvatarMeshLoader::load(QString::fromLatin1(kAvatarMeshPath),
+                                        meshData, &error)) {
+              qWarning() << "[AvatarWidget] Mesh load failed:" << error;
+              return;
+            }
+
+            auto *surface = qobject_cast<AvatarSurface *>(m_surface);
+
+            if (!surface) {
+              qWarning() << "[AvatarWidget] AvatarSurface cast failed.";
+              return;
+            }
+
+            surface->setMeshData(meshData);
           });
 
   setSource(QUrl(QStringLiteral("qrc:/avatar/AvatarOverlay.qml")));
-
-  m_gripTopLeft =
-      new AvatarResizeGrip(AvatarResizeGrip::Corner::TopLeft, this);
-  m_gripTopRight =
-      new AvatarResizeGrip(AvatarResizeGrip::Corner::TopRight, this);
-  m_gripBottomLeft =
-      new AvatarResizeGrip(AvatarResizeGrip::Corner::BottomLeft, this);
-  m_gripBottomRight =
-      new AvatarResizeGrip(AvatarResizeGrip::Corner::BottomRight, this);
-
-  for (AvatarResizeGrip *grip :
-       {m_gripTopLeft, m_gripTopRight, m_gripBottomLeft, m_gripBottomRight}) {
-    grip->hide();
-    connect(grip, &AvatarResizeGrip::dragged, this,
-            &AvatarWidget::onGripDragged);
-    connect(grip, &AvatarResizeGrip::dragFinished, this,
-            &AvatarWidget::geometryChanged);
-  }
-
-  layoutGrips();
 }
 
 AvatarWidget::~AvatarWidget() = default;
 
-void AvatarWidget::onModelLoaded() {
-  qDebug() << "[AvatarWidget] Model load signal received.";
-
-  attachControllerToScene();
-}
-
-void AvatarWidget::attachControllerToScene() {
-  if (m_controllerReady) {
+void AvatarWidget::onSurfaceReady() {
+  if (m_surfaceReady) {
     return;
   }
 
-  if (!m_archivesLoaded) {
-    qWarning() << "[AvatarWidget] attachControllerToScene: archives not"
-                  " loaded yet. Deferring.";
+  m_surfaceReady = true;
+
+  qDebug() << "[AvatarWidget] Surface ready, starting controller.";
+
+  auto *surface = qobject_cast<AvatarSurface *>(m_surface);
+
+  if (!surface) {
+    qWarning() << "[AvatarWidget] Surface cast failed.";
     return;
   }
 
-  QQuickItem *root = rootObject();
+  m_controller->setSurface(surface);
 
-  if (!root) {
-    qWarning() << "[AvatarWidget] attachControllerToScene: no QML root.";
+  if (!m_controller->loadArchives(QString::fromLatin1(kAvatarSkeletonPath),
+                                  QString::fromLatin1(kAvatarClipDir))) {
+    qWarning() << "[AvatarWidget] Controller failed to load archives.";
     return;
   }
 
-  if (!m_controller->attachToScene(root, QStringLiteral("modelRoot"))) {
-    qWarning() << "[AvatarWidget] Controller failed to attach to the"
-                  " scene graph.";
-    return;
-  }
-
-  m_controller->playClip(QStringLiteral("idle"));
   m_controller->start();
 
-  m_controllerReady = true;
+  // m_controller->playClip(QStringLiteral("idle"));
 
   emit modelLoaded();
-
-  qDebug() << "[AvatarWidget] Controller attached and playing idle.";
 }
 
 void AvatarWidget::applyConfig(const AvatarConfig &config) {
   m_config = config;
-
-  for (AvatarResizeGrip *grip :
-       {m_gripTopLeft, m_gripTopRight, m_gripBottomLeft, m_gripBottomRight}) {
-    grip->setSizeBounds(config.minSize, config.maxSize);
-  }
-
-  if (!rootObject()) {
-    m_configPending = true;
-    return;
-  }
-
-  pushConfigToQml();
-}
-
-void AvatarWidget::pushConfigToQml() {
-  QQuickItem *root = rootObject();
-
-  if (!root) {
-    return;
-  }
-
-  root->setProperty("cameraDistance", m_config.cameraDistance);
-  root->setProperty("cameraHeight", m_config.cameraHeight);
-  root->setProperty("cameraPitch", m_config.cameraPitch);
-  root->setProperty("fieldOfView", m_config.fieldOfView);
-  root->setProperty("figureOffsetY", m_config.figureOffsetY);
-  root->setProperty("modelScale", m_config.modelScale);
 }
 
 void AvatarWidget::pushFacingToQml() {
@@ -202,136 +162,214 @@ void AvatarWidget::pushFacingToQml() {
 void AvatarWidget::setResizable(bool resizable) {
   m_resizable = resizable;
 
-  for (AvatarResizeGrip *grip :
-       {m_gripTopLeft, m_gripTopRight, m_gripBottomLeft, m_gripBottomRight}) {
-    grip->setVisible(resizable);
-  }
+  QQuickItem *root = rootObject();
 
-  if (resizable) {
-    layoutGrips();
-    for (AvatarResizeGrip *grip :
-         {m_gripTopLeft, m_gripTopRight, m_gripBottomLeft,
-          m_gripBottomRight}) {
-      grip->raise();
-    }
+  if (root) {
+    root->setProperty("resizable", m_resizable);
   }
 }
 
-void AvatarWidget::resizeEvent(QResizeEvent *event) {
-  QQuickWidget::resizeEvent(event);
-  layoutGrips();
-}
-
-void AvatarWidget::layoutGrips() {
-  const int g = AvatarResizeGrip::gripSize();
-
-  if (m_gripTopLeft) {
-    m_gripTopLeft->move(0, 0);
-  }
-  if (m_gripTopRight) {
-    m_gripTopRight->move(width() - g, 0);
-  }
-  if (m_gripBottomLeft) {
-    m_gripBottomLeft->move(0, height() - g);
-  }
-  if (m_gripBottomRight) {
-    m_gripBottomRight->move(width() - g, height() - g);
-  }
-}
-
-void AvatarWidget::onGripDragged(const QSize &newSize,
-                                 AvatarResizeGrip::Corner corner) {
-  QWidget *p = parentWidget();
-  if (!p) {
-    return;
+AvatarWidget::DragKind AvatarWidget::bandFor(const QPoint &localPos) const {
+  if (!m_resizable) {
+    return DragKind::None;
   }
 
-  QPoint anchor;
+  const int w = width();
+  const int h = height();
 
-  switch (corner) {
-  case AvatarResizeGrip::Corner::TopLeft:
-    anchor = mapToParent(QPoint(width(), height()));
-    break;
-  case AvatarResizeGrip::Corner::TopRight:
-    anchor = mapToParent(QPoint(0, height()));
-    break;
-  case AvatarResizeGrip::Corner::BottomLeft:
-    anchor = mapToParent(QPoint(width(), 0));
-    break;
-  case AvatarResizeGrip::Corner::BottomRight:
-    anchor = mapToParent(QPoint(0, 0));
-    break;
+  const bool left = localPos.x() < kCornerBand;
+  const bool right = localPos.x() > w - kCornerBand;
+  const bool top = localPos.y() < kCornerBand;
+  const bool bottom = localPos.y() > h - kCornerBand;
+
+  if (left && top) {
+    return DragKind::ResizeTopLeft;
+  }
+  if (right && top) {
+    return DragKind::ResizeTopRight;
+  }
+  if (left && bottom) {
+    return DragKind::ResizeBottomLeft;
+  }
+  if (right && bottom) {
+    return DragKind::ResizeBottomRight;
   }
 
-  QPoint newTopLeft = anchor;
+  const bool edgeLeft = localPos.x() < kEdgeBand;
+  const bool edgeRight = localPos.x() > w - kEdgeBand;
+  const bool edgeTop = localPos.y() < kEdgeBand;
+  const bool edgeBottom = localPos.y() > h - kEdgeBand;
 
-  switch (corner) {
-  case AvatarResizeGrip::Corner::TopLeft:
-    newTopLeft = anchor - QPoint(newSize.width(), newSize.height());
-    break;
-  case AvatarResizeGrip::Corner::TopRight:
-    newTopLeft = anchor - QPoint(0, newSize.height());
-    break;
-  case AvatarResizeGrip::Corner::BottomLeft:
-    newTopLeft = anchor - QPoint(newSize.width(), 0);
-    break;
-  case AvatarResizeGrip::Corner::BottomRight:
-    newTopLeft = anchor;
-    break;
+  if (edgeTop || edgeBottom || edgeLeft || edgeRight) {
+    return DragKind::Move;
   }
 
-  setGeometry(QRect(newTopLeft, newSize));
-  layoutGrips();
+  return DragKind::None;
 }
 
 void AvatarWidget::mousePressEvent(QMouseEvent *event) {
-  if (event->button() != Qt::LeftButton) {
-    event->ignore();
+  if (!kInteractionEnabled) {
+    QQuickWidget::mousePressEvent(event);
     return;
   }
 
-  m_dragging = true;
-  m_dragOrigin = event->globalPosition().toPoint();
-  m_dragStartPosition = pos();
+  if (event->button() != Qt::LeftButton && event->button() != Qt::RightButton) {
+    QQuickWidget::mousePressEvent(event);
+    return;
+  }
+
+  const QPoint local = event->position().toPoint();
+  const DragKind kind = bandFor(local);
+
+  const bool isResize =
+      kind == DragKind::ResizeTopLeft || kind == DragKind::ResizeTopRight ||
+      kind == DragKind::ResizeBottomLeft ||
+      kind == DragKind::ResizeBottomRight;
+
+  const bool isMove = kind == DragKind::Move;
+
+  if (isResize && event->button() != Qt::LeftButton) {
+    QQuickWidget::mousePressEvent(event);
+    return;
+  }
+
+  if (isMove && event->button() != Qt::RightButton) {
+    QQuickWidget::mousePressEvent(event);
+    return;
+  }
+
+  if (!isResize && !isMove) {
+    QQuickWidget::mousePressEvent(event);
+    return;
+  }
+
+  m_drag = kind;
+  m_dragOriginGlobal = event->globalPosition().toPoint();
+  m_originTopLeft = pos();
+  m_originSize = size();
 
   event->accept();
 }
 
 void AvatarWidget::mouseMoveEvent(QMouseEvent *event) {
-  if (!m_dragging) {
-    event->ignore();
+  if (!kInteractionEnabled || m_drag == DragKind::None) {
+    QQuickWidget::mouseMoveEvent(event);
     return;
   }
 
-  const QPoint delta =
-      event->globalPosition().toPoint() - m_dragOrigin;
+  const QPoint global = event->globalPosition().toPoint();
+  const QPoint delta = global - m_dragOriginGlobal;
 
-  move(m_dragStartPosition + delta);
-
-  if (delta.x() != 0) {
-    m_facing = qBound(-kMaxFacingDegrees,
-                      delta.x() * kDegreesPerPixel,
-                      kMaxFacingDegrees);
-    pushFacingToQml();
+  if (m_drag == DragKind::Move) {
+    move(m_originTopLeft + delta);
+  } else {
+    applyResize(delta);
   }
 
   event->accept();
 }
 
 void AvatarWidget::mouseReleaseEvent(QMouseEvent *event) {
-  if (event->button() != Qt::LeftButton || !m_dragging) {
-    event->ignore();
+  if (!kInteractionEnabled || m_drag == DragKind::None) {
+    QQuickWidget::mouseReleaseEvent(event);
     return;
   }
 
-  m_dragging = false;
-
-  m_facing = 0.0;
-  pushFacingToQml();
-
+  m_drag = DragKind::None;
   emit geometryChanged();
 
   event->accept();
+}
+
+void AvatarWidget::applyResize(const QPoint &globalDelta) {
+  int dx = globalDelta.x();
+  int dy = globalDelta.y();
+
+  switch (m_drag) {
+  case DragKind::ResizeTopLeft:
+    dx = -dx;
+    dy = -dy;
+    break;
+  case DragKind::ResizeTopRight:
+    dy = -dy;
+    break;
+  case DragKind::ResizeBottomLeft:
+    dx = -dx;
+    break;
+  case DragKind::ResizeBottomRight:
+    break;
+  default:
+    return;
+  }
+
+  const QSize minSize = m_config.minSize;
+  const QSize maxSize = m_config.maxSize;
+
+  const QSize raw(m_originSize.width() + dx,
+                  m_originSize.height() + dy);
+
+  const double aspect =
+      (m_originSize.height() > 0)
+          ? static_cast<double>(m_originSize.width()) / m_originSize.height()
+          : 1.0;
+
+  double w = raw.width();
+  double h = raw.height();
+
+  if (qAbs(raw.width() - m_originSize.width()) >=
+      qAbs(raw.height() - m_originSize.height())) {
+    h = w / aspect;
+  } else {
+    w = h * aspect;
+  }
+
+  if (w < minSize.width()) {
+    w = minSize.width();
+    h = w / aspect;
+  }
+  if (h < minSize.height()) {
+    h = minSize.height();
+    w = h * aspect;
+  }
+  if (w > maxSize.width()) {
+    w = maxSize.width();
+    h = w / aspect;
+  }
+  if (h > maxSize.height()) {
+    h = maxSize.height();
+    w = h * aspect;
+  }
+
+  const QSize newSize(qRound(w), qRound(h));
+
+  QPoint newTopLeft = m_originTopLeft;
+
+  switch (m_drag) {
+  case DragKind::ResizeTopLeft:
+    newTopLeft = m_originTopLeft +
+                 QPoint(m_originSize.width() - newSize.width(),
+                        m_originSize.height() - newSize.height());
+    break;
+  case DragKind::ResizeTopRight:
+    newTopLeft = m_originTopLeft +
+                 QPoint(0, m_originSize.height() - newSize.height());
+    break;
+  case DragKind::ResizeBottomLeft:
+    newTopLeft = m_originTopLeft +
+                 QPoint(m_originSize.width() - newSize.width(), 0);
+    break;
+  case DragKind::ResizeBottomRight:
+    newTopLeft = m_originTopLeft;
+    break;
+  default:
+    return;
+  }
+
+  setGeometry(QRect(newTopLeft, newSize));
+}
+
+void AvatarWidget::resizeEvent(QResizeEvent *event) {
+  QQuickWidget::resizeEvent(event);
 }
 
 void AvatarWidget::placeByBottomRightOffset(const QPoint &offset) {
@@ -371,29 +409,11 @@ void AvatarWidget::setExpression(const QString &name) {
 void AvatarWidget::playMotion(const QString &name) {
   if (m_controller && m_controller->isLoaded()) {
     m_controller->playClip(name);
-    return;
   }
-
-  QQuickItem *root = rootObject();
-
-  if (!root) {
-    return;
-  }
-
-  QMetaObject::invokeMethod(root, "playMotion",
-                            Q_ARG(QVariant, name));
 }
 
 void AvatarWidget::applyViseme(const QString &shape) {
-  // The viseme path is still QML until the morph target driving moves
-  // into C++. The QML stub keeps the log quiet. When morph targets
-  // are wired, this routes through m_controller.
-  QQuickItem *root = rootObject();
-
-  if (!root) {
-    return;
+  if (m_controller) {
+    m_controller->applyViseme(shape);
   }
-
-  QMetaObject::invokeMethod(root, "setViseme",
-                            Q_ARG(QVariant, shape));
 }

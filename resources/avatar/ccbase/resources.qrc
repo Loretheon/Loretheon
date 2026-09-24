@@ -1,5 +1,6 @@
 <RCC>
     <qresource prefix="/avatar/ccbase">
+        <file>Lore.glb</file>
         <file>skeleton.ozz</file>
         <file>idle.ozz</file>
         <file>jump.ozz</file>

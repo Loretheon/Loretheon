@@ -28,9 +28,11 @@
 	path = external/tree-sitter-plantuml
 	url = https://github.com/lyndsysimon/tree-sitter-plantuml.git
 	ignore = dirty
-[submodule "external/QF-ML/"]
-	branch = tools
 [submodule "external/ozz-animation"]
 	path = external/ozz-animation
 	url = https://github.com/guillaumeblanc/ozz-animation.git
 	ignore = dirty
+[submodule "external/tinygltf"]
+	path = external/tinygltf
+	url = https://github.com/syoyo/tinygltf.git
+    ignore = dirty
