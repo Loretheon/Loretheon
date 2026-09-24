@@ -26,9 +26,11 @@ struct Viseme;
 // ttsChunkPlaybackStarted. One subscription is enough, and it is the
 // one that actually marks the start of the clock.
 //
-// If a chunk carries no visemes (the plain synthesis path rather than
-// the captioned path), the clock idles silently for that chunk and
-// logs a single warning for the animator's lifetime.
+// The clock evaluates the timeline as a function of time. Each viseme
+// holds at full weight for most of its duration, then eases into the
+// next viseme over a short blend window. That is what keeps a held
+// consonant from reading as a sustained pose and makes the mouth move
+// through the space between shapes rather than snapping.
 class SpeechAnimator : public QObject {
   Q_OBJECT
 
@@ -38,16 +40,12 @@ public:
                           QObject *parent = nullptr);
   ~SpeechAnimator() override;
 
-  // The tick rate of the clock. Default 60 Hz.
   void setTickIntervalMs(int ms);
   int tickIntervalMs() const;
 
-  // True while a viseme timeline is being played.
   bool isPlaying() const { return m_playing; }
 
 public slots:
-  // Return the mouth to "sil" and stop the clock. Called on shutdown,
-  // when the avatar is hidden, or when speech is aborted.
   void reset();
 
 private slots:
@@ -57,6 +55,7 @@ private slots:
 
 private:
   void applyShape(const QString &shape);
+  void applyBlend(const QString &from, const QString &to, float t);
   void finishTimeline();
 
   InferenceService *m_inference = nullptr;
@@ -70,6 +69,10 @@ private:
 
   bool m_playing = false;
   bool m_warnedAboutEmptyChunk = false;
+
+  // The last shape handed to the avatar. Used to skip redundant
+  // writes when the same shape is held across consecutive ticks.
+  QString m_lastAppliedShape;
 
   int m_tickIntervalMs = 16;
 };

@@ -483,19 +483,19 @@ add_executable(Lore
         src/text/media/MediaPane.cpp
         src/text/media/MediaSettings.cpp
         include/text/media/MediaSettings.h
-        include/voice/VoiceCommand.cpp
+        src/voice/VoiceCommand.cpp
         include/voice/VoiceCommand.h
-        include/voice/VoiceCommandRegistry.cpp
+        src/voice/VoiceCommandRegistry.cpp
         include/voice/VoiceCommandRegistry.h
-        include/voice/SpeechController.cpp
+        src/voice/SpeechController.cpp
         include/voice/SpeechController.h
-        include/voice/DictateCommand.cpp
+        src/voice/DictateCommand.cpp
         include/voice/DictateCommand.h
-        include/voice/ReadAloudCommand.cpp
+        src/voice/ReadAloudCommand.cpp
         include/voice/ReadAloudCommand.h
-        include/voice/SpeechPanel.cpp
+        src/voice/SpeechPanel.cpp
         include/voice/SpeechPanel.h
-        include/voice/LiveDictateCommand.cpp
+        src/voice/LiveDictateCommand.cpp
         include/voice/LiveDictateCommand.h
         src/search/VectorIndex.cpp
         include/search/VectorIndex.h

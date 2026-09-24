@@ -47,10 +47,23 @@ public:
 
   bool isLoaded() const { return m_skeletonLoaded; }
 
-  // Apply a viseme by name. The face mesh's morph weights are set to
-  // the mapped shape weights and pushed to the surface on the next
-  // frame. "sil" and unknown names clear all weights.
+  // Apply a viseme by name. Writes the viseme contribution only.
   void applyViseme(const QString &viseme);
+  void applyVisemeBlend(const QString &from, const QString &to, float t);
+  // Blink control.
+  void setBlinkEnabled(bool enabled);
+  bool isBlinkEnabled() const { return m_blinkEnabled; }
+
+  // A multiplier applied to every viseme weight before it is summed
+  // into the face. 1.0 is the table as written. Above 1.0 opens the
+  // mouth more. Below 1.0 closes it.
+  void setVisemeGain(float gain);
+  float visemeGain() const { return m_visemeGain; }
+
+  // True when the assistant is currently speaking. Drives the
+  // expression layer and, in a later pass, the head and gaze.
+  void setSpeaking(bool speaking);
+  bool isSpeaking() const { return m_speaking; }
 
 signals:
   void ticked();
@@ -63,6 +76,36 @@ private:
 
   bool buildSkinBindings();
   void buildMorphData();
+
+  // Advance the blink state machine by dt milliseconds.
+  void updateBlink(int dtMs);
+
+  // Advance the gaze state machine by dt milliseconds. Runs all the
+  // time, not just during speech.
+  void updateGaze(int dtMs);
+
+  // Advance the expression layer by dt milliseconds. Reads the viseme
+  // stream and the speaking flag. Runs all the time; the resting
+  // expression is the neutral face.
+  void updateExpression(int dtMs);
+
+  // Sum every facial contribution into m_morphWeights and push to
+  // the surface. Called whenever any contribution changes.
+  void pushFaceWeights();
+
+  void scheduleNextBlink();
+  void scheduleNextGaze();
+
+  enum class BlinkState {
+    Idle,
+    Closing,
+    Opening,
+  };
+
+  enum class GazeState {
+    Holding,
+    Moving,
+  };
 
   ozz::animation::Skeleton m_skeleton;
   bool m_skeletonLoaded = false;
@@ -85,9 +128,86 @@ private:
 
   std::vector<QMatrix4x4> m_skinningMatrices;
 
-  // Per-target weights for the face mesh, one float per morph target
-  // in the face mesh's target order. Zero when silent.
+  // Facial weights. Five vectors the same size as the face mesh's
+  // morph target count. m_morphWeights is the sum of the others.
+  std::vector<float> m_visemeWeights;
+  std::vector<float> m_expressionWeights;
+  std::vector<float> m_gazeWeights;
+  std::vector<float> m_blinkWeights;
   std::vector<float> m_morphWeights;
+
+  // Morph target indices for the shapes the layers drive, resolved
+  // once at buildMorphData. -1 when the model does not carry the name.
+  int m_blinkLeftIndex = -1;
+  int m_blinkRightIndex = -1;
+
+  int m_browInnerLeft = -1;
+  int m_browInnerRight = -1;
+  int m_browOuterLeft = -1;
+  int m_browOuterRight = -1;
+  int m_cheekRaiseLeft = -1;
+  int m_cheekRaiseRight = -1;
+  int m_eyeSquintLeft = -1;
+  int m_eyeSquintRight = -1;
+  int m_mouthSmileLeft = -1;
+  int m_mouthSmileRight = -1;
+
+  int m_gazeLeftL = -1;
+  int m_gazeLeftR = -1;
+  int m_gazeRightL = -1;
+  int m_gazeRightR = -1;
+  int m_gazeUpL = -1;
+  int m_gazeUpR = -1;
+  int m_gazeDownL = -1;
+  int m_gazeDownR = -1;
+
+  // Blink state.
+  bool m_blinkEnabled = true;
+  BlinkState m_blinkState = BlinkState::Idle;
+  int m_blinkElapsedMs = 0;
+  int m_blinkNextMs = 0;
+
+  int m_blinkCloseDurationMs = 60;
+  int m_blinkOpenDurationMs = 90;
+  int m_blinkMinIntervalMs = 2000;
+  int m_blinkMaxIntervalMs = 6000;
+
+  // Gaze state. The eyes hold a target for a while, then move to a
+  // new one over a short time.
+  GazeState m_gazeState = GazeState::Holding;
+  int m_gazeElapsedMs = 0;
+  int m_gazeHoldMs = 1500;
+
+  float m_gazeTargetX = 0.0f;
+  float m_gazeTargetY = 0.0f;
+  float m_gazeCurrentX = 0.0f;
+  float m_gazeCurrentY = 0.0f;
+
+  int m_gazeMoveDurationMs = 90;
+  int m_gazeMinHoldMs = 600;
+  int m_gazeMaxHoldMs = 1800;
+
+  // Expression state. A slow follower that reacts to the viseme
+  // stream and to the speaking flag. Not a state machine: it is a
+  // set of smoothed targets.
+  float m_browTarget = 0.0f;
+  float m_browCurrent = 0.0f;
+  float m_cheekTarget = 0.0f;
+  float m_cheekCurrent = 0.0f;
+  float m_squintTarget = 0.0f;
+  float m_squintCurrent = 0.0f;
+  float m_smileTarget = 0.0f;
+  float m_smileCurrent = 0.0f;
+
+  // The last viseme written by applyViseme. Read by the expression
+  // layer to decide how much brow and cheek to apply.
+  QString m_lastViseme;
+
+  // Speaking flag from the conductor. When true, the resting face is
+  // slightly raised and the expression layer runs with higher gains.
+  bool m_speaking = false;
+
+  float m_visemeGain = 1.35f;
 
   VisemeTable m_visemeTable;
 

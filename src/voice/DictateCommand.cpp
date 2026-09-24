@@ -1,7 +1,7 @@
 #include "../../include/voice/DictateCommand.h"
 
-#include "../../include/voice/SpeechController.h"
 #include "../../include/text/TextEdit.h"
+#include "../../include/voice/SpeechController.h"
 
 #include <QDebug>
 #include <QTextCursor>

@@ -26,7 +26,7 @@ class AvatarWidget : public QQuickWidget {
 public:
   explicit AvatarWidget(QWidget *parent = nullptr);
   ~AvatarWidget() override;
-
+  void setSpeaking(bool speaking);
   void applyConfig(const AvatarConfig &config);
 
   void setResizable(bool resizable);
@@ -40,7 +40,7 @@ public:
   void setExpression(const QString &name);
   void playMotion(const QString &name);
   void applyViseme(const QString &shape);
-
+  void applyVisemeBlend(const QString &from, const QString &to, float t);
   void placeByBottomRightOffset(const QPoint &offset);
   QPoint bottomRightOffset() const;
 

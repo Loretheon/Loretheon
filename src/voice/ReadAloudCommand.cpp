@@ -1,7 +1,7 @@
 #include "../../include/voice/ReadAloudCommand.h"
 
-#include "../../include/voice/SpeechController.h"
 #include "../../include/text/TextEdit.h"
+#include "../../include/voice/SpeechController.h"
 
 #include <QPlainTextEdit>
 

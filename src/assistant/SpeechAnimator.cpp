@@ -10,6 +10,12 @@ namespace {
 
 const QString kSilence = QStringLiteral("sil");
 
+// The blend window. Each viseme holds at full weight for most of its
+// duration, then eases into the next viseme over this many
+// milliseconds. If a viseme is shorter than twice this, the window
+// is halved so the viseme still has a settled centre.
+constexpr int kBlendWindowMs = 40;
+
 } // namespace
 
 SpeechAnimator::SpeechAnimator(InferenceService *inference,
@@ -39,15 +45,10 @@ void SpeechAnimator::setTickIntervalMs(int ms) {
 int SpeechAnimator::tickIntervalMs() const { return m_tickIntervalMs; }
 
 void SpeechAnimator::onChunkPlaybackStarted(const AudioChunk &chunk) {
-  // A new chunk replaces whatever was playing. Chunks play
-  // sequentially, so the previous timeline is already finished; but
-  // if the sink restarted early, this is the safe behaviour.
   m_visemes = chunk.visemes;
   m_visemeIndex = -1;
 
   if (m_visemes.isEmpty()) {
-    // Warn once per animator lifetime, not once per chunk, so a
-    // configuration problem is visible without flooding the log.
     if (!m_warnedAboutEmptyChunk) {
       qDebug() << "[SpeechAnimator] Chunk carries no visemes; the "
                   "captioned TTS path is probably not in use.";
@@ -77,7 +78,6 @@ void SpeechAnimator::onTick() {
     return;
   }
 
-  // If the sink stopped for any reason, return to silence.
   if (m_inference && !m_inference->isTtsSpeaking()) {
     finishTimeline();
     return;
@@ -85,13 +85,47 @@ void SpeechAnimator::onTick() {
 
   const qint64 elapsed = m_clock.elapsed();
 
-  // Advance the viseme index while the next viseme's start has been
-  // passed. A chunk's visemes are ordered and non-overlapping, so a
-  // forward walk is correct and O(1) amortised.
+  // Find the current viseme by walking the timeline forward. The
+  // visemes are ordered and non-overlapping, so a forward walk is
+  // correct and O(1) amortised.
   while (m_visemeIndex + 1 < m_visemes.size() &&
          m_visemes.at(m_visemeIndex + 1).startMs <= elapsed) {
     ++m_visemeIndex;
-    applyShape(m_visemes.at(m_visemeIndex).shape);
+  }
+
+  if (m_visemeIndex < 0) {
+    return;
+  }
+
+  const Viseme &current = m_visemes.at(m_visemeIndex);
+
+  // Are we inside the blend window at the tail of the current viseme?
+  // If so, blend into the next viseme. If not, hold the current shape
+  // at full weight.
+  const bool hasNext = (m_visemeIndex + 1 < m_visemes.size());
+
+  const int duration = current.endMs - current.startMs;
+
+  const int blendWindow = (duration > 0 && duration < 2 * kBlendWindowMs)
+                              ? duration / 2
+                              : kBlendWindowMs;
+
+  const int blendStartMs = current.endMs - blendWindow;
+
+  if (hasNext && elapsed >= blendStartMs) {
+    const Viseme &next = m_visemes.at(m_visemeIndex + 1);
+
+    float t = 0.0f;
+    if (blendWindow > 0) {
+      t = static_cast<float>(elapsed - blendStartMs) /
+          static_cast<float>(blendWindow);
+    }
+
+    t = qBound(0.0f, t, 1.0f);
+
+    applyBlend(current.shape, next.shape, t);
+  } else {
+    applyShape(current.shape);
   }
 
   // If we have passed the last viseme's end, the timeline is done.
@@ -101,19 +135,44 @@ void SpeechAnimator::onTick() {
 }
 
 void SpeechAnimator::applyShape(const QString &shape) {
-  qDebug() << "[SpeechAnimator] applyShape" << shape;
-
   if (!m_avatar) {
     return;
   }
 
+  // Track the last applied shape so an identical consecutive shape
+  // does not re-trigger the full weight write. The avatar applies it
+  // in its own time; this is only an optimisation.
+  if (shape == m_lastAppliedShape) {
+    return;
+  }
+
+  m_lastAppliedShape = shape;
+
   m_avatar->applyViseme(shape);
 }
+
+void SpeechAnimator::applyBlend(const QString &from, const QString &to,
+                                float t) {
+  if (!m_avatar) {
+    return;
+  }
+
+  m_lastAppliedShape.clear();
+
+  m_avatar->applyVisemeBlend(from, to, t);
+}
+
 void SpeechAnimator::finishTimeline() {
   m_playing = false;
   m_timer->stop();
   m_visemes.clear();
   m_visemeIndex = -1;
+  m_lastAppliedShape.clear();
+
+  if (m_avatar) {
+    m_avatar->setSpeaking(false);
+  }
+
   applyShape(kSilence);
 }
 

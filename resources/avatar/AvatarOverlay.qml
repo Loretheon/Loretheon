@@ -24,13 +24,13 @@ Item {
         anchors.fill: parent
         objectName: "avatarSurface"
 
-        cameraDistance: 2.42
+        cameraDistance: 0.45
         cameraYaw: 0.0
         cameraPitch: 0.0
         cameraFov: 45.0
 
-        targetX: 0.0
-        targetY: 0.85
+        targetX: 0.05
+        targetY: 1.56
         targetZ: 0.01
 
         modelScale: 1.0

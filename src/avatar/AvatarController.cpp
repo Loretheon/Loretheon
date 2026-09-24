@@ -10,8 +10,11 @@
 #include <QFileInfo>
 #include <QMatrix4x4>
 #include <QQuickItem>
+#include <QRandomGenerator>
 #include <QTimer>
 #include <QVariant>
+
+#include <cmath>
 
 #include <ozz/animation/runtime/animation.h>
 #include <ozz/animation/runtime/local_to_model_job.h>
@@ -63,18 +66,50 @@ QByteArray readResource(const QString &path) {
   return data;
 }
 
+float approach(float current, float target, float rate, int dtMs) {
+  const float t = 1.0f - std::exp(-rate * dtMs / 1000.0f);
+  return current + (target - current) * t;
+}
+
 } // namespace
 
 AvatarController::AvatarController(QObject *parent) : QObject(parent) {
   m_timer = new QTimer(this);
   m_timer->setInterval(16);
   connect(m_timer, &QTimer::timeout, this, &AvatarController::onTick);
+
+  m_blinkNextMs = QRandomGenerator::global()->bounded(
+      m_blinkMinIntervalMs, m_blinkMaxIntervalMs + 1);
+
+  m_gazeHoldMs = QRandomGenerator::global()->bounded(
+      m_gazeMinHoldMs, m_gazeMaxHoldMs + 1);
 }
 
 AvatarController::~AvatarController() = default;
 
 void AvatarController::setSurface(AvatarSurface *surface) {
   m_surface = surface;
+}
+
+void AvatarController::setBlinkEnabled(bool enabled) {
+  m_blinkEnabled = enabled;
+
+  if (!enabled) {
+    std::fill(m_blinkWeights.begin(), m_blinkWeights.end(), 0.0f);
+    m_blinkState = BlinkState::Idle;
+    m_blinkElapsedMs = 0;
+    scheduleNextBlink();
+    pushFaceWeights();
+  }
+}
+
+void AvatarController::setVisemeGain(float gain) {
+  m_visemeGain = qBound(0.0f, gain, 3.0f);
+  pushFaceWeights();
+}
+
+void AvatarController::setSpeaking(bool speaking) {
+  m_speaking = speaking;
 }
 
 bool AvatarController::loadArchives(const QString &skeletonPath,
@@ -285,29 +320,71 @@ void AvatarController::buildMorphData() {
     return;
   }
 
-  const AvatarPrimitive &prim = face.primitives.first();
+  for (const AvatarPrimitive &prim : face.primitives) {
+    for (int t = 0; t < prim.morphTargetNames.size(); ++t) {
+      const QString &name = prim.morphTargetNames.at(t);
 
-  for (int t = 0; t < prim.morphTargetNames.size(); ++t) {
-    const QString &name = prim.morphTargetNames.at(t);
+      if (name.isEmpty()) {
+        continue;
+      }
 
-    if (name.isEmpty()) {
-      continue;
-    }
-
-    // First occurrence wins. All six primitives share the same order.
-    if (!m_meshData.faceMorphNameToIndex.contains(name)) {
-      m_meshData.faceMorphNameToIndex.insert(name, t);
+      if (!m_meshData.faceMorphNameToIndex.contains(name)) {
+        m_meshData.faceMorphNameToIndex.insert(name, t);
+      }
     }
   }
 
   m_visemeTable.build(m_meshData.faceMorphNameToIndex);
 
-  m_morphWeights.assign(
-      static_cast<size_t>(prim.morphTargetCount()), 0.0f);
+  int targetCount = 0;
+
+  for (const AvatarPrimitive &prim : face.primitives) {
+    targetCount = qMax(targetCount, prim.morphTargetCount());
+  }
+
+  m_visemeWeights.assign(static_cast<size_t>(targetCount), 0.0f);
+  m_expressionWeights.assign(static_cast<size_t>(targetCount), 0.0f);
+  m_gazeWeights.assign(static_cast<size_t>(targetCount), 0.0f);
+  m_blinkWeights.assign(static_cast<size_t>(targetCount), 0.0f);
+  m_morphWeights.assign(static_cast<size_t>(targetCount), 0.0f);
+
+  auto indexOf = [this](const char *name) {
+    return m_meshData.faceMorphNameToIndex.value(
+        QString::fromLatin1(name), -1);
+  };
+
+  m_blinkLeftIndex = indexOf("Eye_Blink_L");
+  m_blinkRightIndex = indexOf("Eye_Blink_R");
+
+  m_browInnerLeft = indexOf("Brow_Raise_Inner_L");
+  m_browInnerRight = indexOf("Brow_Raise_Inner_R");
+  m_browOuterLeft = indexOf("Brow_Raise_Outer_L");
+  m_browOuterRight = indexOf("Brow_Raise_Outer_R");
+  m_cheekRaiseLeft = indexOf("Cheek_Raise_L");
+  m_cheekRaiseRight = indexOf("Cheek_Raise_R");
+  m_eyeSquintLeft = indexOf("Eye_Squint_L");
+  m_eyeSquintRight = indexOf("Eye_Squint_R");
+  m_mouthSmileLeft = indexOf("Mouth_Smile_L");
+  m_mouthSmileRight = indexOf("Mouth_Smile_R");
+
+  m_gazeLeftL = indexOf("Eye_L_Look_L");
+  m_gazeLeftR = indexOf("Eye_R_Look_L");
+  m_gazeRightL = indexOf("Eye_L_Look_R");
+  m_gazeRightR = indexOf("Eye_R_Look_R");
+  m_gazeUpL = indexOf("Eye_L_Look_Up");
+  m_gazeUpR = indexOf("Eye_R_Look_Up");
+  m_gazeDownL = indexOf("Eye_L_Look_Down");
+  m_gazeDownR = indexOf("Eye_R_Look_Down");
 
   qDebug() << "[AvatarController] Morph data:"
            << m_meshData.faceMorphNameToIndex.size() << "named targets,"
-           << m_morphWeights.size() << "weight slots.";
+           << targetCount << "weight slots,"
+           << "blink L/R" << m_blinkLeftIndex << m_blinkRightIndex
+           << "brow" << m_browInnerLeft << m_browOuterLeft
+           << "cheek" << m_cheekRaiseLeft
+           << "squint" << m_eyeSquintLeft
+           << "smile" << m_mouthSmileLeft
+           << "gaze L/R" << m_gazeLeftL << m_gazeRightL;
 }
 
 void AvatarController::start() {
@@ -326,91 +403,6 @@ void AvatarController::start() {
 
   buildMorphData();
 
-  // One-shot bind-pose bounds check. The skinning matrices are
-  // identity here, so skinned bounds should equal source bounds. A
-  // difference means the skinning deforms the bind pose.
-  {
-    float srcMinX = 1e9f, srcMaxX = -1e9f;
-    float srcMinY = 1e9f, srcMaxY = -1e9f;
-    float srcMinZ = 1e9f, srcMaxZ = -1e9f;
-
-    float dstMinX = 1e9f, dstMaxX = -1e9f;
-    float dstMinY = 1e9f, dstMaxY = -1e9f;
-    float dstMinZ = 1e9f, dstMaxZ = -1e9f;
-
-    for (const AvatarMesh &mesh : m_meshData.meshes) {
-      for (const AvatarPrimitive &prim : mesh.primitives) {
-        for (int i = 0; i < prim.vertexCount(); ++i) {
-          const float x = prim.positions.at(i * 3 + 0);
-          const float y = prim.positions.at(i * 3 + 1);
-          const float z = prim.positions.at(i * 3 + 2);
-
-          srcMinX = qMin(srcMinX, x);
-          srcMaxX = qMax(srcMaxX, x);
-          srcMinY = qMin(srcMinY, y);
-          srcMaxY = qMax(srcMaxY, y);
-          srcMinZ = qMin(srcMinZ, z);
-          srcMaxZ = qMax(srcMaxZ, z);
-
-          const int j0 = prim.jointIndices.at(i * 4 + 0);
-          const int j1 = prim.jointIndices.at(i * 4 + 1);
-          const int j2 = prim.jointIndices.at(i * 4 + 2);
-          const int j3 = prim.jointIndices.at(i * 4 + 3);
-
-          const float w0 = prim.jointWeights.at(i * 4 + 0);
-          const float w1 = prim.jointWeights.at(i * 4 + 1);
-          const float w2 = prim.jointWeights.at(i * 4 + 2);
-          const float w3 = prim.jointWeights.at(i * 4 + 3);
-
-          QMatrix4x4 skin;
-          for (int r = 0; r < 4; ++r) {
-            for (int c = 0; c < 4; ++c) {
-              skin(r, c) = 0.0f;
-            }
-          }
-
-          auto add = [&](int j, float w) {
-            if (j < 0 ||
-                j >= static_cast<int>(m_skinningMatrices.size())) {
-              return;
-            }
-
-            const QMatrix4x4 &m =
-                m_skinningMatrices[static_cast<size_t>(j)];
-
-            for (int r = 0; r < 4; ++r) {
-              for (int c = 0; c < 4; ++c) {
-                skin(r, c) += w * m(r, c);
-              }
-            }
-          };
-
-          add(j0, w0);
-          add(j1, w1);
-          add(j2, w2);
-          add(j3, w3);
-
-          const QVector4D p = skin * QVector4D(x, y, z, 1.0f);
-
-          dstMinX = qMin(dstMinX, p.x());
-          dstMaxX = qMax(dstMaxX, p.x());
-          dstMinY = qMin(dstMinY, p.y());
-          dstMaxY = qMax(dstMaxY, p.y());
-          dstMinZ = qMin(dstMinZ, p.z());
-          dstMaxZ = qMax(dstMaxZ, p.z());
-        }
-      }
-    }
-
-    qDebug() << "[AvatarController] Bind-pose bounds check:";
-    qDebug() << "  source  y:" << srcMinY << ".." << srcMaxY
-             << " x:" << srcMinX << ".." << srcMaxX
-             << " z:" << srcMinZ << ".." << srcMaxZ;
-    qDebug() << "  skinned y:" << dstMinY << ".." << dstMaxY
-             << " x:" << dstMinX << ".." << dstMaxX
-             << " z:" << dstMinZ << ".." << dstMaxZ;
-  }
-
   if (m_surface) {
     m_surface->setSkinningMatrices(m_skinningMatrices);
     m_surface->setMorphWeights(m_morphWeights);
@@ -419,6 +411,7 @@ void AvatarController::start() {
   m_time = 0.0f;
   m_timer->start();
 }
+
 void AvatarController::stop() { m_timer->stop(); }
 
 void AvatarController::playClip(const QString &name) {
@@ -444,15 +437,13 @@ void AvatarController::playClip(const QString &name) {
 }
 
 void AvatarController::applyViseme(const QString &viseme) {
-  qDebug() << "[AvatarController] applyViseme called with"
-         << viseme
-         << "table keys:" << m_visemeTable.knownVisemes();
-
-  if (m_morphWeights.empty()) {
+  if (m_visemeWeights.empty()) {
     return;
   }
 
-  std::fill(m_morphWeights.begin(), m_morphWeights.end(), 0.0f);
+  m_lastViseme = viseme;
+
+  std::fill(m_visemeWeights.begin(), m_visemeWeights.end(), 0.0f);
 
   if (viseme != QStringLiteral("sil") && !viseme.isEmpty()) {
     const QVector<VisemeTable::Weight> weights =
@@ -460,30 +451,395 @@ void AvatarController::applyViseme(const QString &viseme) {
 
     for (const VisemeTable::Weight &w : weights) {
       if (w.morphIndex < 0 ||
-          w.morphIndex >= static_cast<int>(m_morphWeights.size())) {
+          w.morphIndex >= static_cast<int>(m_visemeWeights.size())) {
         continue;
-          }
+      }
 
-      m_morphWeights[static_cast<size_t>(w.morphIndex)] = w.weight;
+      m_visemeWeights[static_cast<size_t>(w.morphIndex)] = w.weight;
+    }
+
+    static int counter = 0;
+
+    if (++counter % 60 == 0 &&
+        (viseme == QStringLiteral("aa") ||
+         viseme == QStringLiteral("E") ||
+         viseme == QStringLiteral("O") ||
+         viseme == QStringLiteral("U"))) {
+      float jaw = 0.0f;
+      float vOpen = 0.0f;
+      float mouthUp = 0.0f;
+      float dropLower = 0.0f;
+
+      if (m_meshData.faceMorphNameToIndex.contains("Jaw_Open")) {
+        const int idx = m_meshData.faceMorphNameToIndex.value("Jaw_Open");
+        if (idx >= 0 && idx < static_cast<int>(m_visemeWeights.size())) {
+          jaw = m_visemeWeights[static_cast<size_t>(idx)];
+        }
+      }
+
+      if (m_meshData.faceMorphNameToIndex.contains("V_Open")) {
+        const int idx = m_meshData.faceMorphNameToIndex.value("V_Open");
+        if (idx >= 0 && idx < static_cast<int>(m_visemeWeights.size())) {
+          vOpen = m_visemeWeights[static_cast<size_t>(idx)];
+        }
+      }
+
+      if (m_meshData.faceMorphNameToIndex.contains("Mouth_Up")) {
+        const int idx = m_meshData.faceMorphNameToIndex.value("Mouth_Up");
+        if (idx >= 0 && idx < static_cast<int>(m_visemeWeights.size())) {
+          mouthUp = m_visemeWeights[static_cast<size_t>(idx)];
+        }
+      }
+
+      if (m_meshData.faceMorphNameToIndex.contains("Mouth_Drop_Lower")) {
+        const int idx =
+            m_meshData.faceMorphNameToIndex.value("Mouth_Drop_Lower");
+        if (idx >= 0 && idx < static_cast<int>(m_visemeWeights.size())) {
+          dropLower = m_visemeWeights[static_cast<size_t>(idx)];
+        }
+      }
+
+      qDebug() << "[AvatarController] viseme" << viseme
+               << "jaw" << jaw
+               << "V_Open" << vOpen
+               << "Mouth_Up" << mouthUp
+               << "Drop_Lower" << dropLower
+               << "gain" << m_visemeGain;
     }
   }
 
-  int set = 0;
-  for (float w : m_morphWeights) {
-    if (w != 0.0f) {
-      ++set;
+  pushFaceWeights();
+}
+
+void AvatarController::applyVisemeBlend(const QString &from,
+                                        const QString &to,
+                                        float t) {
+  if (m_visemeWeights.empty()) {
+    return;
+  }
+
+  t = qBound(0.0f, t, 1.0f);
+
+  m_lastViseme = (t < 0.5f) ? from : to;
+
+  std::fill(m_visemeWeights.begin(), m_visemeWeights.end(), 0.0f);
+
+  const QVector<VisemeTable::Weight> fromWeights =
+      m_visemeTable.weightsFor(from);
+  const QVector<VisemeTable::Weight> toWeights =
+      m_visemeTable.weightsFor(to);
+
+  const float invT = 1.0f - t;
+
+  for (const VisemeTable::Weight &w : fromWeights) {
+    if (w.morphIndex < 0 ||
+        w.morphIndex >= static_cast<int>(m_visemeWeights.size())) {
+      continue;
+    }
+
+    m_visemeWeights[static_cast<size_t>(w.morphIndex)] += w.weight * invT;
+  }
+
+  for (const VisemeTable::Weight &w : toWeights) {
+    if (w.morphIndex < 0 ||
+        w.morphIndex >= static_cast<int>(m_visemeWeights.size())) {
+      continue;
+    }
+
+    m_visemeWeights[static_cast<size_t>(w.morphIndex)] += w.weight * t;
+  }
+
+  pushFaceWeights();
+}
+
+void AvatarController::scheduleNextBlink() {
+  m_blinkNextMs = QRandomGenerator::global()->bounded(
+      m_blinkMinIntervalMs, m_blinkMaxIntervalMs + 1);
+}
+
+void AvatarController::updateBlink(int dtMs) {
+  if (!m_blinkEnabled) {
+    return;
+  }
+
+  if (m_blinkLeftIndex < 0 || m_blinkRightIndex < 0) {
+    return;
+  }
+
+  bool changed = false;
+
+  if (m_blinkState == BlinkState::Idle) {
+    m_blinkElapsedMs += dtMs;
+
+    if (m_blinkElapsedMs >= m_blinkNextMs) {
+      m_blinkState = BlinkState::Closing;
+      m_blinkElapsedMs = 0;
+    }
+  } else if (m_blinkState == BlinkState::Closing) {
+    m_blinkElapsedMs += dtMs;
+
+    float t = static_cast<float>(m_blinkElapsedMs) /
+              static_cast<float>(m_blinkCloseDurationMs);
+
+    if (t >= 1.0f) {
+      t = 1.0f;
+      m_blinkState = BlinkState::Opening;
+      m_blinkElapsedMs = 0;
+    }
+
+    m_blinkWeights[static_cast<size_t>(m_blinkLeftIndex)] = t;
+    m_blinkWeights[static_cast<size_t>(m_blinkRightIndex)] = t;
+    changed = true;
+  } else if (m_blinkState == BlinkState::Opening) {
+    m_blinkElapsedMs += dtMs;
+
+    float t = 1.0f - static_cast<float>(m_blinkElapsedMs) /
+                         static_cast<float>(m_blinkOpenDurationMs);
+
+    if (t <= 0.0f) {
+      t = 0.0f;
+      m_blinkState = BlinkState::Idle;
+      m_blinkElapsedMs = 0;
+      scheduleNextBlink();
+    }
+
+    m_blinkWeights[static_cast<size_t>(m_blinkLeftIndex)] = t;
+    m_blinkWeights[static_cast<size_t>(m_blinkRightIndex)] = t;
+    changed = true;
+  }
+
+  if (changed) {
+    pushFaceWeights();
+  }
+}
+
+void AvatarController::scheduleNextGaze() {
+  m_gazeHoldMs = QRandomGenerator::global()->bounded(
+      m_gazeMinHoldMs, m_gazeMaxHoldMs + 1);
+}
+
+void AvatarController::updateGaze(int dtMs) {
+  if (m_gazeLeftL < 0 || m_gazeRightL < 0) {
+    return;
+  }
+
+  const int moveDurationMs = m_speaking ? 70 : 90;
+  const int minHoldMs = m_speaking ? 350 : 600;
+  const int maxHoldMs = m_speaking ? 1100 : 1800;
+  const float stepX = m_speaking ? 1.3f : 0.9f;
+  const float stepY = m_speaking ? 0.7f : 0.5f;
+  const float clampX = m_speaking ? 0.45f : 0.60f;
+  const float clampY = m_speaking ? 0.25f : 0.35f;
+
+  bool changed = false;
+
+  if (m_gazeState == GazeState::Holding) {
+    m_gazeElapsedMs += dtMs;
+
+    if (m_gazeElapsedMs >= m_gazeHoldMs) {
+      auto rg = QRandomGenerator::global();
+
+      const float dx = (rg->generateDouble() - 0.5f) * stepX;
+      const float dy = (rg->generateDouble() - 0.5f) * stepY;
+
+      m_gazeTargetX = qBound(-clampX, m_gazeTargetX + dx, clampX);
+      m_gazeTargetY = qBound(-clampY, m_gazeTargetY + dy, clampY);
+
+      m_gazeState = GazeState::Moving;
+      m_gazeElapsedMs = 0;
+    }
+  } else if (m_gazeState == GazeState::Moving) {
+    m_gazeElapsedMs += dtMs;
+
+    const float t = static_cast<float>(m_gazeElapsedMs) /
+                    static_cast<float>(moveDurationMs);
+
+    if (t >= 1.0f) {
+      m_gazeCurrentX = m_gazeTargetX;
+      m_gazeCurrentY = m_gazeTargetY;
+      m_gazeState = GazeState::Holding;
+      m_gazeElapsedMs = 0;
+      m_gazeHoldMs = QRandomGenerator::global()->bounded(
+          minHoldMs, maxHoldMs + 1);
+    } else {
+      m_gazeCurrentX = approach(m_gazeCurrentX, m_gazeTargetX,
+                                20.0f, dtMs);
+      m_gazeCurrentY = approach(m_gazeCurrentY, m_gazeTargetY,
+                                20.0f, dtMs);
+    }
+
+    changed = true;
+  }
+
+  if (!changed) {
+    return;
+  }
+
+  const float gx = m_gazeCurrentX;
+  const float gy = m_gazeCurrentY;
+
+  const float lookRight = gx > 0.0f ? gx : 0.0f;
+  const float lookLeft = gx < 0.0f ? -gx : 0.0f;
+  const float lookUp = gy > 0.0f ? gy : 0.0f;
+  const float lookDown = gy < 0.0f ? -gy : 0.0f;
+
+  auto set = [this](int index, float value) {
+    if (index >= 0 &&
+        index < static_cast<int>(m_gazeWeights.size())) {
+      m_gazeWeights[static_cast<size_t>(index)] = value;
+    }
+  };
+
+  set(m_gazeLeftL, lookLeft);
+  set(m_gazeLeftR, lookLeft);
+  set(m_gazeRightL, lookRight);
+  set(m_gazeRightR, lookRight);
+  set(m_gazeUpL, lookUp);
+  set(m_gazeUpR, lookUp);
+  set(m_gazeDownL, lookDown);
+  set(m_gazeDownR, lookDown);
+
+  pushFaceWeights();
+}
+
+void AvatarController::updateExpression(int dtMs) {
+  constexpr float kRestingSquint = 0.15f;
+  constexpr float kBaseSmile = 0.30f;
+
+  float browTarget = 0.12f;
+  float cheekTarget = 0.18f;
+  float squintTarget = kRestingSquint;
+  float smileTarget = kBaseSmile;
+
+  if (m_speaking) {
+    browTarget = 0.28f;
+    cheekTarget = 0.35f;
+    smileTarget = kBaseSmile + 0.25f;
+
+    if (m_lastViseme == QStringLiteral("aa") ||
+        m_lastViseme == QStringLiteral("O") ||
+        m_lastViseme == QStringLiteral("E")) {
+      browTarget += 0.22f;
+      cheekTarget += 0.30f;
+    }
+
+    if (m_lastViseme == QStringLiteral("I") ||
+        m_lastViseme == QStringLiteral("E")) {
+      cheekTarget += 0.28f;
+      smileTarget += 0.20f;
+    }
+
+    if (m_lastViseme == QStringLiteral("O") ||
+        m_lastViseme == QStringLiteral("U")) {
+      cheekTarget += 0.18f;
+    }
+
+    if (m_lastViseme == QStringLiteral("SS") ||
+        m_lastViseme == QStringLiteral("nn") ||
+        m_lastViseme == QStringLiteral("PP") ||
+        m_lastViseme == QStringLiteral("FF") ||
+        m_lastViseme == QStringLiteral("TH")) {
+      squintTarget += 0.12f;
+      browTarget -= 0.04f;
+    }
+
+    if (m_lastViseme == QStringLiteral("RR")) {
+      browTarget += 0.15f;
+    }
+
+    if (m_lastViseme == QStringLiteral("DD") ||
+        m_lastViseme == QStringLiteral("kk") ||
+        m_lastViseme == QStringLiteral("CH")) {
+      browTarget += 0.08f;
     }
   }
 
-  qDebug() << "[AvatarController] applyViseme" << viseme
-           << "shapes applied:" << set
-           << "of" << m_morphWeights.size();
+  browTarget = qBound(0.0f, browTarget, 0.70f);
+  cheekTarget = qBound(0.0f, cheekTarget, 0.80f);
+  squintTarget = qBound(0.0f, squintTarget, 0.60f);
+  smileTarget = qBound(0.0f, smileTarget, 0.60f);
+
+  m_browTarget = browTarget;
+  m_cheekTarget = cheekTarget;
+  m_squintTarget = squintTarget;
+  m_smileTarget = smileTarget;
+
+  m_browCurrent = approach(m_browCurrent, m_browTarget, 6.0f, dtMs);
+  m_cheekCurrent = approach(m_cheekCurrent, m_cheekTarget, 6.0f, dtMs);
+  m_squintCurrent = approach(m_squintCurrent, m_squintTarget, 6.0f, dtMs);
+  m_smileCurrent = approach(m_smileCurrent, m_smileTarget, 6.0f, dtMs);
+
+  std::fill(m_expressionWeights.begin(), m_expressionWeights.end(), 0.0f);
+
+  auto set = [this](int index, float value) {
+    if (index >= 0 &&
+        index < static_cast<int>(m_expressionWeights.size())) {
+      m_expressionWeights[static_cast<size_t>(index)] = value;
+    }
+  };
+
+  set(m_browInnerLeft, m_browCurrent);
+  set(m_browInnerRight, m_browCurrent);
+  set(m_browOuterLeft, m_browCurrent * 0.6f);
+  set(m_browOuterRight, m_browCurrent * 0.6f);
+
+  set(m_cheekRaiseLeft, m_cheekCurrent);
+  set(m_cheekRaiseRight, m_cheekCurrent);
+
+  set(m_eyeSquintLeft, m_squintCurrent);
+  set(m_eyeSquintRight, m_squintCurrent);
+
+  set(m_mouthSmileLeft, m_smileCurrent);
+  set(m_mouthSmileRight, m_smileCurrent);
+
+  pushFaceWeights();
+}
+
+void AvatarController::pushFaceWeights() {
+  if (m_morphWeights.empty()) {
+    return;
+  }
+
+  const size_t n = m_morphWeights.size();
+
+  for (size_t i = 0; i < n; ++i) {
+    float v = 0.0f;
+
+    if (i < m_visemeWeights.size()) {
+      v += m_visemeWeights[i] * m_visemeGain;
+    }
+
+    if (i < m_expressionWeights.size()) {
+      v += m_expressionWeights[i];
+    }
+
+    if (i < m_gazeWeights.size()) {
+      v += m_gazeWeights[i];
+    }
+
+    if (i < m_blinkWeights.size()) {
+      v += m_blinkWeights[i];
+    }
+
+    if (v > 1.0f) {
+      v = 1.0f;
+    }
+
+    m_morphWeights[i] = v;
+  }
 
   if (m_surface) {
     m_surface->setMorphWeights(m_morphWeights);
   }
 }
+
 void AvatarController::onTick() {
+  constexpr int kTickMs = 16;
+
+  updateBlink(kTickMs);
+  updateGaze(kTickMs);
+  updateExpression(kTickMs);
+
   if (m_currentClip.isEmpty()) {
     return;
   }

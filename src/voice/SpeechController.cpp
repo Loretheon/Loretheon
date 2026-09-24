@@ -1,7 +1,7 @@
 #include "../../include/voice/SpeechController.h"
 
-#include "voice/AudioRecorder.h"
 #include "inference/InferenceService.h"
+#include "voice/AudioRecorder.h"
 
 #include <QDebug>
 #include <QRegularExpression>

@@ -93,6 +93,84 @@ on them as objects. Closer to a node editor than a tabbed editor.
   goes read-only while the board is open
 - [x] **Notifications** — unified toasts and native notifications
 
+### Assistant avatar
+- [x] **CC Base model** — `Lore.glb`, 7 meshes, 18 primitives, 1
+  skin, 1969 morph targets, loaded with tinygltf v2.9.0 and
+  embedded in the Qt resource system.
+- [x] **Custom GL renderer** — OpenGL 3.2 core through
+  `QOpenGLFunctions_3_2_Core`, drawn inside a `QSGRenderNode` in a
+  `QQuickWidget`. Qt Quick 3D's own model, skeleton, and morph
+  elements are not used because 6.4 caps morph targets at 8.
+- [x] **Skeleton animation** — ozz-animation, 10 clips (idle, walk,
+  walk_left, walk_right, run, run_left, run_right, turn_left,
+  turn_right, jump). Idle plays on startup.
+- [x] **Skinning** — 101 of 142 skin joints matched to ozz by name;
+  the other 41 are `_end` terminals that deform nothing. Skinning
+  matrices uploaded to a texture buffer object, indexed through a
+  `samplerBuffer` because dynamic indexing of a uniform `mat4`
+  array is unreliable on radv.
+- [x] **Inverse bind** — used exactly as stored in the GLB. The
+  centimetre scale pairs with the ozz rest pose, which is also in
+  centimetres; the product is dimensionless and the metre-scale
+  vertices are unaffected.
+- [x] **Bind pose** — the identity skinning matrix array is pushed
+  to the surface before any clip plays, so the model draws correctly
+  even when nothing is animating.
+- [x] **Textures** — 26 base color textures from the GLB, decoded
+  with `QImage` and uploaded as RGBA. Per-primitive binding, with a
+  1x1 white fallback for materials that have no base color texture.
+  `GL_REPEAT` for atlas bands, image flipped vertically once.
+- [x] **Morph targets** — blended on the CPU. The face primitive's
+  positions live in their own VBO, rewritten with one
+  `glBufferSubData` per viseme change.
+- [x] **Viseme table** — maps the Oculus 15 codes to Reallusion
+  shapes on the face mesh. `V_Explosive`, `V_Dental_Lip`,
+  `V_Affricate`, `V_Open`, `V_Wide`, `V_Tight_O`, `Mouth_Close`,
+  `Jaw_Open`, `Mouth_Up`, and the lateral controls.
+- [x] **Coarticulation** — `SpeechAnimator` blends between adjacent
+  visemes over a 40 ms window at the tail of each, so a held
+  consonant does not read as a sustained pose.
+- [x] **Blink** — a state machine in `AvatarController`, closing in
+  60 ms and opening in 90 ms, scheduled 2 to 6 seconds apart.
+- [x] **Expression layer** — brow, cheek, squint, and smile shapes
+  driven by the viseme stream and a speaking flag, with a resting
+  squint to keep the eyes from reading as too wide.
+- [x] **Gaze** — an idle saccade driver that holds a direction for a
+  second or two, then jumps to a nearby one. Runs faster during
+  speech.
+- [x] **Camera** — orbit around a target point, rebuilt on any
+  parameter change or geometry change.
+- [x] **Widget** — a top-level frameless `Qt::Tool` window, not a
+  child of the main window, so the main window's size and aspect
+  ratio do not reach it. Stays on top, does not take keyboard
+  focus.
+- [x] **Move and resize grips** — edge strips and corner grips drawn
+  as QML items with hover-only affordances; the drag is driven from
+  the widget's own mouse events using global coordinates.
+
+### Speech
+- [x] **Speech to text (offline)** — NeMo-Speech.cpp via the C ABI.
+  Push-to-talk, transcribed once on release.
+- [x] **Speech to text (streaming)** — the NeMo streaming C API
+  (`nemo_speech_asr_streaming_recognize` and friends) driven by a
+  worker thread. Interim results replace in place; final results
+  settle.
+- [x] **Text to speech** — HeadTTS server running the timestamped
+  Kokoro ONNX model, launched as a child process over a WebSocket.
+  Sentence-sequenced through `TtsManager`. Read the current document
+  aloud.
+- [x] **Voice command registry** — extensible command interface.
+  `DictateCommand`, `LiveDictateCommand`, `ReadAloudCommand`
+  registered at startup.
+- [x] **Voice panel** — non-modal, toggled by `Ctrl+Shift+Space`,
+  available in both modes.
+- [x] **Viseme sync** — HeadTTS returns Oculus 15 visemes with
+  per-phoneme timing, `SpeechAnimator` drives the mouth from the
+  playback clock, `AvatarController` maps them to morph weights.
+- [x] **TTS reconnect** — if the WebSocket drops, `TtsManager`
+  reconnects on a 2 second timer. Sentences handed in while the
+  socket is down are queued and flushed on reconnect.
+
 ### Source ingest
 - [x] **PDF** — text extraction for born-digital PDFs; one section
   per page with `## Page N` headings.
@@ -137,21 +215,6 @@ on them as objects. Closer to a node editor than a tabbed editor.
   Open routes to the `MediaPane` instead of the text editor.
 - [x] **Binary file rejection** — known-binary extensions are
   refused with a toast rather than opened as garbage text.
-
-### Speech 
-- [x] **Speech to text (offline)** — NeMo-Speech.cpp via the C ABI.
-  Push-to-talk, transcribed once on release.
-- [x] **Speech to text (streaming)** — the NeMo streaming C API
-  (`nemo_speech_asr_streaming_recognize` and friends) driven by a
-  worker thread. Interim results replace in place; final results
-  settle.
-- [x] **Text to speech** — Kokoro via Docker, sentence-sequenced
-  through `TtsManager`. Read the current document aloud.
-- [x] **Voice command registry** — extensible command interface.
-  `DictateCommand`, `LiveDictateCommand`, `ReadAloudCommand`
-  registered at startup.
-- [x] **Voice panel** — non-modal, toggled by `Ctrl+Shift+Space`,
-  available in both modes.
 
 ### Workstation UI
 - [x] Floating and tiled window modes

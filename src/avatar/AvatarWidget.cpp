@@ -140,11 +140,15 @@ void AvatarWidget::onSurfaceReady() {
 
   m_controller->start();
 
-  // m_controller->playClip(QStringLiteral("idle"));
+  m_controller->playClip(QStringLiteral("idle"));
 
   emit modelLoaded();
 }
-
+void AvatarWidget::setSpeaking(bool speaking) {
+  if (m_controller) {
+    m_controller->setSpeaking(speaking);
+  }
+}
 void AvatarWidget::applyConfig(const AvatarConfig &config) {
   m_config = config;
 }
@@ -415,5 +419,12 @@ void AvatarWidget::playMotion(const QString &name) {
 void AvatarWidget::applyViseme(const QString &shape) {
   if (m_controller) {
     m_controller->applyViseme(shape);
+  }
+}
+
+void AvatarWidget::applyVisemeBlend(const QString &from, const QString &to,
+                                    float t) {
+  if (m_controller) {
+    m_controller->applyVisemeBlend(from, to, t);
   }
 }
