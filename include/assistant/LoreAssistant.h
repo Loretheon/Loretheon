@@ -29,20 +29,6 @@ class ScopeIndex;
 class SearchService;
 class SpeechAnimator;
 
-// The conductor. Owns the assistant's long-lived state and runs one
-// LLM turn per user message.
-//
-// The assistant does not do work. She submits jobs and speaks. Search
-// runs through her own RetrievalLoop. Anything that produces or
-// modifies notes goes to OverseerSessionManager, which runs it in a
-// session and reports back through requestFinished. The conversation
-// stays free while the work happens.
-//
-// When a job completes, the completion policy chosen by the user
-// decides what happens to the result: paste it in the chat, feed it
-// to the assistant's next prompt, append it to the user's next
-// message, or let the assistant decide based on whether the user is
-// mid-turn.
 class LoreAssistant : public QObject {
   Q_OBJECT
 
@@ -57,6 +43,7 @@ public:
     NotePromoter *promoter = nullptr;
     ScopeIndex *scopeIndex = nullptr;
 
+    QString notesRoot;
     QString root;
   };
 
@@ -94,16 +81,9 @@ public:
 
 signals:
   void assistantSaid(const QString &text);
-
   void assistantChunk(const QString &text);
-
   void assistantStatus(const QString &text);
-
-  // Emitted when a background job's result is pasted into the chat,
-  // and when a delegated job completes regardless of policy, so the
-  // panel can show a status line.
   void jobCompleted(const QString &summary);
-
   void assistantTurnFinished();
 
 private slots:
@@ -121,16 +101,11 @@ private:
   QString runSearchForTool(const QString &query);
 
   QJsonArray buildMessages(const QString &userText);
-
   assistant::AssistantToolContext buildToolContext();
-
   void runToolRound(const QJsonArray &toolCalls,
                     const QJsonArray &priorMessages);
-
   void finishTurn();
-
   void applyCompletionPolicy(const QString &summary);
-
   QString systemPrompt() const;
 
   Config m_config;
@@ -154,20 +129,12 @@ private:
 
   CompletionPolicy m_completionPolicy = CompletionPolicy::Automatic;
 
-  // Job bookkeeping. Keyed by the id returned from submit.
   QHash<QString, CompletionPolicy> m_pendingJobs;
-
-  // The session each pending job belongs to, for provenance when the
-  // result comes back.
   QHash<QString, QString> m_jobSessions;
 
-  // Results waiting to be fed to the next prompt or appended to the
-  // next user message.
   QStringList m_pendingForPrompt;
   QStringList m_pendingForUserMessage;
 
-  // The assistant's private search pipeline. One run at a time; a new
-  // query cancels the previous one.
   RetrievalLoop *m_searchLoop = nullptr;
   QString m_searchAnswerBuffer;
   bool m_searchInFlight = false;

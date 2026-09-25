@@ -409,9 +409,10 @@ bool DocumentManager::saveDocument(TextDocument *document) {
     emit documentChanged(current);
   }
 
+  emit documentSaved(document);
+
   return true;
 }
-
 bool DocumentManager::renameFile(const QString &oldPath,
                                  const QString &newPath) {
   if (oldPath == newPath) {

@@ -572,6 +572,10 @@ add_executable(Lore
         include/overseer/OverseerSessionManager.h
         src/search/NotePromoter.cpp
         include/search/NotePromoter.h
+        src/assistant/tools/NoteTools.cpp
+        include/assistant/tools/NoteTools.h
+        src/ingest/MarkdownExtractor.cpp
+        include/ingest/MarkdownExtractor.h
 )
 
 add_dependencies(Lore

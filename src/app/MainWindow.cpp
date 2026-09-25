@@ -7,6 +7,7 @@
 #include "../../include/ingest/IngestRegistry.h"
 #include "../../include/ingest/IngestService.h"
 #include "../../include/ingest/NoteWriter.h"
+#include "../../include/search/NotePromoter.h"
 #include "../../include/search/RetrievalLoop.h"
 #include "../../include/search/ScopeIndex.h"
 #include "../../include/search/SearchPage.h"
@@ -26,12 +27,8 @@
 #include "EditSession.h"
 #include "FileWidget.h"
 #include "LlmSettingsPanel.h"
-#include "NotePromoter.h"
 #include "NotificationService.h"
 #include "OverseerPage.h"
-#include "OverseerRunner.h"
-#include "OverseerSession.h"
-#include "OverseerSessionManager.h"
 #include "Settings.h"
 #include "SettingsDialog.h"
 #include "TextEdit.h"
@@ -42,7 +39,7 @@
 #include "app/QfPaths.h"
 #include "inference/InferenceService.h"
 #include "ui/ModelDialog.h"
-
+#include "OverseerSessionManager.h"
 #include <QDir>
 #include <QDirIterator>
 #include <QStandardPaths>
@@ -87,15 +84,8 @@ constexpr auto AvatarOffsetKey = "avatar/offset";
 
 constexpr int ImportConcurrency = 4;
 
-// The one place avatar sizing is defined. Change a value here and
-// everything downstream follows: the QQuickWidget's size, where it
-// sits in the window, and how the figure is framed inside it.
 const AvatarConfig kAvatarConfig{};
 
-// Minimum fraction of the avatar's area that must remain inside the
-// main window for a stored or dragged position to be considered
-// valid. Below this, the position is reset to the default corner.
-// 0.35 means at least a third of her has to be visible.
 constexpr double kMinVisibleFraction = 0.35;
 
 InferenceService::LlmConfig configuredLlm() {
@@ -156,9 +146,6 @@ QString expandTokens(const QString &qss,
   return out;
 }
 
-// Given the main window's rectangle and the avatar's rectangle, return
-// true if at least kMinVisibleFraction of the avatar's area is inside
-// the window.
 bool avatarIsMostlyVisible(const QRect &window, const QRect &avatar) {
   if (window.isEmpty() || avatar.isEmpty()) {
     return false;
@@ -179,10 +166,6 @@ bool avatarIsMostlyVisible(const QRect &window, const QRect &avatar) {
   return overlapArea / avatarArea >= kMinVisibleFraction;
 }
 
-// Clamp the given offset so that at least kMinVisibleFraction of an
-// avatar of the given size remains inside a window of the given size.
-// Offsets are measured from the window's bottom-right corner, so a
-// smaller x or y means the avatar is further from that corner.
 QPoint clampAvatarOffset(const QSize &windowSize, const QSize &avatarSize,
                          const QPoint &offset) {
   if (windowSize.isEmpty() || avatarSize.isEmpty()) {
@@ -225,14 +208,10 @@ MainWindow::~MainWindow() {
 
   if (m_assistantWidget) {
     m_assistantWidget->hide();
-    // Explicit delete. The panel has no QWidget parent.
-    delete m_assistantWidget;
-    m_assistantWidget = nullptr;
   }
 
   if (m_assistantIcon) {
     m_assistantIcon->hide();
-    // Explicit delete. The icon has no QWidget parent.
     delete m_assistantIcon;
     m_assistantIcon = nullptr;
   }
@@ -270,8 +249,6 @@ MainWindow::MainWindow() {
   }
 
   buildNormalPage();
-  m_overseerSessionManager = new OverseerSessionManager(m_inferenceService, this);
-
   buildOverseerPage();
 
   buildIngestLayer();
@@ -292,9 +269,6 @@ MainWindow::MainWindow() {
   createToolbar();
   createMenus();
 
-  // Create the avatar now so m_avatar is valid when LoreAssistant is
-  // constructed. Its position is set later, after the window has its
-  // final geometry.
   createAvatarOverlay();
 
   {
@@ -307,6 +281,7 @@ MainWindow::MainWindow() {
     config.overseerManager = m_overseerSessionManager;
     config.promoter = m_notePromoter;
     config.scopeIndex = m_scopeIndex.get();
+    config.notesRoot = notesRootPath();
     config.root = QStandardPaths::writableLocation(
                       QStandardPaths::AppDataLocation) +
                   QStringLiteral("/assistant");
@@ -314,10 +289,6 @@ MainWindow::MainWindow() {
     m_assistant = new LoreAssistant(config, this);
     m_assistant->start();
 
-    // Top-level windows, no QWidget parent. They are owned by
-    // MainWindow via explicit deletes in ~MainWindow. A QWidget parent
-    // would make them transients of MainWindow, and the window manager
-    // would minimise them along with the main window.
     m_assistantWidget = new AssistantWidget(nullptr);
     m_assistantIcon = new AssistantIcon(nullptr);
 
@@ -355,6 +326,16 @@ MainWindow::MainWindow() {
             }
           },
           Qt::SingleShotConnection);
+
+  connect(m_documentManager, &DocumentManager::documentSaved, this,
+          &MainWindow::onDocumentSaved);
+
+  connect(m_documentManager, &DocumentManager::fileDeleted, this,
+          [this](const QString &path) {
+            if (m_scopeIndex) {
+              m_scopeIndex->removeFile(path);
+            }
+          });
 
   QSettings settings;
 
@@ -400,16 +381,10 @@ MainWindow::MainWindow() {
   if (screen)
     setGeometry(screen->availableGeometry());
 
-  // The window has its final size now. Place the avatar against it.
   positionAvatarOverlay();
 }
 
 void MainWindow::createAvatarOverlay() {
-  // No parent. The avatar is its own top-level window, so the main
-  // window's size and aspect ratio cannot reach it. It is frameless,
-  // has no taskbar entry, stays above other windows, and does not
-  // take keyboard focus. That last flag is what keeps the main window
-  // typing as if the avatar were not there.
   m_avatar = new AvatarWidget(nullptr);
 
   m_avatar->setWindowFlags(Qt::Tool |
@@ -438,8 +413,6 @@ void MainWindow::createAvatarOverlay() {
   m_avatar->setResizable(true);
 
   m_avatar->setModel(QStringLiteral("qrc:/avatar/ccbase/Lore.glb"));
-
-  // Deliberately not shown yet. showEvent places it and shows it.
 }
 
 void MainWindow::positionAvatarOverlay() {
@@ -468,8 +441,6 @@ void MainWindow::positionAssistantIcon() {
     return;
   }
 
-  // The icon is a top-level window anchored to the primary screen,
-  // not to the main window. Anchor and nothing else.
   m_assistantIcon->anchorToScreen();
 }
 
@@ -810,6 +781,9 @@ void MainWindow::buildNormalPage() {
 }
 
 void MainWindow::buildOverseerPage() {
+  m_overseerSessionManager =
+      new OverseerSessionManager(m_inferenceService, this);
+
   m_overseerPage =
       new OverseerPage(m_inferenceService, m_editSession,
                        m_overseerSessionManager, this);
@@ -829,52 +803,52 @@ void MainWindow::buildOverseerPage() {
             }
           });
 
-  connect(m_overseerPage->fileWidget(), &FileWidget::promoteToNotesRequested,
-        this, [this](const QStringList &paths) {
-          if (!m_notePromoter) {
-            return;
-          }
+  connect(m_overseerPage->fileWidget(),
+          &FileWidget::promoteToNotesRequested, this,
+          [this](const QStringList &paths) {
+            if (!m_notePromoter || !m_overseerSessionManager) {
+              return;
+            }
 
-          const QString session = m_overseerSessionManager
-                                      ? m_overseerSessionManager->activeSessionName()
-                                      : QString();
+            const QString session =
+                m_overseerSessionManager->activeSessionName();
 
-          if (session.isEmpty()) {
-            NotificationService::instance().warning(
-                tr("Promote"),
-                tr("No session is open."));
-            return;
-          }
+            if (session.isEmpty()) {
+              NotificationService::instance().warning(
+                  tr("Promote"),
+                  tr("No session is open."));
+              return;
+            }
 
-          OverseerRunner *runner =
-              m_overseerSessionManager->runner(session);
+            const QString notesRoot = notesRootPath();
 
-          if (!runner || !runner->session()) {
-            return;
-          }
+            int written = 0;
+            int skipped = 0;
+            int copiedNotIndexed = 0;
 
-          const QString notesRoot = notesRootPath();
-          const QString sessionOutput = runner->session()->outputPath();
+            for (const QString &path : paths) {
+              const NotePromoter::Result result =
+                  m_notePromoter->promote(path, session, notesRoot);
 
-          int written = 0;
-          int skipped = 0;
+              written += result.written.size();
+              skipped += result.skipped.size();
+              copiedNotIndexed += result.copiedNotIndexed.size();
+            }
 
-          for (const QString &path : paths) {
-            const NotePromoter::Result result =
-                m_notePromoter->promote(path, session, notesRoot);
+            QString body = tr("%1 file(s) added to notes/%2, %3 skipped.")
+                               .arg(written)
+                               .arg(session)
+                               .arg(skipped);
 
-            written += result.written.size();
-            skipped += result.skipped.size();
-          }
+            if (copiedNotIndexed > 0) {
+              body += tr(" %1 copied but not indexed.")
+                          .arg(copiedNotIndexed);
+            }
 
-          NotificationService::instance().info(
-              tr("Promoted"),
-              tr("%1 file(s) added to notes/%2, %3 skipped.")
-                  .arg(written)
-                  .arg(session)
-                  .arg(skipped));
-        });
+            NotificationService::instance().info(tr("Promoted"), body);
+          });
 }
+
 void MainWindow::bindCurrentEditor(TextEdit *editor) {
   if (!editor)
     return;
@@ -1181,6 +1155,7 @@ void MainWindow::createActions() {
   connect(m_rebuildIndexAct, &QAction::triggered, this, [this]() {
     if (m_scopeIndex) {
       m_scopeIndex->rebuild(notesRootPath());
+      m_searchIndexNeedsBuild = false;
     }
   });
 
@@ -1468,10 +1443,6 @@ void MainWindow::closeEvent(QCloseEvent *event) {
 
 void MainWindow::showEvent(QShowEvent *event) {
   QMainWindow::showEvent(event);
-
-  // The window has been shown and the window manager has applied the
-  // frame. Position the avatar now and show it. It was hidden until
-  // this moment so the user never sees the pre-frame position.
   positionAvatarOverlay();
 }
 
@@ -1488,6 +1459,26 @@ void MainWindow::moveEvent(QMoveEvent *event) {
 
   if (m_avatarPlaced) {
     positionAvatarOverlay();
+  }
+}
+
+void MainWindow::changeEvent(QEvent *event) {
+  QMainWindow::changeEvent(event);
+
+  if (event->type() != QEvent::WindowStateChange) {
+    return;
+  }
+
+  if (isMinimized()) {
+    if (m_assistantIcon) {
+      m_assistantIcon->anchorToScreen();
+      m_assistantIcon->show();
+      m_assistantIcon->raise();
+    }
+  } else {
+    if (m_assistantIcon) {
+      m_assistantIcon->hide();
+    }
   }
 }
 
@@ -1560,9 +1551,10 @@ QStringList MainWindow::filterImportable(const QStringList &paths) const {
   return result;
 }
 
-QStringList MainWindow::collectImportableFilesIn(
+QList<MainWindow::ImportCandidate> MainWindow::collectImportableFilesIn(
     const QString &folderPath) const {
-  QStringList result;
+  QList<ImportCandidate> result;
+
   if (folderPath.isEmpty() || !m_ingestService) {
     return result;
   }
@@ -1575,16 +1567,31 @@ QStringList MainWindow::collectImportableFilesIn(
     return result;
   }
 
+  const QDir root(folderPath);
+
   QDirIterator it(folderPath, patterns, QDir::Files | QDir::Readable,
                   QDirIterator::Subdirectories);
+
   while (it.hasNext()) {
-    result.append(it.next());
+    const QString absolute = it.next();
+
+    ImportCandidate candidate;
+    candidate.absolutePath = absolute;
+    candidate.relativeSubpath = root.relativeFilePath(absolute);
+
+    const int slash = candidate.relativeSubpath.lastIndexOf(QChar('/'));
+
+    if (slash >= 0) {
+      candidate.relativeSubpath = candidate.relativeSubpath.left(slash);
+    } else {
+      candidate.relativeSubpath.clear();
+    }
+
+    result.append(candidate);
   }
 
-  result.sort(Qt::CaseInsensitive);
   return result;
 }
-
 void MainWindow::onImportFilesDialog() {
   if (!m_ingestService) {
     return;
@@ -1618,14 +1625,51 @@ void MainWindow::onImportFolderDialog() {
     return;
   }
 
-  const QStringList files = collectImportableFilesIn(folder);
+  const QList<ImportCandidate> candidates =
+      collectImportableFilesIn(folder);
 
-  if (files.isEmpty()) {
+  if (candidates.isEmpty()) {
     reportImportSummary(0, 0, 0);
     return;
   }
 
-  onImportAllRequested(files);
+  const QString folderName = QFileInfo(folder).fileName();
+
+  m_importQueue.clear();
+
+  for (const ImportCandidate &candidate : candidates) {
+    ImportCandidate adjusted = candidate;
+    adjusted.relativeSubpath =
+        candidate.relativeSubpath.isEmpty()
+            ? folderName
+            : folderName + QLatin1Char('/') + candidate.relativeSubpath;
+    m_importQueue.append(adjusted);
+  }
+
+  m_bulkImportSucceeded = 0;
+  m_bulkImportFailed = 0;
+  m_bulkImportTotal = m_importQueue.size();
+  m_bulkImportCompleted = 0;
+  m_bulkImportCancelled = false;
+  m_importInFlight = 0;
+  m_bulkImportTokens.clear();
+
+  m_importProgress = new QProgressDialog(
+      tr("Importing %1 file(s)…").arg(m_importQueue.size()), tr("Cancel"), 0,
+      m_importQueue.size(), this);
+  m_importProgress->setWindowTitle(tr("Import"));
+  m_importProgress->setWindowModality(Qt::WindowModal);
+  m_importProgress->setMinimumDuration(0);
+  m_importProgress->setAutoClose(false);
+  m_importProgress->setAutoReset(false);
+  m_importProgress->show();
+
+  connect(m_importProgress, &QProgressDialog::canceled, this,
+          &MainWindow::onBulkImportCancelled);
+
+  for (int i = 0; i < ImportConcurrency && !m_importQueue.isEmpty(); ++i) {
+    startNextImport();
+  }
 }
 
 void MainWindow::onImportRequested(const QString &path) {
@@ -1641,16 +1685,30 @@ void MainWindow::onImportAllRequested(const QStringList &paths) {
 }
 
 void MainWindow::startBulkImport(const QStringList &paths) {
+  if (paths.isEmpty() || !m_ingestService) {
+    return;
+  }
+
+  m_importQueue.clear();
+
+  for (const QString &path : paths) {
+    ImportCandidate candidate;
+    candidate.absolutePath = path;
+    candidate.relativeSubpath.clear();
+    m_importQueue.append(candidate);
+  }
+
   m_bulkImportSucceeded = 0;
   m_bulkImportFailed = 0;
-  m_bulkImportTotal = paths.size();
+  m_bulkImportTotal = m_importQueue.size();
   m_bulkImportCompleted = 0;
   m_bulkImportCancelled = false;
+  m_importInFlight = 0;
   m_bulkImportTokens.clear();
 
   m_importProgress = new QProgressDialog(
-      tr("Importing %1 file(s)…").arg(paths.size()), tr("Cancel"), 0,
-      paths.size(), this);
+      tr("Importing %1 file(s)…").arg(m_importQueue.size()), tr("Cancel"), 0,
+      m_importQueue.size(), this);
   m_importProgress->setWindowTitle(tr("Import"));
   m_importProgress->setWindowModality(Qt::WindowModal);
   m_importProgress->setMinimumDuration(0);
@@ -1661,31 +1719,60 @@ void MainWindow::startBulkImport(const QStringList &paths) {
   connect(m_importProgress, &QProgressDialog::canceled, this,
           &MainWindow::onBulkImportCancelled);
 
-  for (const QString &path : paths) {
-    IngestOptions options;
-    options.destinationFolder = notesRootPath();
-    options.writeProvenance = true;
-    options.sectionPerPage = true;
-
-    const quint64 token = m_ingestService->import(
-        path, options,
-        [this, token](IngestService::Outcome outcome) {
-          onBulkImportCompleted(token, outcome.ok());
-          if (outcome.ok() && m_documentManager) {
-            m_documentManager->openFile(outcome.notePath);
-          } else if (!outcome.ok() && !m_bulkImportCancelled) {
-            reportImportFailure(QString(), outcome.error);
-          }
-        });
-
-    if (token != 0) {
-      m_bulkImportTokens.append(token);
-    } else {
-      onBulkImportCompleted(0, false);
-    }
+  for (int i = 0; i < ImportConcurrency && !m_importQueue.isEmpty(); ++i) {
+    startNextImport();
   }
 }
 
+void MainWindow::startNextImport() {
+  if (!m_ingestService || m_importQueue.isEmpty() || m_bulkImportCancelled) {
+    return;
+  }
+
+  const ImportCandidate candidate = m_importQueue.takeFirst();
+
+  IngestOptions options;
+  options.destinationFolder = notesRootPath();
+  options.relativeSubpath = candidate.relativeSubpath;
+  options.writeProvenance = true;
+  options.sectionPerPage = true;
+
+  ++m_importInFlight;
+
+  const quint64 token = m_ingestService->import(
+      candidate.absolutePath, options,
+      [this, token](IngestService::Outcome outcome) {
+        onBulkImportCompleted(token, outcome.ok());
+
+        if (outcome.ok()) {
+          if (m_scopeIndex) {
+            m_scopeIndex->addFile(outcome.notePath);
+          }
+        } else if (!m_bulkImportCancelled) {
+          reportImportFailure(QString(), outcome.error);
+        }
+
+        --m_importInFlight;
+
+        if (!m_importQueue.isEmpty() && !m_bulkImportCancelled) {
+          startNextImport();
+        } else if (m_importQueue.isEmpty() && m_importInFlight == 0) {
+          finishBulkImport();
+        }
+      });
+
+  if (token == 0) {
+    --m_importInFlight;
+
+    if (!m_importQueue.isEmpty() && !m_bulkImportCancelled) {
+      startNextImport();
+    } else if (m_importQueue.isEmpty() && m_importInFlight == 0) {
+      finishBulkImport();
+    }
+  } else {
+    m_bulkImportTokens.append(token);
+  }
+}
 void MainWindow::onBulkImportCompleted(quint64, bool ok) {
   if (ok) {
     ++m_bulkImportSucceeded;
@@ -1698,17 +1785,14 @@ void MainWindow::onBulkImportCompleted(quint64, bool ok) {
   if (m_importProgress) {
     m_importProgress->setValue(m_bulkImportCompleted);
   }
-
-  if (m_bulkImportCompleted >= m_bulkImportTotal) {
-    finishBulkImport();
-  }
 }
-
 void MainWindow::onBulkImportCancelled() {
   if (m_bulkImportCancelled) {
     return;
   }
   m_bulkImportCancelled = true;
+
+  m_importQueue.clear();
 
   if (m_ingestService) {
     for (quint64 token : std::as_const(m_bulkImportTokens)) {
@@ -1758,6 +1842,9 @@ void MainWindow::importOne(const QString &sourcePath) {
         if (!outcome.ok()) {
           reportImportFailure(sourcePath, outcome.error);
           return;
+        }
+        if (m_scopeIndex) {
+          m_scopeIndex->addFile(outcome.notePath);
         }
         if (m_documentManager) {
           m_documentManager->openFile(outcome.notePath);
@@ -1874,13 +1961,26 @@ void MainWindow::buildSearchLayer() {
 
   m_scopeIndex->setIndexDirectory(indexDir);
 
-  const QString assistantRoot =
-      appData + QStringLiteral("/assistant");
+  const QStringList additionalRoots = {
+      appData + QStringLiteral("/assistant"),
+  };
 
-  m_scopeIndex->setAdditionalRoots({assistantRoot});
+  m_scopeIndex->setAdditionalRoots(additionalRoots);
 
-  if (!m_scopeIndex->load()) {
-    qDebug() << "[MainWindow] No search index on disk yet.";
+  const bool loaded = m_scopeIndex->load();
+
+  m_searchIndexNeedsBuild = !loaded;
+
+  if (!loaded) {
+    qDebug() << "[MainWindow] Scheduling search index build.";
+    QTimer::singleShot(0, this, [this]() {
+      if (!m_scopeIndex) {
+        return;
+      }
+      statusBar()->showMessage(tr("Building the search index…"));
+      m_scopeIndex->rebuild(notesRootPath());
+      m_searchIndexNeedsBuild = false;
+    });
   }
 
   m_notePromoter = new NotePromoter(m_scopeIndex.get(), this);
@@ -1907,11 +2007,18 @@ void MainWindow::buildSearchLayer() {
             } else {
               statusBar()->showMessage(
                   tr("Index built: %1 scopes.").arg(scopes), 5000);
+              m_searchIndexNeedsBuild = false;
             }
           });
 }
 
 void MainWindow::onSearchRequested() {
+  if (m_searchIndexNeedsBuild && m_scopeIndex) {
+    statusBar()->showMessage(tr("Building the search index…"));
+    m_scopeIndex->rebuild(notesRootPath());
+    m_searchIndexNeedsBuild = false;
+  }
+
   if (m_searchModeAct) {
     m_searchModeAct->setChecked(true);
   }
@@ -1950,6 +2057,34 @@ void MainWindow::onAssistantIconClicked() {
   }
 
   m_assistantWidget->toggle();
+}
+
+void MainWindow::onTalkToLoreClicked() {
+  if (!m_assistantWidget) {
+    return;
+  }
+
+  m_assistantWidget->toggle();
+}
+
+void MainWindow::onDocumentSaved(TextDocument *document) {
+  if (!document || !m_scopeIndex) {
+    return;
+  }
+
+  const QString path = document->filePath();
+
+  if (path.isEmpty()) {
+    return;
+  }
+
+  const QString notesRoot = notesRootPath();
+
+  if (!path.startsWith(notesRoot)) {
+    return;
+  }
+
+  m_scopeIndex->markDirty(path);
 }
 
 void MainWindow::createToolbar() {
@@ -1993,32 +2128,4 @@ void MainWindow::createToolbar() {
           &MainWindow::onTalkToLoreClicked);
 
   m_topToolBar->addWidget(loreButton);
-}
-
-void MainWindow::onTalkToLoreClicked() {
-  if (!m_assistantWidget) {
-    return;
-  }
-
-  m_assistantWidget->toggle();
-}
-
-void MainWindow::changeEvent(QEvent *event) {
-  QMainWindow::changeEvent(event);
-
-  if (event->type() != QEvent::WindowStateChange) {
-    return;
-  }
-
-  if (isMinimized()) {
-    if (m_assistantIcon) {
-      m_assistantIcon->anchorToScreen();
-      m_assistantIcon->show();
-      m_assistantIcon->raise();
-    }
-  } else {
-    if (m_assistantIcon) {
-      m_assistantIcon->hide();
-    }
-  }
 }

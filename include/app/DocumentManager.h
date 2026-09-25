@@ -46,6 +46,11 @@ signals:
   void documentClosed(TextDocument *document);
   void documentChanged(TextDocument *document);
 
+  // Emitted after a document's contents are written to disk
+  // successfully. Carries the document so the receiver can read its
+  // path and its body.
+  void documentSaved(TextDocument *document);
+
   // Emitted when openFile() is asked for a media file. The manager does
   // not open a tab; whoever listens (DocumentArea, or MainWindow) is
   // responsible for showing the file.

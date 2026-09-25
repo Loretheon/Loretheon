@@ -3,22 +3,18 @@
 
 #include <QString>
 
-// Per-import user choices. Defaults are the common case: convert the
-// source into a note, write a provenance block, derive the note name
-// from the source. The source file is never modified or removed; import
-// reads it and writes a new note.
 struct IngestOptions {
-  // Where the resulting note is written.
   QString destinationFolder;
 
-  // Override the derived note name. Empty means "derive from source".
+  // Subfolder under destinationFolder the note is written into. Set
+  // when importing a folder tree so the source structure is preserved.
+  // Empty means write directly into destinationFolder.
+  QString relativeSubpath;
+
   QString noteNameOverride;
 
-  // Whether to write the provenance frontmatter block.
   bool writeProvenance = true;
 
-  // Per-page (PDF) / per-slide (PPTX) headings vs. a single flat body.
-  // Honoured by extractors that have a natural pagination unit.
   bool sectionPerPage = true;
 };
 

@@ -9,11 +9,14 @@
 #include "../../include/assistant/MemoryIndex.h"
 #include "../../include/assistant/SpeechAnimator.h"
 #include "../../include/assistant/tools/AssistantTools.h"
+#include "../../include/assistant/tools/NoteTools.h"
 #include "../../include/avatar/AvatarWidget.h"
 #include "../../include/overseer/OverseerSessionManager.h"
+#include "../../include/search/NotePromoter.h"
+#include "../../include/search/RetrievalLoop.h"
+#include "../../include/search/ScopeIndex.h"
 #include "../../include/search/SearchService.h"
 #include "../../include/text/DocumentArea.h"
-#include "RetrievalLoop.h"
 #include "inference/InferenceService.h"
 
 #include <QDebug>
@@ -114,9 +117,11 @@ bool LoreAssistant::start() {
     m_memoryIndex->setMemoryRoot(
         QDir(m_config.root).filePath(QStringLiteral("memories")));
 
-    if (!m_memoryIndex->load()) {
-      qDebug() << "[LoreAssistant] No memory index on disk yet; "
-                  "recall will be empty until it is rebuilt.";
+    const bool loaded = m_memoryIndex->load();
+
+    if (!loaded) {
+      qDebug() << "[LoreAssistant] Building memory index.";
+      m_memoryIndex->rebuild();
     }
 
     m_memory->setMemoryIndex(m_memoryIndex);
@@ -127,6 +132,7 @@ bool LoreAssistant::start() {
   }
 
   assistant::AssistantTools::installAll(*m_tools);
+  assistant::NoteTools::installAll(*m_tools);
 
   m_activity->startBatchTimer();
 
@@ -197,8 +203,6 @@ void LoreAssistant::handleUserMessage(const QString &text) {
     return;
   }
 
-  // A pending result waiting to be appended to the next user message
-  // joins this one now.
   if (!m_pendingForUserMessage.isEmpty()) {
     const QString joined =
         m_pendingForUserMessage.join(QStringLiteral("\n\n"));
@@ -212,7 +216,7 @@ void LoreAssistant::handleUserMessage(const QString &text) {
   m_turnReplyBuffer.clear();
   m_turnActive = true;
   m_turnMessages = buildMessages(trimmed);
-  m_toolRoundsRemaining = 3;
+  m_toolRoundsRemaining = 5;
 
   const QJsonArray tools = m_tools ? m_tools->schemas() : QJsonArray();
 
@@ -283,10 +287,8 @@ QString LoreAssistant::systemPrompt() const {
       "chat panel. Keep replies short.\n"
       "\n"
       "The material above is everything you know about yourself and "
-      "about the user: your identity, what you know about the user, "
-      "and what you know about your own state. That material is "
-      "already loaded. It is not a reference to consult. It is what "
-      "you know right now, in this moment.\n"
+      "about the user. It is already loaded. It is not a reference to "
+      "consult. It is what you know right now, in this moment.\n"
       "\n"
       "If the user asks you something that is answered by what is "
       "written above — their name, their preferences, anything you "
@@ -294,42 +296,73 @@ QString LoreAssistant::systemPrompt() const {
       "search. Do not say you do not know. The answer is in front "
       "of you.\n"
       "\n"
-      "You do not do work yourself. You have four tools and you use "
-      "them.\n"
+      "## Notes versus Overseer\n"
       "\n"
-      "- search: ask a question of the user's notes. Use this only "
-      "when the user asks about something that might be written "
-      "somewhere in their notes and is not already known to you. "
-      "Never use it for things about the user themselves, or for "
-      "anything already written above.\n"
+      "The user's notes folder holds units: small, self-contained "
+      "files, one topic each. A shopping list, a single meeting's "
+      "notes, a CV, a one-page summary. Notes do not reference each "
+      "other.\n"
       "\n"
-      "- delegate: hand a task to the worker. The worker creates and "
-      "modifies notes. Use this when the user asks you to write, "
-      "rewrite, restructure, or produce something. The task runs in "
-      "the background; you will be told when it is done. Reply to "
-      "the user with a short acknowledgement and stop.\n"
+      "Anything too large or too entangled for one file goes to "
+      "Overseer instead: a semester's notes, a corpus, a set of "
+      "linked documents, anything that needs planning or spans many "
+      "files. Use delegate for those.\n"
       "\n"
-      "- remember_fact: remember something durable. Use scope 'user' "
-      "when the user tells you something about themselves. Use "
-      "scope 'self' when you learn something about your own state. "
-      "Use scope 'memory' with a topic for anything else. Write the "
-      "fact immediately; the user does not need to approve it.\n"
+      "When the user asks for something small, do it yourself with "
+      "the note tools. When the work is large, delegate.\n"
       "\n"
-      "- speak: say something aloud through the user's speakers. Use "
-      "this when the user asks you to read something, or when a "
-      "spoken line is more natural than text.\n"
+      "## Tools\n"
       "\n"
-      "Cite the notes you use. When the search or the worker gives "
-      "you a source, mention it inline as [1], [2], and so on, in "
-      "the order the sources were given. Do not type file paths; "
-      "the application resolves the markers.\n"
+      "- search: ask a question of the user's notes. Use only when "
+      "the user asks about something that might be written in their "
+      "notes and is not already known to you. Never use it for things "
+      "about the user themselves. If the index is not ready, say so "
+      "and stop; do not retry.\n"
       "\n"
-      "When a background task finishes, its result is delivered to "
-      "you as a system message. Treat it as something you just "
-      "learned.");
+      "- list_notes: see every note with a one-line preview. Use "
+      "before reading or writing if you do not know what exists.\n"
+      "\n"
+      "- read_note: read the full body of a note.\n"
+      "\n"
+      "- write_note: create a new note. It never overwrites. If the "
+      "note already exists, use edit_note.\n"
+      "\n"
+      "- edit_note: change an existing note by instruction. The note "
+      "opens in the editor and the user reviews the change.\n"
+      "\n"
+      "- delete_note: move a note to the trash. Only when the user "
+      "has asked for it.\n"
+      "\n"
+      "- delegate: hand a task to the worker. Use for anything that "
+      "spans many files, needs planning, or produces something that "
+      "will be reviewed before it lands. Call this with only the "
+      "instruction. Do not guess a session name; the application will "
+      "show you the list and you will call again with your choice.\n"
+      "\n"
+      "- promote_note: copy a file the worker produced into the "
+      "notes. Use when a generated file is worth keeping. Copied, not "
+      "moved, skipped if it already exists.\n"
+      "\n"
+      "- remember_fact: write a durable fact about the user or about "
+      "yourself into the always-in-context profile.\n"
+      "\n"
+      "- speak: say something aloud through the user's speakers.\n"
+      "\n"
+      "## Citations\n"
+      "\n"
+      "When search or a note gives you a source, cite it inline as "
+      "[1], [2], and so on, in the order the sources were given. Do "
+      "not type file paths; the application resolves the markers.\n"
+      "\n"
+      "## Failures\n"
+      "\n"
+      "If a tool fails, do not retry it with the same arguments. Tell "
+      "the user what failed and stop. If the failure is the search "
+      "index or a session, say so plainly.");
 
   return prompt;
 }
+
 assistant::AssistantToolContext LoreAssistant::buildToolContext() {
   assistant::AssistantToolContext context;
 
@@ -339,21 +372,19 @@ assistant::AssistantToolContext LoreAssistant::buildToolContext() {
   context.memory = m_memory;
   context.profile = m_profile;
   context.avatar = m_config.avatar;
+  context.overseerManager = m_config.overseerManager;
+  context.promoter = m_config.promoter;
+  context.scopeIndex = m_config.scopeIndex;
+  context.notesRoot = m_config.notesRoot;
 
   context.editor = m_config.documentArea
                        ? m_config.documentArea->currentEditor()
                        : nullptr;
 
-  context.overseerManager = m_config.overseerManager;
-  context.promoter = m_config.promoter;
-  context.scopeIndex = m_config.scopeIndex;
   if (m_activity) {
     context.recentActivity = m_activity->recent();
   }
 
-  // Called by tools that want the user to review before acting. For
-  // now the assistant proceeds without asking; the seam is here so a
-  // review card can be added without touching any tool.
   context.requestReview = nullptr;
 
   return context;
@@ -471,8 +502,6 @@ void LoreAssistant::runToolRound(const QJsonArray &toolCalls,
       emit assistantStatus(tr("%1 failed: %2").arg(name, payload));
     } else if (result.output.startsWith(
                    QStringLiteral("__lore_search__:"))) {
-      // Intercept: run the search on the assistant's own loop, wait
-      // for the answer, and return it as the tool result.
       const QString query =
           result.output.mid(QStringLiteral("__lore_search__:").size());
 
@@ -481,9 +510,6 @@ void LoreAssistant::runToolRound(const QJsonArray &toolCalls,
       emit assistantStatus(tr("Search complete."));
     } else if (result.output.startsWith(
                    QStringLiteral("__lore_delegated__:"))) {
-      // Intercept: the tool already submitted the request through the
-      // manager. Record the request id and its policy, and tell the
-      // model the task is running.
       const QString rest = result.output.mid(
           QStringLiteral("__lore_delegated__:").size());
 
@@ -508,45 +534,43 @@ void LoreAssistant::runToolRound(const QJsonArray &toolCalls,
                     .arg(requestId.left(8));
 
       emit assistantStatus(tr("Task submitted."));
-                   } else if (result.output.startsWith(
-                              QStringLiteral("__lore_needs_session__:"))) {
-                     const QString instruction = result.output.mid(
-                         QStringLiteral("__lore_needs_session__:").size());
+    } else if (result.output.startsWith(
+                   QStringLiteral("__lore_needs_session__:"))) {
+      const QString instruction = result.output.mid(
+          QStringLiteral("__lore_needs_session__:").size());
 
-                     QString listing = tr("The worker needs a session. Existing "
-                                          "sessions:\n");
+      QString listing = tr("The worker needs a session. Existing "
+                           "sessions:\n");
 
-                     if (m_config.overseerManager) {
-                       const auto sessions =
-                           m_config.overseerManager->listSessionsWithDescriptions();
+      if (m_config.overseerManager) {
+        const auto sessions =
+            m_config.overseerManager->listSessionsWithDescriptions();
 
-                       if (sessions.isEmpty()) {
-                         listing += tr("(none yet)\n");
-                       } else {
-                         for (const auto &info : sessions) {
-                           listing += QStringLiteral("- %1 — %2\n")
-                                          .arg(info.name,
-                                               info.description.isEmpty()
-                                                   ? tr("(no description)")
-                                                   : info.description);
-                         }
-                       }
-                     } else {
-                       listing += tr("(the worker is not available)\n");
-                     }
+        if (sessions.isEmpty()) {
+          listing += tr("(none yet)\n");
+        } else {
+          for (const auto &info : sessions) {
+            listing += QStringLiteral("- %1 — %2\n")
+                           .arg(info.name,
+                                info.description.isEmpty()
+                                    ? tr("(no description)")
+                                    : info.description);
+          }
+        }
+      } else {
+        listing += tr("(the worker is not available)\n");
+      }
 
-                     listing += tr("\nCall delegate again with a session name. Or "
-                                   "call delegate with create=true, a name, and a "
-                                   "short intentional description to make a new "
-                                   "session.\n\nThe task was:\n");
-                     listing += instruction;
+      listing += tr("\nCall delegate again with a session name. Or "
+                    "call delegate with create=true, a name, and a "
+                    "short intentional description to make a new "
+                    "session.\n\nThe task was:\n");
+      listing += instruction;
 
-                     payload = listing;
+      payload = listing;
 
-                     emit assistantStatus(tr("Choosing a session."));
-                              }
-
-    else {
+      emit assistantStatus(tr("Choosing a session."));
+    } else {
       payload = result.output;
       emit assistantStatus(tr("%1 done.").arg(name));
     }
@@ -574,6 +598,12 @@ QString LoreAssistant::runSearchForTool(const QString &query) {
     return QStringLiteral("Search is unavailable.");
   }
 
+  if (!m_config.search->isReady()) {
+    return QStringLiteral(
+        "The search index is not ready. Do not retry; tell the user "
+        "the index needs to be built.");
+  }
+
   if (!m_searchLoop) {
     m_searchLoop = new RetrievalLoop(m_config.search,
                                      m_config.inference, this);
@@ -586,10 +616,6 @@ QString LoreAssistant::runSearchForTool(const QString &query) {
   m_searchAnswerBuffer.clear();
   m_searchInFlight = true;
 
-  // Run synchronously from the tool's point of view. RetrievalLoop is
-  // asynchronous through the network, so we spin a local event loop
-  // until it finishes. The tool runs inside a turn, so blocking here
-  // is safe: the user has already submitted and is waiting.
   QEventLoop loop;
 
   QMetaObject::Connection finishedConn = connect(
@@ -654,11 +680,11 @@ void LoreAssistant::onOverseerRequestFinished(
   Q_UNUSED(sessionName);
 
   if (!m_pendingJobs.contains(requestId)) {
-    // A request the user submitted themselves, not one Lore started.
     return;
   }
 
   const CompletionPolicy policy = m_pendingJobs.take(requestId);
+  m_jobSessions.remove(requestId);
 
   if (!ok) {
     const QString line = tr("A task I started failed: %1").arg(summary);
@@ -677,9 +703,6 @@ void LoreAssistant::onOverseerRequestFinished(
   CompletionPolicy effective = policy;
 
   if (policy == CompletionPolicy::Automatic) {
-    // If the user is mid-turn, queue it. If the assistant is idle and
-    // nothing else is queued, paste it in chat. If something is
-    // already queued, keep queueing.
     if (m_turnActive) {
       effective = CompletionPolicy::FeedToQueue;
     } else if (m_pendingForPrompt.isEmpty() &&
@@ -707,13 +730,10 @@ void LoreAssistant::onOverseerRequestFinished(
     break;
 
   case CompletionPolicy::Automatic:
-    // handled above; not reached
     break;
   }
 }
 
 void LoreAssistant::applyCompletionPolicy(const QString &summary) {
   Q_UNUSED(summary);
-  // Reserved for future use. The policy is applied in
-  // onOverseerRequestFinished, where the request id is known.
 }

@@ -75,6 +75,7 @@ bool IngestRegistry::isEmpty() const {
 }
 
 void registerBuiltinExtractors(IngestRegistry &registry) {
+  registry.take(makeMarkdownExtractor());
   registry.take(makePdfExtractor());
   registry.take(makeHtmlExtractor());
   registry.take(makeDocxExtractor());

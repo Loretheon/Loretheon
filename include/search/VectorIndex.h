@@ -22,6 +22,9 @@ public:
   VectorIndex(const VectorIndex &) = delete;
   VectorIndex &operator=(const VectorIndex &) = delete;
 
+  VectorIndex(VectorIndex &&other) noexcept;
+  VectorIndex &operator=(VectorIndex &&other) noexcept;
+
   // Create a fresh index with the given dimensionality. Discards any
   // existing data. Returns false if dimensions <= 0.
   bool create(int dimensions);
@@ -29,6 +32,11 @@ public:
   // Append a vector and return its assigned id. The id is sequential
   // and starts at 0. Returns -1 on failure.
   int64_t add(const std::vector<float> &vector);
+
+  // Remove a set of ids. Returns the number actually removed. The
+  // remaining vectors keep their existing ids; FAISS compacts the
+  // underlying storage without reassigning them.
+  int removeIds(const QVector<int64_t> &ids);
 
   // Search for the nearest k vectors. Returns ids and similarities,
   // best first. Both output vectors are empty on failure.

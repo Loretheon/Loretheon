@@ -14,7 +14,6 @@
 #include "ThemeManager.h"
 #include "inference/InferenceService.h"
 
-class NotePromoter;
 class OverseerSessionManager;
 class AssistantIcon;
 class AssistantWidget;
@@ -27,6 +26,7 @@ class EditSession;
 class LoreTrigger;
 class ModelDialog;
 class LlmSettingsPanel;
+class NotePromoter;
 class OverseerPage;
 class ToastStack;
 class AvatarWidget;
@@ -52,6 +52,7 @@ class QMenu;
 class QProgressDialog;
 class QResizeEvent;
 class QStackedWidget;
+class QTimer;
 class QToolBar;
 class QToolButton;
 
@@ -94,6 +95,7 @@ private slots:
   void onAssistantMessageSubmitted(const QString &text);
   void onAssistantIconClicked();
   void onTalkToLoreClicked();
+  void onDocumentSaved(TextDocument *document);
 
 private:
   enum class Mode { Normal = 0, Overseer = 1, Search = 2 };
@@ -106,14 +108,8 @@ private:
   void buildOverseerPage();
   void buildSearchLayer();
 
-  // The avatar is created early, so LoreAssistant has a valid avatar
-  // pointer, and positioned late, after the window has its final
-  // geometry. Doing both in one call either leaves the assistant with
-  // a null avatar or places the widget against the wrong window size.
   void createAvatarOverlay();
   void positionAvatarOverlay();
-
-  // The icon is screen-anchored. Called when the icon is shown.
   void positionAssistantIcon();
 
   void setMode(Mode mode);
@@ -142,15 +138,23 @@ private:
   void reportImportSummary(int succeeded, int failed, int total);
 
   QString importDialogFilter() const;
-  QStringList collectImportableFilesIn(const QString &folderPath) const;
+  struct ImportCandidate {
+    QString absolutePath;
+    QString relativeSubpath;
+  };
+
+  QList<ImportCandidate> collectImportableFilesIn(
+      const QString &folderPath) const;
   QStringList filterImportable(const QStringList &paths) const;
 
   void startBulkImport(const QStringList &paths);
+  void startNextImport();
   void onBulkImportCompleted(quint64 token, bool ok);
   void onBulkImportCancelled();
   void finishBulkImport();
 
   void buildSpeechLayer();
+
 
   QWidget *m_normalPage = nullptr;
   DocumentArea *m_documentArea = nullptr;
@@ -158,9 +162,8 @@ private:
   DocumentManager *m_documentManager = nullptr;
   EditSession *m_editSession = nullptr;
   ChatWidget *m_chatWidget = nullptr;
-
-  OverseerPage *m_overseerPage = nullptr;
   OverseerSessionManager *m_overseerSessionManager = nullptr;
+  OverseerPage *m_overseerPage = nullptr;
   SearchPage *m_searchPage = nullptr;
 
   QStackedWidget *m_centralStack = nullptr;
@@ -232,6 +235,8 @@ private:
   int m_bulkImportCompleted = 0;
   bool m_bulkImportCancelled = false;
   QList<quint64> m_bulkImportTokens;
+  QList<ImportCandidate> m_importQueue;
+  int m_importInFlight = 0;
 
   SpeechController *m_speechController = nullptr;
   VoiceCommandRegistry *m_voiceCommands = nullptr;
@@ -241,7 +246,12 @@ private:
   std::unique_ptr<ScopeIndex> m_scopeIndex;
   SearchService *m_searchService = nullptr;
   NotePromoter *m_notePromoter = nullptr;
+
   QHash<TextEdit *, LoreTrigger *> m_loreTriggers;
+
+  QSet<QString> m_dirtyNotePaths;
+  QTimer *m_noteIndexTimer = nullptr;
+  bool m_searchIndexNeedsBuild = false;
 };
 
 #endif // MAINWINDOW_H

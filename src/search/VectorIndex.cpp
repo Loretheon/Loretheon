@@ -1,23 +1,61 @@
 #include "../../include/search/VectorIndex.h"
 
 #include <QDebug>
-#include <QFile>
+#include <QFileInfo>
 
 #include <faiss/IndexFlat.h>
+#include <faiss/impl/AuxIndexStructures.h>
+#include <faiss/impl/IDSelector.h>
 #include <faiss/index_io.h>
+
+#include <unordered_set>
+
+namespace {
+
+class IdSetSelector : public faiss::IDSelector {
+public:
+  explicit IdSetSelector(
+      const std::unordered_set<faiss::Index::idx_t> &ids)
+      : m_ids(ids) {}
+
+  bool is_member(faiss::Index::idx_t id) const override {
+    return m_ids.count(id) > 0;
+  }
+
+private:
+  const std::unordered_set<faiss::Index::idx_t> &m_ids;
+};
+
+} // namespace
 
 VectorIndex::VectorIndex() = default;
 
 VectorIndex::~VectorIndex() = default;
 
+VectorIndex::VectorIndex(VectorIndex &&other) noexcept
+    : m_index(std::move(other.m_index)),
+      m_dimensions(other.m_dimensions) {
+  other.m_dimensions = 0;
+}
+
+VectorIndex &VectorIndex::operator=(VectorIndex &&other) noexcept {
+  if (this == &other) {
+    return *this;
+  }
+
+  m_index = std::move(other.m_index);
+  m_dimensions = other.m_dimensions;
+
+  other.m_dimensions = 0;
+
+  return *this;
+}
+
 bool VectorIndex::create(int dimensions) {
   if (dimensions <= 0) {
-    qWarning() << "[VectorIndex] Invalid dimensions:" << dimensions;
     return false;
   }
 
-  // IndexFlatIP uses inner product. With normalized vectors, that is
-  // cosine similarity.
   m_index = std::make_unique<faiss::IndexFlatIP>(dimensions);
   m_dimensions = dimensions;
 
@@ -30,8 +68,6 @@ int64_t VectorIndex::add(const std::vector<float> &vector) {
   }
 
   if (static_cast<int>(vector.size()) != m_dimensions) {
-    qWarning() << "[VectorIndex] Vector dimension mismatch:"
-               << vector.size() << "vs" << m_dimensions;
     return -1;
   }
 
@@ -40,6 +76,25 @@ int64_t VectorIndex::add(const std::vector<float> &vector) {
   m_index->add(1, vector.data());
 
   return id;
+}
+
+int VectorIndex::removeIds(const QVector<int64_t> &ids) {
+  if (!m_index || ids.isEmpty()) {
+    return 0;
+  }
+
+  std::unordered_set<faiss::Index::idx_t> set;
+  set.reserve(static_cast<size_t>(ids.size()));
+
+  for (int64_t id : ids) {
+    set.insert(static_cast<faiss::Index::idx_t>(id));
+  }
+
+  IdSetSelector selector(set);
+
+  const size_t removed = m_index->remove_ids(selector);
+
+  return static_cast<int>(removed);
 }
 
 QVector<VectorIndex::Hit> VectorIndex::search(
@@ -51,31 +106,25 @@ QVector<VectorIndex::Hit> VectorIndex::search(
   }
 
   if (static_cast<int>(query.size()) != m_dimensions) {
-    qWarning() << "[VectorIndex] Query dimension mismatch";
     return result;
   }
 
-  const int64_t total = m_index->ntotal;
-  if (total == 0) {
+  const int count = qMin<int>(k, static_cast<int>(m_index->ntotal));
+
+  if (count <= 0) {
     return result;
   }
 
-  const int actualK = static_cast<int>(std::min<int64_t>(k, total));
+  std::vector<faiss::Index::idx_t> ids(count);
+  std::vector<float> distances(count);
 
-  std::vector<float> distances(actualK);
-  std::vector<faiss::Index::idx_t> labels(actualK);
-  m_index->search(1, query.data(), actualK, distances.data(),
-                  labels.data());
+  m_index->search(1, query.data(), count, distances.data(), ids.data());
 
-  result.reserve(actualK);
+  result.reserve(count);
 
-  for (int i = 0; i < actualK; ++i) {
-    if (labels[i] < 0) {
-      continue;
-    }
-
+  for (int i = 0; i < count; ++i) {
     Hit hit;
-    hit.id = labels[i];
+    hit.id = static_cast<int64_t>(ids[i]);
     hit.similarity = distances[i];
     result.append(hit);
   }
@@ -84,7 +133,7 @@ QVector<VectorIndex::Hit> VectorIndex::search(
 }
 
 bool VectorIndex::save(const QString &path) const {
-  if (!m_index) {
+  if (!m_index || path.isEmpty()) {
     return false;
   }
 
@@ -95,29 +144,29 @@ bool VectorIndex::save(const QString &path) const {
     return false;
   }
 
-  return true;
+  return QFileInfo::exists(path);
 }
 
 bool VectorIndex::load(const QString &path) {
-  if (!QFile::exists(path)) {
-    qWarning() << "[VectorIndex] File not found:" << path;
+  if (path.isEmpty() || !QFileInfo::exists(path)) {
     return false;
   }
 
   try {
-    m_index = std::unique_ptr<faiss::Index>(
-        faiss::read_index(path.toStdString().c_str()));
+    m_index.reset(faiss::read_index(path.toStdString().c_str()));
   } catch (const std::exception &e) {
     qWarning() << "[VectorIndex] Load failed:" << e.what();
     m_index.reset();
+    m_dimensions = 0;
     return false;
   }
 
   if (!m_index) {
+    m_dimensions = 0;
     return false;
   }
 
-  m_dimensions = m_index->d;
+  m_dimensions = static_cast<int>(m_index->d);
 
   return true;
 }
@@ -128,10 +177,14 @@ int64_t VectorIndex::size() const {
 
 int VectorIndex::dimensions() const { return m_dimensions; }
 
-bool VectorIndex::isValid() const { return m_index != nullptr; }
+bool VectorIndex::isValid() const {
+  return m_index != nullptr && m_dimensions > 0;
+}
 
 void VectorIndex::clear() {
-  if (m_index) {
-    m_index->reset();
+  if (!m_index) {
+    return;
   }
+
+  m_index->reset();
 }

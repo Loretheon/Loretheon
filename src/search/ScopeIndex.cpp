@@ -15,6 +15,9 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QRegularExpression>
+#include <QTextStream>
+#include <QTimer>
 
 namespace {
 
@@ -22,8 +25,6 @@ constexpr const char *kIndexFile = "faiss.index";
 constexpr const char *kSidecarFile = "sidecar.json";
 constexpr int kMinBodyLength = 24;
 
-// Strip leading '#' characters and surrounding whitespace from a
-// heading line. Returns empty for a line that is not a heading.
 QString cleanHeading(const QString &line) {
   QString trimmed = line.trimmed();
   if (!trimmed.startsWith(QChar('#'))) {
@@ -35,8 +36,6 @@ QString cleanHeading(const QString &line) {
   return trimmed.trimmed();
 }
 
-// Find the first line in [start, end) that begins with '#'. Returns the
-// cleaned heading text, or empty if none.
 QString headingForRange(const QString &text, int start, int end) {
   const int safeStart = qBound(0, start, text.size());
   const int safeEnd = qBound(safeStart, end, text.size());
@@ -70,7 +69,14 @@ QString headingForRange(const QString &text, int start, int end) {
 
 ScopeIndex::ScopeIndex(InferenceService *inference, QObject *parent)
     : QObject(parent), m_inference(inference),
-      m_vectors(std::make_unique<VectorIndex>()) {}
+      m_vectors(std::make_unique<VectorIndex>()) {
+  m_dirtyTimer = new QTimer(this);
+  m_dirtyTimer->setSingleShot(true);
+  m_dirtyTimer->setInterval(3000);
+
+  connect(m_dirtyTimer, &QTimer::timeout, this,
+          &ScopeIndex::onDirtyTimer);
+}
 
 ScopeIndex::~ScopeIndex() = default;
 
@@ -202,8 +208,6 @@ void ScopeIndex::collectNodes(const DocumentNode &node,
                               const QString &filePath,
                               QVector<Entry> &out) const {
   if (node.isRoot() && node.isValid()) {
-    // The root node covers the whole document. Skip it: the sections
-    // below carry the retrievable text.
   } else if (node.isValid() && !node.id.isEmpty()) {
     const int start = qBound(0, node.start, documentText.size());
     const int end = qBound(start, node.end, documentText.size());
@@ -322,8 +326,6 @@ int ScopeIndex::addFile(const QString &absolutePath) {
     return -1;
   }
 
-  // Load the existing index if it has not been loaded yet. A first
-  // promote with no index on disk behaves like the start of a rebuild.
   if (!isReady()) {
     const QString indexPath =
         QDir(m_indexDirectory).filePath(kIndexFile);
@@ -405,6 +407,151 @@ int ScopeIndex::addFile(const QString &absolutePath) {
   return added;
 }
 
+
+int ScopeIndex::removeFile(const QString &absolutePath) {
+  if (absolutePath.isEmpty() || m_indexDirectory.isEmpty() || !m_vectors) {
+    return -1;
+  }
+
+  QVector<int64_t> idsToRemove;
+  QVector<Entry> survivingEntries;
+
+  for (int i = 0; i < m_entries.size(); ++i) {
+    const Entry &entry = m_entries.at(i);
+
+    if (entry.filePath == absolutePath) {
+      idsToRemove.append(i);
+    } else {
+      survivingEntries.append(entry);
+    }
+  }
+
+  if (idsToRemove.isEmpty()) {
+    return 0;
+  }
+
+  const int removed = m_vectors->removeIds(idsToRemove);
+
+  m_entries = survivingEntries;
+
+  const QString indexPath =
+      QDir(m_indexDirectory).filePath(kIndexFile);
+  const QString sidecarPath =
+      QDir(m_indexDirectory).filePath(kSidecarFile);
+
+  if (!m_vectors->save(indexPath) || !saveSidecar(sidecarPath)) {
+    qWarning() << "[ScopeIndex] Failed to save after removeFile";
+    return -1;
+  }
+
+  return removed;
+}
+int ScopeIndex::refreshFile(const QString &absolutePath) {
+  const int removed = removeFile(absolutePath);
+
+  if (removed < 0) {
+    return -1;
+  }
+
+  const int added = addFile(absolutePath);
+
+  if (added < 0) {
+    return -1;
+  }
+
+  return added;
+}
+
+QString ScopeIndex::previewFor(const QString &absolutePath) const {
+  if (absolutePath.isEmpty()) {
+    return {};
+  }
+
+  for (const Entry &entry : m_entries) {
+    if (entry.filePath != absolutePath) {
+      continue;
+    }
+
+    if (!entry.heading.isEmpty()) {
+      return entry.heading;
+    }
+
+    QString flat = entry.body;
+    flat.replace(QRegularExpression(QStringLiteral("\\s+")),
+                 QStringLiteral(" "));
+    flat = flat.trimmed();
+
+    if (flat.length() > 80) {
+      flat = flat.left(79) + QStringLiteral("…");
+    }
+
+    return flat;
+  }
+
+  QFile file(absolutePath);
+
+  if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+    return {};
+  }
+
+  QTextStream stream(&file);
+  stream.setEncoding(QStringConverter::Utf8);
+
+  QString preview;
+
+  for (int i = 0; i < 8 && !stream.atEnd(); ++i) {
+    const QString line = stream.readLine().trimmed();
+
+    if (line.startsWith(QChar('#'))) {
+      preview = line;
+      while (preview.startsWith(QChar('#'))) {
+        preview.remove(0, 1);
+      }
+      preview = preview.trimmed();
+      break;
+    }
+
+    if (preview.isEmpty() && !line.isEmpty()) {
+      preview = line;
+    }
+  }
+
+  if (preview.isEmpty()) {
+    return {};
+  }
+
+  if (preview.length() > 80) {
+    preview = preview.left(79) + QStringLiteral("…");
+  }
+
+  return preview;
+}
+
+void ScopeIndex::markDirty(const QString &absolutePath) {
+  if (absolutePath.isEmpty()) {
+    return;
+  }
+
+  m_dirtyPaths.insert(absolutePath);
+  m_dirtyTimer->start();
+}
+
+void ScopeIndex::onDirtyTimer() {
+  if (m_dirtyPaths.isEmpty()) {
+    return;
+  }
+
+  const QSet<QString> paths = m_dirtyPaths;
+  m_dirtyPaths.clear();
+
+  for (const QString &path : paths) {
+    if (!QFileInfo::exists(path)) {
+      removeFile(path);
+    } else {
+      refreshFile(path);
+    }
+  }
+}
 
 bool ScopeIndex::isReady() const {
   return m_vectors && m_vectors->isValid() && m_vectors->size() > 0;

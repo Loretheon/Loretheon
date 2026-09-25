@@ -66,8 +66,6 @@ NotePromoter::Result NotePromoter::promoteFile(
 
   if (sourceInfo.suffix().compare(QStringLiteral("md"),
                                   Qt::CaseInsensitive) != 0) {
-    // Only markdown is promoted. Other files in a session's output
-    // folder are working material, not notes.
     return result;
   }
 

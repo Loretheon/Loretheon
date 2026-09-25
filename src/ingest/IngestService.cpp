@@ -2,9 +2,11 @@
 #include "../../include/ingest/NoteWriter.h"
 
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QMetaObject>
 #include <QRunnable>
+#include <QSaveFile>
 #include <QThreadPool>
 
 struct IngestService::Pending {
@@ -39,6 +41,100 @@ private:
   Extractor::Callback m_done;
   Extractor::ProgressCallback m_progress;
 };
+
+QString destinationFolderFor(const IngestOptions &options) {
+  if (options.relativeSubpath.isEmpty()) {
+    return options.destinationFolder;
+  }
+
+  return QDir(options.destinationFolder).filePath(options.relativeSubpath);
+}
+
+QString uniqueDestinationPath(const QString &folder,
+                              const QString &fileName) {
+  const QDir dir(folder);
+  const QString candidate = dir.filePath(fileName);
+
+  if (!QFileInfo::exists(candidate)) {
+    return candidate;
+  }
+
+  const QFileInfo info(fileName);
+  const QString stem = info.completeBaseName();
+  const QString suffix = info.suffix();
+
+  for (int counter = 2; counter < 10000; ++counter) {
+    const QString name = suffix.isEmpty()
+                             ? QStringLiteral("%1 (%2)").arg(stem).arg(counter)
+                             : QStringLiteral("%1 (%2).%3")
+                                   .arg(stem)
+                                   .arg(counter)
+                                   .arg(suffix);
+
+    const QString candidatePath = dir.filePath(name);
+
+    if (!QFileInfo::exists(candidatePath)) {
+      return candidatePath;
+    }
+  }
+
+  return candidate;
+}
+
+bool copyFileVerbatim(const QString &sourcePath,
+                      const QString &destinationPath,
+                      QString *errorOut) {
+  QFile source(sourcePath);
+
+  if (!source.open(QIODevice::ReadOnly)) {
+    if (errorOut) {
+      *errorOut = QStringLiteral("Cannot read: %1").arg(sourcePath);
+    }
+    return false;
+  }
+
+  const QByteArray bytes = source.readAll();
+  source.close();
+
+  const QFileInfo info(destinationPath);
+  const QDir parent = info.absoluteDir();
+
+  if (!parent.exists() && !QDir().mkpath(parent.absolutePath())) {
+    if (errorOut) {
+      *errorOut = QStringLiteral("Cannot create folder: %1")
+                      .arg(parent.absolutePath());
+    }
+    return false;
+  }
+
+  QSaveFile file(destinationPath);
+
+  if (!file.open(QIODevice::WriteOnly)) {
+    if (errorOut) {
+      *errorOut = QStringLiteral("Cannot open for writing: %1")
+                      .arg(file.errorString());
+    }
+    return false;
+  }
+
+  if (file.write(bytes) != bytes.size()) {
+    file.cancelWriting();
+    if (errorOut) {
+      *errorOut = QStringLiteral("Short write to: %1").arg(destinationPath);
+    }
+    return false;
+  }
+
+  if (!file.commit()) {
+    if (errorOut) {
+      *errorOut = QStringLiteral("Cannot commit write: %1")
+                      .arg(file.errorString());
+    }
+    return false;
+  }
+
+  return true;
+}
 
 } // namespace
 
@@ -94,7 +190,6 @@ quint64 IngestService::import(const QString &sourcePath,
             [this, token, result = std::move(result)]() {
               auto it = m_pending.find(token);
               if (it == m_pending.end()) {
-                // Cancelled before completion.
                 return;
               }
               auto pending = it.value();
@@ -106,13 +201,40 @@ quint64 IngestService::import(const QString &sourcePath,
                 return;
               }
 
-              const QString fileName = NoteWriter::deriveUniqueFileName(
-                  result.document, pending->options,
-                  pending->options.destinationFolder);
+              const QString folder =
+                  destinationFolderFor(pending->options);
 
-              const QString notePath =
-                  pending->options.destinationFolder + QLatin1Char('/') +
-                  fileName;
+              const bool passthrough =
+                  pending->extractor &&
+                  pending->extractor->isPassthrough();
+
+              if (passthrough) {
+                const QString fileName =
+                    QFileInfo(pending->sourcePath).fileName();
+
+                const QString notePath =
+                    uniqueDestinationPath(folder, fileName);
+
+                QString error;
+
+                if (!copyFileVerbatim(pending->sourcePath, notePath,
+                                      &error)) {
+                  Outcome outcome;
+                  outcome.error = error;
+                  finish(token, outcome);
+                  return;
+                }
+
+                Outcome outcome;
+                outcome.notePath = notePath;
+                finish(token, outcome);
+                return;
+              }
+
+              const QString fileName = NoteWriter::deriveUniqueFileName(
+                  result.document, pending->options, folder);
+
+              const QString notePath = folder + QLatin1Char('/') + fileName;
 
               NoteWriter::Result writeResult =
                   m_writer->write(result.document, pending->options, notePath,
@@ -174,8 +296,6 @@ void IngestService::setMaxConcurrent(int max) {
   if (delta > 0) {
     m_slots.release(delta);
   } else if (delta < 0) {
-    // Reduce available slots. Any in-flight imports will release on
-    // completion, so the effective ceiling drops after they finish.
     m_slots.tryAcquire(-delta);
   }
 }

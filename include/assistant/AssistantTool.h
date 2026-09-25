@@ -13,13 +13,12 @@ class TextEdit;
 class AvatarWidget;
 class AssistantMemory;
 class AssistantProfile;
-class OverseerSessionManager;
 class NotePromoter;
+class OverseerSessionManager;
 class ScopeIndex;
+
 namespace assistant {
 
-// Everything a tool needs to act. Assembled by the conductor before
-// each tool call. Any pointer may be null; tools must handle that.
 struct AssistantToolContext {
   DocumentManager *documents = nullptr;
   TextEdit *editor = nullptr;
@@ -31,17 +30,14 @@ struct AssistantToolContext {
   OverseerSessionManager *overseerManager = nullptr;
   NotePromoter *promoter = nullptr;
   ScopeIndex *scopeIndex = nullptr;
-  // The last few activity events, for tools that want to reason about
-  // what just happened.
+
+  QString notesRoot;
+
   QStringList recentActivity;
 
-  // Called by a tool that wants the user to review before acting.
-  // Returns true if the action was approved. Null means proceed
-  // without asking.
   std::function<bool(const QString &title, const QString &body)> requestReview;
 };
 
-// The interface every assistant tool implements.
 class AssistantTool {
 public:
   struct Result {
