@@ -1,7 +1,6 @@
 #include "../../include/assistant/LoreAssistant.h"
 
 #include "../../include/app/DocumentManager.h"
-#include "../../include/app/NotificationService.h"
 #include "../../include/app/Settings.h"
 #include "../../include/assistant/AssistantActivity.h"
 #include "../../include/assistant/AssistantMemory.h"
@@ -11,12 +10,15 @@
 #include "../../include/assistant/SpeechAnimator.h"
 #include "../../include/assistant/tools/AssistantTools.h"
 #include "../../include/avatar/AvatarWidget.h"
+#include "../../include/overseer/OverseerSessionManager.h"
 #include "../../include/search/SearchService.h"
 #include "../../include/text/DocumentArea.h"
+#include "RetrievalLoop.h"
 #include "inference/InferenceService.h"
 
 #include <QDebug>
 #include <QDir>
+#include <QEventLoop>
 #include <QJsonDocument>
 #include <QJsonObject>
 
@@ -25,43 +27,6 @@ namespace {
 constexpr double kTurnTemperature = 0.6;
 constexpr int kTurnTimeoutMs = 120000;
 constexpr int kMemoryRecallLimit = 4;
-
-QString systemPromptFromProfile(AssistantProfile *profile) {
-  if (!profile) {
-    return QStringLiteral("You are Lore.");
-  }
-
-  QString prompt;
-
-  const QString identity = profile->identity();
-  const QString user = profile->user();
-  const QString self = profile->self();
-
-  if (!identity.isEmpty()) {
-    prompt += identity;
-    prompt += QStringLiteral("\n\n");
-  }
-
-  if (!user.isEmpty()) {
-    prompt += QStringLiteral("What you know about the user:\n");
-    prompt += user;
-    prompt += QStringLiteral("\n\n");
-  }
-
-  if (!self.isEmpty()) {
-    prompt += QStringLiteral("What you know about yourself:\n");
-    prompt += self;
-    prompt += QStringLiteral("\n\n");
-  }
-
-  prompt += QStringLiteral(
-      "You are speaking to the user through a small chat window. "
-      "Keep replies short. If a tool would help, call it. Do not "
-      "narrate your tool use; the application shows the user that a "
-      "tool is running.");
-
-  return prompt;
-}
 
 QString memoryContext(AssistantMemory *memory, const QString &query) {
   if (!memory) {
@@ -98,10 +63,14 @@ LoreAssistant::LoreAssistant(const Config &config, QObject *parent)
             &LoreAssistant::onLlmToolCalls);
     connect(m_config.inference, &InferenceService::llmError, this,
             &LoreAssistant::onLlmError);
+
+    m_memoryIndex = new MemoryIndex(m_config.inference, this);
   }
 
-  if (m_config.inference) {
-    m_memoryIndex = new MemoryIndex(m_config.inference, this);
+  if (m_config.overseerManager) {
+    connect(m_config.overseerManager,
+            &OverseerSessionManager::requestFinished, this,
+            &LoreAssistant::onOverseerRequestFinished);
   }
 }
 
@@ -201,8 +170,12 @@ void LoreAssistant::say(const QString &text) {
   emit assistantSaid(text);
 }
 
+void LoreAssistant::setCompletionPolicy(CompletionPolicy policy) {
+  m_completionPolicy = policy;
+}
+
 void LoreAssistant::handleUserMessage(const QString &text) {
-  const QString trimmed = text.trimmed();
+  QString trimmed = text.trimmed();
 
   if (trimmed.isEmpty()) {
     return;
@@ -224,11 +197,22 @@ void LoreAssistant::handleUserMessage(const QString &text) {
     return;
   }
 
-  m_turnReplyBuffer.clear();
+  // A pending result waiting to be appended to the next user message
+  // joins this one now.
+  if (!m_pendingForUserMessage.isEmpty()) {
+    const QString joined =
+        m_pendingForUserMessage.join(QStringLiteral("\n\n"));
 
+    m_pendingForUserMessage.clear();
+
+    trimmed += QStringLiteral("\n\n---\n\n");
+    trimmed += joined;
+  }
+
+  m_turnReplyBuffer.clear();
   m_turnActive = true;
   m_turnMessages = buildMessages(trimmed);
-  m_toolRoundsRemaining = 1;
+  m_toolRoundsRemaining = 3;
 
   const QJsonArray tools = m_tools ? m_tools->schemas() : QJsonArray();
 
@@ -237,19 +221,26 @@ void LoreAssistant::handleUserMessage(const QString &text) {
       QString(), QJsonObject(), tools, QString());
 }
 
-QJsonArray LoreAssistant::buildMessages(const QString &userText) const {
+QJsonArray LoreAssistant::buildMessages(const QString &userText) {
   QJsonArray messages;
 
   QJsonObject system;
   system.insert(QStringLiteral("role"), QStringLiteral("system"));
 
-  QString content = systemPromptFromProfile(m_profile);
+  QString content = systemPrompt();
 
   const QString recalled = memoryContext(m_memory, userText);
 
   if (!recalled.isEmpty()) {
     content += QStringLiteral("\n\n");
     content += recalled;
+  }
+
+  if (!m_pendingForPrompt.isEmpty()) {
+    content += QStringLiteral("\n\nBackground results since your last "
+                              "message:\n");
+    content += m_pendingForPrompt.join(QStringLiteral("\n---\n"));
+    m_pendingForPrompt.clear();
   }
 
   system.insert(QStringLiteral("content"), content);
@@ -263,7 +254,83 @@ QJsonArray LoreAssistant::buildMessages(const QString &userText) const {
   return messages;
 }
 
-assistant::AssistantToolContext LoreAssistant::buildToolContext() const {
+QString LoreAssistant::systemPrompt() const {
+  QString prompt;
+
+  const QString identity = m_profile ? m_profile->identity() : QString();
+  const QString user = m_profile ? m_profile->user() : QString();
+  const QString self = m_profile ? m_profile->self() : QString();
+
+  if (!identity.trimmed().isEmpty()) {
+    prompt += identity.trimmed();
+    prompt += QStringLiteral("\n\n");
+  }
+
+  if (!user.trimmed().isEmpty()) {
+    prompt += QStringLiteral("## What you know about the user\n\n");
+    prompt += user.trimmed();
+    prompt += QStringLiteral("\n\n");
+  }
+
+  if (!self.trimmed().isEmpty()) {
+    prompt += QStringLiteral("## What you know about yourself\n\n");
+    prompt += self.trimmed();
+    prompt += QStringLiteral("\n\n");
+  }
+
+  prompt += QStringLiteral(
+      "You are Lore. You are speaking to the user through a small "
+      "chat panel. Keep replies short.\n"
+      "\n"
+      "The material above is everything you know about yourself and "
+      "about the user: your identity, what you know about the user, "
+      "and what you know about your own state. That material is "
+      "already loaded. It is not a reference to consult. It is what "
+      "you know right now, in this moment.\n"
+      "\n"
+      "If the user asks you something that is answered by what is "
+      "written above — their name, their preferences, anything you "
+      "have been told before — answer directly from it. Do not "
+      "search. Do not say you do not know. The answer is in front "
+      "of you.\n"
+      "\n"
+      "You do not do work yourself. You have four tools and you use "
+      "them.\n"
+      "\n"
+      "- search: ask a question of the user's notes. Use this only "
+      "when the user asks about something that might be written "
+      "somewhere in their notes and is not already known to you. "
+      "Never use it for things about the user themselves, or for "
+      "anything already written above.\n"
+      "\n"
+      "- delegate: hand a task to the worker. The worker creates and "
+      "modifies notes. Use this when the user asks you to write, "
+      "rewrite, restructure, or produce something. The task runs in "
+      "the background; you will be told when it is done. Reply to "
+      "the user with a short acknowledgement and stop.\n"
+      "\n"
+      "- remember_fact: remember something durable. Use scope 'user' "
+      "when the user tells you something about themselves. Use "
+      "scope 'self' when you learn something about your own state. "
+      "Use scope 'memory' with a topic for anything else. Write the "
+      "fact immediately; the user does not need to approve it.\n"
+      "\n"
+      "- speak: say something aloud through the user's speakers. Use "
+      "this when the user asks you to read something, or when a "
+      "spoken line is more natural than text.\n"
+      "\n"
+      "Cite the notes you use. When the search or the worker gives "
+      "you a source, mention it inline as [1], [2], and so on, in "
+      "the order the sources were given. Do not type file paths; "
+      "the application resolves the markers.\n"
+      "\n"
+      "When a background task finishes, its result is delivered to "
+      "you as a system message. Treat it as something you just "
+      "learned.");
+
+  return prompt;
+}
+assistant::AssistantToolContext LoreAssistant::buildToolContext() {
   assistant::AssistantToolContext context;
 
   context.documents = m_config.documents;
@@ -273,16 +340,21 @@ assistant::AssistantToolContext LoreAssistant::buildToolContext() const {
   context.profile = m_profile;
   context.avatar = m_config.avatar;
 
-  // The editor is now reachable. DocumentArea is passed in through
-  // Config and its currentEditor() is the focused editor, or null if
-  // no document is open.
   context.editor = m_config.documentArea
                        ? m_config.documentArea->currentEditor()
                        : nullptr;
 
+  context.overseerManager = m_config.overseerManager;
+  context.promoter = m_config.promoter;
+  context.scopeIndex = m_config.scopeIndex;
   if (m_activity) {
     context.recentActivity = m_activity->recent();
   }
+
+  // Called by tools that want the user to review before acting. For
+  // now the assistant proceeds without asking; the seam is here so a
+  // review card can be added without touching any tool.
+  context.requestReview = nullptr;
 
   return context;
 }
@@ -326,9 +398,6 @@ void LoreAssistant::onLlmError(const QUuid &token, const QString &error) {
   }
 
   emit assistantStatus(error);
-
-  NotificationService::instance().error(tr("Assistant"), error);
-
   finishTurn();
 }
 
@@ -382,7 +451,6 @@ void LoreAssistant::runToolRound(const QJsonArray &toolCalls,
       }
     }
 
-    emit toolStarted(name);
     emit assistantStatus(tr("Running %1…").arg(name));
 
     assistant::AssistantTool::Result result;
@@ -396,19 +464,91 @@ void LoreAssistant::runToolRound(const QJsonArray &toolCalls,
 
     QString payload;
 
-    if (result.ok) {
-      payload = result.output;
-      emit toolFinished(name, true, payload.left(160));
-      emit assistantStatus(tr("%1 done.").arg(name));
-    } else {
+    if (!result.ok) {
       payload = result.error.isEmpty()
                     ? QStringLiteral("Tool failed.")
                     : result.error;
-      emit toolFinished(name, false, payload);
       emit assistantStatus(tr("%1 failed: %2").arg(name, payload));
+    } else if (result.output.startsWith(
+                   QStringLiteral("__lore_search__:"))) {
+      // Intercept: run the search on the assistant's own loop, wait
+      // for the answer, and return it as the tool result.
+      const QString query =
+          result.output.mid(QStringLiteral("__lore_search__:").size());
 
-      NotificationService::instance().warning(
-          tr("Assistant tool: %1").arg(name), payload);
+      payload = runSearchForTool(query);
+
+      emit assistantStatus(tr("Search complete."));
+    } else if (result.output.startsWith(
+                   QStringLiteral("__lore_delegated__:"))) {
+      // Intercept: the tool already submitted the request through the
+      // manager. Record the request id and its policy, and tell the
+      // model the task is running.
+      const QString rest = result.output.mid(
+          QStringLiteral("__lore_delegated__:").size());
+
+      const int colon = rest.indexOf(QChar(':'));
+
+      const QString requestId =
+          colon < 0 ? rest : rest.left(colon);
+
+      if (!requestId.isEmpty()) {
+        m_pendingJobs.insert(requestId, m_completionPolicy);
+
+        const QString sessionPart =
+            colon < 0 ? QString() : rest.mid(colon + 1).trimmed();
+
+        if (!sessionPart.isEmpty()) {
+          m_jobSessions.insert(requestId, sessionPart);
+        }
+      }
+
+      payload = tr("Task submitted. Request %1. You will be told when "
+                   "it is done.")
+                    .arg(requestId.left(8));
+
+      emit assistantStatus(tr("Task submitted."));
+                   } else if (result.output.startsWith(
+                              QStringLiteral("__lore_needs_session__:"))) {
+                     const QString instruction = result.output.mid(
+                         QStringLiteral("__lore_needs_session__:").size());
+
+                     QString listing = tr("The worker needs a session. Existing "
+                                          "sessions:\n");
+
+                     if (m_config.overseerManager) {
+                       const auto sessions =
+                           m_config.overseerManager->listSessionsWithDescriptions();
+
+                       if (sessions.isEmpty()) {
+                         listing += tr("(none yet)\n");
+                       } else {
+                         for (const auto &info : sessions) {
+                           listing += QStringLiteral("- %1 — %2\n")
+                                          .arg(info.name,
+                                               info.description.isEmpty()
+                                                   ? tr("(no description)")
+                                                   : info.description);
+                         }
+                       }
+                     } else {
+                       listing += tr("(the worker is not available)\n");
+                     }
+
+                     listing += tr("\nCall delegate again with a session name. Or "
+                                   "call delegate with create=true, a name, and a "
+                                   "short intentional description to make a new "
+                                   "session.\n\nThe task was:\n");
+                     listing += instruction;
+
+                     payload = listing;
+
+                     emit assistantStatus(tr("Choosing a session."));
+                              }
+
+    else {
+      payload = result.output;
+      emit assistantStatus(tr("%1 done.").arg(name));
     }
 
     QJsonObject toolMessage;
@@ -420,7 +560,6 @@ void LoreAssistant::runToolRound(const QJsonArray &toolCalls,
   }
 
   m_turnMessages = messages;
-
   m_turnReplyBuffer.clear();
 
   const QJsonArray tools = m_tools ? m_tools->schemas() : QJsonArray();
@@ -428,6 +567,67 @@ void LoreAssistant::runToolRound(const QJsonArray &toolCalls,
   m_turnToken = m_config.inference->sendChatRequest(
       m_turnMessages, QString(), kTurnTemperature, kTurnTimeoutMs,
       QString(), QJsonObject(), tools, QString());
+}
+
+QString LoreAssistant::runSearchForTool(const QString &query) {
+  if (!m_config.search || !m_config.inference) {
+    return QStringLiteral("Search is unavailable.");
+  }
+
+  if (!m_searchLoop) {
+    m_searchLoop = new RetrievalLoop(m_config.search,
+                                     m_config.inference, this);
+  }
+
+  if (m_searchInFlight) {
+    m_searchLoop->cancel();
+  }
+
+  m_searchAnswerBuffer.clear();
+  m_searchInFlight = true;
+
+  // Run synchronously from the tool's point of view. RetrievalLoop is
+  // asynchronous through the network, so we spin a local event loop
+  // until it finishes. The tool runs inside a turn, so blocking here
+  // is safe: the user has already submitted and is waiting.
+  QEventLoop loop;
+
+  QMetaObject::Connection finishedConn = connect(
+      m_searchLoop, &RetrievalLoop::finished, &loop,
+      [this, &loop](const QString &answer) {
+        m_searchAnswerBuffer = answer;
+        m_searchInFlight = false;
+        loop.quit();
+      });
+
+  QMetaObject::Connection failedConn = connect(
+      m_searchLoop, &RetrievalLoop::failed, &loop,
+      [this, &loop](const QString &reason) {
+        m_searchAnswerBuffer =
+            QStringLiteral("Search failed: ") + reason;
+        m_searchInFlight = false;
+        loop.quit();
+      });
+
+  QMetaObject::Connection chunkConn = connect(
+      m_searchLoop, &RetrievalLoop::answerChunk, &loop,
+      [this](const QString &chunk) { m_searchAnswerBuffer += chunk; });
+
+  m_searchLoop->start(query);
+  loop.exec();
+
+  disconnect(finishedConn);
+  disconnect(failedConn);
+  disconnect(chunkConn);
+
+  const QString answer = m_searchAnswerBuffer;
+  m_searchAnswerBuffer.clear();
+
+  if (answer.isEmpty()) {
+    return QStringLiteral("No notes matched that query.");
+  }
+
+  return answer;
 }
 
 void LoreAssistant::finishTurn() {
@@ -446,4 +646,74 @@ void LoreAssistant::finishTurn() {
   }
 
   emit assistantTurnFinished();
+}
+
+void LoreAssistant::onOverseerRequestFinished(
+    const QString &sessionName, const QString &requestId, bool ok,
+    const QString &summary, const QString &filePath) {
+  Q_UNUSED(sessionName);
+
+  if (!m_pendingJobs.contains(requestId)) {
+    // A request the user submitted themselves, not one Lore started.
+    return;
+  }
+
+  const CompletionPolicy policy = m_pendingJobs.take(requestId);
+
+  if (!ok) {
+    const QString line = tr("A task I started failed: %1").arg(summary);
+    emit assistantStatus(line);
+    emit jobCompleted(line);
+    return;
+  }
+
+  QString line = summary;
+
+  if (!filePath.isEmpty()) {
+    line += QStringLiteral(" ");
+    line += tr("(%1)").arg(QFileInfo(filePath).fileName());
+  }
+
+  CompletionPolicy effective = policy;
+
+  if (policy == CompletionPolicy::Automatic) {
+    // If the user is mid-turn, queue it. If the assistant is idle and
+    // nothing else is queued, paste it in chat. If something is
+    // already queued, keep queueing.
+    if (m_turnActive) {
+      effective = CompletionPolicy::FeedToQueue;
+    } else if (m_pendingForPrompt.isEmpty() &&
+               m_pendingForUserMessage.isEmpty()) {
+      effective = CompletionPolicy::PasteInChat;
+    } else {
+      effective = CompletionPolicy::FeedToQueue;
+    }
+  }
+
+  switch (effective) {
+  case CompletionPolicy::PasteInChat:
+    emit assistantChunk(QStringLiteral("\n\n") + line);
+    emit jobCompleted(line);
+    break;
+
+  case CompletionPolicy::FeedToQueue:
+    m_pendingForPrompt.append(line);
+    emit assistantStatus(tr("A background task finished."));
+    break;
+
+  case CompletionPolicy::AppendToNextUserMessage:
+    m_pendingForUserMessage.append(line);
+    emit assistantStatus(tr("A background task finished."));
+    break;
+
+  case CompletionPolicy::Automatic:
+    // handled above; not reached
+    break;
+  }
+}
+
+void LoreAssistant::applyCompletionPolicy(const QString &summary) {
+  Q_UNUSED(summary);
+  // Reserved for future use. The policy is applied in
+  // onOverseerRequestFinished, where the request id is known.
 }

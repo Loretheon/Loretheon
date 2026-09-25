@@ -1,15 +1,18 @@
 #pragma once
 
+#include "LoreAssistant.h"
 #include "ThemeAware.h"
 
 #include <QPoint>
 #include <QRect>
 #include <QWidget>
 
+class QComboBox;
 class QFrame;
 class QLabel;
 class QLineEdit;
 class QPushButton;
+class QScreen;
 class QTextEdit;
 class QToolButton;
 
@@ -35,7 +38,6 @@ public:
 
   void dockTo(QWidget *parent);
   void undock();
-  QScreen *screenForCurrentPosition() const;
   bool isUndocked() const { return false; }
 
   void positionPanel();
@@ -69,6 +71,7 @@ private slots:
   void onSpeechStateChanged();
   void onTranscribed(const QString &text);
   void onLiveTranscribed(const QString &text, bool isFinal);
+  void onPolicyChanged(int index);
 
 private:
   enum class DragKind {
@@ -92,6 +95,7 @@ private:
   bool isDragPoint(const QPoint &pos) const;
   void applyResize(const QPoint &globalDelta);
 
+  QScreen *screenForCurrentPosition() const;
   QRect currentScreenGeometry() const;
 
   void restoreSavedPosition();
@@ -101,6 +105,8 @@ private:
   QWidget *m_header = nullptr;
   QWidget *m_controls = nullptr;
 
+  QLabel *m_title = nullptr;
+  QComboBox *m_policy = nullptr;
   QTextEdit *m_transcript = nullptr;
   QLineEdit *m_input = nullptr;
   QPushButton *m_send = nullptr;

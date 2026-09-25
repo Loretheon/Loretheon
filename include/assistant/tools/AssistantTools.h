@@ -5,37 +5,38 @@
 namespace assistant {
 class AssistantToolRegistry;
 
-// The concrete tools the assistant can call. Each is small and does
-// one thing. Registration is explicit in installAll().
-
-class SearchNotesTool : public AssistantTool {
+// The tools Lore uses. She does not implement anything herself: she
+// dispatches into the surfaces that already exist, and remembers
+// facts when the user tells her something durable.
+//
+//   search        — runs a query through the user's notes and returns
+//                   the synthesised answer. Runs on the assistant's
+//                   own RetrievalLoop, independent of the Search page.
+//
+//   delegate      — hands a task to the Overseer conductor. The
+//                   conductor runs it in a session and the runner
+//                   reports back when it is done. The assistant does
+//                   not wait.
+//
+//   remember_fact — writes a durable fact to the user profile, the
+//                   self profile, or the memory tree.
+//
+//   speak         — speaks a line through the user's speakers.
+class SearchTool : public AssistantTool {
 public:
-  QString name() const override { return QStringLiteral("search_notes"); }
+  QString name() const override { return QStringLiteral("search"); }
   QString description() const override;
   QString category() const override { return QStringLiteral("read"); }
-  bool isDestructive() const override { return false; }
   QJsonObject parametersSchema() const override;
   Result execute(const QJsonObject &arguments,
                  const AssistantToolContext &context) const override;
 };
 
-class OpenFileTool : public AssistantTool {
+class DelegateTool : public AssistantTool {
 public:
-  QString name() const override { return QStringLiteral("open_file"); }
-  QString description() const override;
-  QString category() const override { return QStringLiteral("read"); }
-  bool isDestructive() const override { return false; }
-  QJsonObject parametersSchema() const override;
-  Result execute(const QJsonObject &arguments,
-                 const AssistantToolContext &context) const override;
-};
-
-class InsertTextTool : public AssistantTool {
-public:
-  QString name() const override { return QStringLiteral("insert_text"); }
+  QString name() const override { return QStringLiteral("delegate"); }
   QString description() const override;
   QString category() const override { return QStringLiteral("write"); }
-  bool isDestructive() const override { return true; }
   QJsonObject parametersSchema() const override;
   Result execute(const QJsonObject &arguments,
                  const AssistantToolContext &context) const override;
@@ -46,18 +47,6 @@ public:
   QString name() const override { return QStringLiteral("remember_fact"); }
   QString description() const override;
   QString category() const override { return QStringLiteral("memory"); }
-  bool isDestructive() const override { return false; }
-  QJsonObject parametersSchema() const override;
-  Result execute(const QJsonObject &arguments,
-                 const AssistantToolContext &context) const override;
-};
-
-class ChangeSettingTool : public AssistantTool {
-public:
-  QString name() const override { return QStringLiteral("change_setting"); }
-  QString description() const override;
-  QString category() const override { return QStringLiteral("settings"); }
-  bool isDestructive() const override { return true; }
   QJsonObject parametersSchema() const override;
   Result execute(const QJsonObject &arguments,
                  const AssistantToolContext &context) const override;
@@ -68,7 +57,16 @@ public:
   QString name() const override { return QStringLiteral("speak"); }
   QString description() const override;
   QString category() const override { return QStringLiteral("voice"); }
-  bool isDestructive() const override { return false; }
+  QJsonObject parametersSchema() const override;
+  Result execute(const QJsonObject &arguments,
+                 const AssistantToolContext &context) const override;
+};
+
+class PromoteNoteTool : public AssistantTool {
+public:
+  QString name() const override { return QStringLiteral("promote_note"); }
+  QString description() const override;
+  QString category() const override { return QStringLiteral("write"); }
   QJsonObject parametersSchema() const override;
   Result execute(const QJsonObject &arguments,
                  const AssistantToolContext &context) const override;
@@ -78,5 +76,6 @@ class AssistantTools {
 public:
   static void installAll(AssistantToolRegistry &registry);
 };
+
 
 } // namespace assistant

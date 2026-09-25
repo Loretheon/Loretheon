@@ -5,7 +5,9 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QObject>
+#include <QQueue>
 #include <QString>
+#include <QStringList>
 #include <QUuid>
 
 namespace assistant {
@@ -20,20 +22,27 @@ class DocumentArea;
 class DocumentManager;
 class InferenceService;
 class MemoryIndex;
+class NotePromoter;
+class OverseerSessionManager;
+class RetrievalLoop;
+class ScopeIndex;
 class SearchService;
 class SpeechAnimator;
 
-// The conductor. Owns the assistant's long-lived state, wires it to
-// the rest of the application, and runs one LLM turn per user message.
+// The conductor. Owns the assistant's long-lived state and runs one
+// LLM turn per user message.
 //
-// One turn: build a messages array from the profile and the user
-// message, send it with the tool schemas, stream deltas back to the
-// caller, execute any tool calls in a single round, and finish. The
-// reply is spoken once at the end of the turn if the assistant's own
-// settings allow it.
+// The assistant does not do work. She submits jobs and speaks. Search
+// runs through her own RetrievalLoop. Anything that produces or
+// modifies notes goes to OverseerSessionManager, which runs it in a
+// session and reports back through requestFinished. The conversation
+// stays free while the work happens.
 //
-// No conversation history, no memory gate, no activity-driven turns.
-// Those are later steps.
+// When a job completes, the completion policy chosen by the user
+// decides what happens to the result: paste it in the chat, feed it
+// to the assistant's next prompt, append it to the user's next
+// message, or let the assistant decide based on whether the user is
+// mid-turn.
 class LoreAssistant : public QObject {
   Q_OBJECT
 
@@ -44,9 +53,20 @@ public:
     DocumentManager *documents = nullptr;
     DocumentArea *documentArea = nullptr;
     SearchService *search = nullptr;
+    OverseerSessionManager *overseerManager = nullptr;
+    NotePromoter *promoter = nullptr;
+    ScopeIndex *scopeIndex = nullptr;
 
     QString root;
   };
+
+  enum class CompletionPolicy {
+    PasteInChat,
+    FeedToQueue,
+    AppendToNextUserMessage,
+    Automatic,
+  };
+  Q_ENUM(CompletionPolicy)
 
   explicit LoreAssistant(const Config &config,
                          QObject *parent = nullptr);
@@ -63,6 +83,9 @@ public:
 
   QString lastReply() const { return m_lastReply; }
 
+  CompletionPolicy completionPolicy() const { return m_completionPolicy; }
+  void setCompletionPolicy(CompletionPolicy policy);
+
   AssistantProfile *profile() const { return m_profile; }
   AssistantMemory *memory() const { return m_memory; }
   AssistantActivity *activity() const { return m_activity; }
@@ -72,20 +95,15 @@ public:
 signals:
   void assistantSaid(const QString &text);
 
-  // Streaming reply text. Emitted many times per turn.
   void assistantChunk(const QString &text);
 
-  // Status lines: tool activity, errors, refusals. Shown in the
-  // transcript as italic lines and, for failures, as a notification.
   void assistantStatus(const QString &text);
 
-  // A tool call began or ended. Emitted in addition to
-  // assistantStatus so that a view can render a distinct indicator
-  // without parsing the status text.
-  void toolStarted(const QString &name);
-  void toolFinished(const QString &name, bool ok, const QString &summary);
+  // Emitted when a background job's result is pasted into the chat,
+  // and when a delegated job completes regardless of policy, so the
+  // panel can show a status line.
+  void jobCompleted(const QString &summary);
 
-  // The turn is over.
   void assistantTurnFinished();
 
 private slots:
@@ -94,15 +112,26 @@ private slots:
   void onLlmToolCalls(const QUuid &token, const QJsonArray &toolCalls);
   void onLlmError(const QUuid &token, const QString &error);
 
-private:
-  QJsonArray buildMessages(const QString &userText) const;
+  void onOverseerRequestFinished(const QString &sessionName,
+                                 const QString &requestId, bool ok,
+                                 const QString &summary,
+                                 const QString &filePath);
 
-  assistant::AssistantToolContext buildToolContext() const;
+private:
+  QString runSearchForTool(const QString &query);
+
+  QJsonArray buildMessages(const QString &userText);
+
+  assistant::AssistantToolContext buildToolContext();
 
   void runToolRound(const QJsonArray &toolCalls,
                     const QJsonArray &priorMessages);
 
   void finishTurn();
+
+  void applyCompletionPolicy(const QString &summary);
+
+  QString systemPrompt() const;
 
   Config m_config;
 
@@ -118,8 +147,28 @@ private:
   bool m_turnActive = false;
   QUuid m_turnToken;
   QJsonArray m_turnMessages;
-  int m_toolRoundsRemaining = 1;
+  int m_toolRoundsRemaining = 5;
 
   QString m_turnReplyBuffer;
   QString m_lastReply;
+
+  CompletionPolicy m_completionPolicy = CompletionPolicy::Automatic;
+
+  // Job bookkeeping. Keyed by the id returned from submit.
+  QHash<QString, CompletionPolicy> m_pendingJobs;
+
+  // The session each pending job belongs to, for provenance when the
+  // result comes back.
+  QHash<QString, QString> m_jobSessions;
+
+  // Results waiting to be fed to the next prompt or appended to the
+  // next user message.
+  QStringList m_pendingForPrompt;
+  QStringList m_pendingForUserMessage;
+
+  // The assistant's private search pipeline. One run at a time; a new
+  // query cancels the previous one.
+  RetrievalLoop *m_searchLoop = nullptr;
+  QString m_searchAnswerBuffer;
+  bool m_searchInFlight = false;
 };

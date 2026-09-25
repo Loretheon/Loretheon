@@ -62,7 +62,11 @@ public:
   // Full rebuild: clear, walk every root, embed every scope, save.
   // Returns the number of scopes indexed, or -1 on failure.
   int rebuild(const QString &notesRoot);
-
+  // Embed one file and append its scopes to the index without a full
+  // rebuild. Used when a file is promoted into the notes folder. Loads
+  // the index from disk first if it has not been loaded. Returns the
+  // number of scopes added, or -1 on failure.
+  int addFile(const QString &absolutePath);
   // True if the index has at least one vector and the embedder is ready.
   bool isReady() const;
 

@@ -566,6 +566,12 @@ add_executable(Lore
         include/assistant/AssistantWidget.h
         src/assistant/AssistantIcon.cpp
         include/assistant/AssistantIcon.h
+        src/overseer/OverseerRunner.cpp
+        include/overseer/OverseerRunner.h
+        src/overseer/OverseerSessionManager.cpp
+        include/overseer/OverseerSessionManager.h
+        src/search/NotePromoter.cpp
+        include/search/NotePromoter.h
 )
 
 add_dependencies(Lore

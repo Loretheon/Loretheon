@@ -21,6 +21,7 @@
 #include "DocumentArea.h"
 #include "DocumentManager.h"
 #include "FileWidget.h"
+#include "OverseerSessionManager.h"
 #include "Settings.h"
 #include "TextDocument.h"
 #include "TextWidget.h"
@@ -48,16 +49,22 @@ constexpr auto SessionsDirname = "Sessions";
 } // namespace
 
 OverseerPage::OverseerPage(InferenceService *inferenceService,
-                           EditSession *editSession, QWidget *parent)
+                           EditSession *editSession,
+                           OverseerSessionManager *manager,
+                           QWidget *parent)
     : QWidget(parent),
       m_inferenceService(inferenceService),
-      m_editSession(editSession) {
+      m_editSession(editSession),
+      m_manager(manager) {
   m_documentManager = new DocumentManager(this);
 
-  m_overseer = new OverseerWidget(inferenceService, this);
+  m_overseer = new OverseerWidget(manager, this);
   m_workstation = new Workstation(m_documentManager, editSession, this);
 
   m_overseer->setWorkstation(m_workstation);
+
+  if (m_manager)
+    m_manager->setWorkstation(m_workstation);
 
   m_documentArea = new DocumentArea(m_documentManager, this);
   m_documentArea->setEditSession(editSession);
@@ -653,4 +660,9 @@ void OverseerPage::onFocusedFileChanged(const QString &absolutePath) {
   }
 
   m_overseer->setFocusedDocument(document, editor);
+}
+
+void OverseerPage::setWorkstationOnManager() {
+  if (m_manager && m_workstation)
+    m_manager->setWorkstation(m_workstation);
 }

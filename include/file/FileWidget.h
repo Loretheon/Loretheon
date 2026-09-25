@@ -50,6 +50,10 @@ signals:
   // Emitted when the user picks "Import All…" from the tree's context
   // menu. Carries every selected source file an extractor can handle.
   void importAllRequested(const QStringList &paths);
+  // Emitted when the user picks "Promote to notes" from the tree's
+  // context menu. Contains the absolute paths of every selected file
+  // or folder.
+  void promoteToNotesRequested(const QStringList &paths);
 
 protected:
   void resizeEvent(QResizeEvent *event) override;

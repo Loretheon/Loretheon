@@ -4,6 +4,7 @@
 
 class MemoryPanel;
 class OverviewPanel;
+class OverseerSession;
 
 class QTabWidget;
 class QTextEdit;
@@ -16,6 +17,10 @@ class OverseerSidePanel : public QWidget {
 
 public:
   explicit OverseerSidePanel(QWidget *parent = nullptr);
+
+  // Load the panels from a session. Passing nullptr clears them. Used
+  // when the Overseer view switches sessions.
+  void setSession(OverseerSession *session);
 
   QTabWidget *tabs() const { return m_tabs; }
 

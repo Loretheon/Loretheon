@@ -26,8 +26,12 @@
 #include "EditSession.h"
 #include "FileWidget.h"
 #include "LlmSettingsPanel.h"
+#include "NotePromoter.h"
 #include "NotificationService.h"
 #include "OverseerPage.h"
+#include "OverseerRunner.h"
+#include "OverseerSession.h"
+#include "OverseerSessionManager.h"
 #include "Settings.h"
 #include "SettingsDialog.h"
 #include "TextEdit.h"
@@ -266,6 +270,8 @@ MainWindow::MainWindow() {
   }
 
   buildNormalPage();
+  m_overseerSessionManager = new OverseerSessionManager(m_inferenceService, this);
+
   buildOverseerPage();
 
   buildIngestLayer();
@@ -298,6 +304,9 @@ MainWindow::MainWindow() {
     config.documents = m_documentManager;
     config.documentArea = m_documentArea;
     config.search = m_searchService;
+    config.overseerManager = m_overseerSessionManager;
+    config.promoter = m_notePromoter;
+    config.scopeIndex = m_scopeIndex.get();
     config.root = QStandardPaths::writableLocation(
                       QStandardPaths::AppDataLocation) +
                   QStringLiteral("/assistant");
@@ -802,7 +811,8 @@ void MainWindow::buildNormalPage() {
 
 void MainWindow::buildOverseerPage() {
   m_overseerPage =
-      new OverseerPage(m_inferenceService, m_editSession, this);
+      new OverseerPage(m_inferenceService, m_editSession,
+                       m_overseerSessionManager, this);
 
   connect(m_overseerPage, &OverseerPage::statusMessage, this,
           [this](const QString &text, int timeoutMs) {
@@ -818,8 +828,53 @@ void MainWindow::buildOverseerPage() {
               m_normalModeAct->setChecked(true);
             }
           });
-}
 
+  connect(m_overseerPage->fileWidget(), &FileWidget::promoteToNotesRequested,
+        this, [this](const QStringList &paths) {
+          if (!m_notePromoter) {
+            return;
+          }
+
+          const QString session = m_overseerSessionManager
+                                      ? m_overseerSessionManager->activeSessionName()
+                                      : QString();
+
+          if (session.isEmpty()) {
+            NotificationService::instance().warning(
+                tr("Promote"),
+                tr("No session is open."));
+            return;
+          }
+
+          OverseerRunner *runner =
+              m_overseerSessionManager->runner(session);
+
+          if (!runner || !runner->session()) {
+            return;
+          }
+
+          const QString notesRoot = notesRootPath();
+          const QString sessionOutput = runner->session()->outputPath();
+
+          int written = 0;
+          int skipped = 0;
+
+          for (const QString &path : paths) {
+            const NotePromoter::Result result =
+                m_notePromoter->promote(path, session, notesRoot);
+
+            written += result.written.size();
+            skipped += result.skipped.size();
+          }
+
+          NotificationService::instance().info(
+              tr("Promoted"),
+              tr("%1 file(s) added to notes/%2, %3 skipped.")
+                  .arg(written)
+                  .arg(session)
+                  .arg(skipped));
+        });
+}
 void MainWindow::bindCurrentEditor(TextEdit *editor) {
   if (!editor)
     return;
@@ -1827,6 +1882,8 @@ void MainWindow::buildSearchLayer() {
   if (!m_scopeIndex->load()) {
     qDebug() << "[MainWindow] No search index on disk yet.";
   }
+
+  m_notePromoter = new NotePromoter(m_scopeIndex.get(), this);
 
   m_searchService =
       new SearchService(m_inferenceService, m_scopeIndex.get(), this);

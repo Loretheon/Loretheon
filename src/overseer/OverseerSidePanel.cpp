@@ -1,6 +1,8 @@
 #include "../../include/overseer/OverseerSidePanel.h"
 
 #include "MemoryPanel.h"
+#include "OverseerSession.h"
+#include "OverseerStorage.h"
 #include "OverviewPanel.h"
 
 #include <QFontDatabase>
@@ -60,4 +62,16 @@ OverseerSidePanel::OverseerSidePanel(QWidget *parent) : QWidget(parent) {
   m_tabs->addTab(m_userActionsPage, tr("User actions"));
 
   root->addWidget(m_tabs);
+}
+
+void OverseerSidePanel::setSession(OverseerSession *session) {
+  if (!m_memoryPanel || !m_sessionMemoryPanel || !m_overviewPanel)
+    return;
+
+  m_memoryPanel->loadFromFile(OverseerStorage::memoryPath());
+
+  if (session) {
+    m_sessionMemoryPanel->loadFromFile(session->memoryPath());
+    m_overviewPanel->loadFromFile(session->overviewPath());
+  }
 }

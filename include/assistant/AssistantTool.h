@@ -13,7 +13,9 @@ class TextEdit;
 class AvatarWidget;
 class AssistantMemory;
 class AssistantProfile;
-
+class OverseerSessionManager;
+class NotePromoter;
+class ScopeIndex;
 namespace assistant {
 
 // Everything a tool needs to act. Assembled by the conductor before
@@ -26,21 +28,20 @@ struct AssistantToolContext {
   AssistantMemory *memory = nullptr;
   AssistantProfile *profile = nullptr;
   AvatarWidget *avatar = nullptr;
-
+  OverseerSessionManager *overseerManager = nullptr;
+  NotePromoter *promoter = nullptr;
+  ScopeIndex *scopeIndex = nullptr;
   // The last few activity events, for tools that want to reason about
   // what just happened.
   QStringList recentActivity;
 
   // Called by a tool that wants the user to review before acting.
-  // Returns true if the action was approved. In tests and in
-  // autonomous mode the callback may be null, in which case the tool
-  // must decide for itself whether to proceed.
+  // Returns true if the action was approved. Null means proceed
+  // without asking.
   std::function<bool(const QString &title, const QString &body)> requestReview;
 };
 
-// The interface every assistant tool implements. Mirrors the shape of
-// the Overseer Tool interface, but the context is different because
-// the assistant has access to different things.
+// The interface every assistant tool implements.
 class AssistantTool {
 public:
   struct Result {
@@ -55,9 +56,6 @@ public:
   virtual QString description() const = 0;
   virtual QString category() const = 0;
 
-  // True when the tool can modify user data or settings. Destructive
-  // tools require the review gate to be enabled, or the user to have
-  // disabled it explicitly.
   virtual bool isDestructive() const { return false; }
 
   virtual QJsonObject parametersSchema() const = 0;

@@ -118,7 +118,7 @@ void FileSystemView::saveColumnVisibility() {
   DirectoryExplorerSettings::instance().setColumnVisibility(visibility);
 }
 
-QStringList FileSystemView::selectedFilePaths() const {
+QStringList FileSystemView::selectedPaths(bool includeDirectories) const {
   QStringList paths;
 
   auto *fsModel = qobject_cast<FileSystemModel *>(model());
@@ -129,12 +129,12 @@ QStringList FileSystemView::selectedFilePaths() const {
 
   const QModelIndexList selected = selectionModel()->selectedRows(0);
 
-  auto appendIfFile = [&](const QModelIndex &index) {
+  auto append = [&](const QModelIndex &index) {
     if (!index.isValid()) {
       return;
     }
 
-    if (fsModel->isDir(index)) {
+    if (!includeDirectories && fsModel->isDir(index)) {
       return;
     }
 
@@ -155,16 +155,19 @@ QStringList FileSystemView::selectedFilePaths() const {
 
   if (!selected.isEmpty()) {
     for (const QModelIndex &index : selected) {
-      appendIfFile(index);
+      append(index);
     }
   }
 
-  // If nothing selected, fall back to whatever is under the cursor.
   if (paths.isEmpty()) {
-    appendIfFile(currentIndex());
+    append(currentIndex());
   }
 
   return paths;
+}
+
+QStringList FileSystemView::selectedFilePaths() const {
+  return selectedPaths(false);
 }
 
 void FileSystemView::startDrag(Qt::DropActions supportedActions) {
@@ -180,7 +183,6 @@ void FileSystemView::startDrag(Qt::DropActions supportedActions) {
   mime->setData(kNotesPathMimeType,
                 paths.join(QChar('\n')).toUtf8());
 
-  // Also set text/plain so dropping into other apps gets something readable.
   mime->setText(paths.join(QChar('\n')));
 
   auto *drag = new QDrag(this);
@@ -243,8 +245,6 @@ void FileSystemView::contextMenuEvent(QContextMenuEvent *event) {
       convertToPlantUmlAction = menu.addAction(tr("Convert to PlantUML"));
   }
 
-  // Import entries. Only offered when the clicked file is a source
-  // format the ingest layer can handle.
   QAction *importAction = nullptr;
   QAction *importAllAction = nullptr;
 
@@ -266,6 +266,10 @@ void FileSystemView::contextMenuEvent(QContextMenuEvent *event) {
   if (!isDir) {
     addToOverseerAction = menu.addAction(tr("Add to Overseer session"));
   }
+
+  menu.addSeparator();
+
+  QAction *promoteAction = menu.addAction(tr("Promote to notes"));
 
   menu.addSeparator();
 
@@ -308,6 +312,11 @@ void FileSystemView::contextMenuEvent(QContextMenuEvent *event) {
     const QStringList paths = selectedFilePaths();
     if (!paths.isEmpty()) {
       emit addToOverseerRequested(paths);
+    }
+  } else if (chosen == promoteAction) {
+    const QStringList paths = selectedPaths(true);
+    if (!paths.isEmpty()) {
+      emit promoteToNotesRequested(paths);
     }
   } else if (chosen == copyPathAction) {
     QApplication::clipboard()->setText(path);

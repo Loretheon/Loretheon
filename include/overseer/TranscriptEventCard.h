@@ -20,9 +20,6 @@ public:
   explicit TranscriptEventCard(const TranscriptEvent &event,
                                QWidget *parent = nullptr);
 
-  // Updates the card in place to reflect a status change. This never
-  // destroys and recreates widgets, so it is safe to call from inside a
-  // button's own clicked handler.
   void updateEvent(const TranscriptEvent &event);
 
   const TranscriptEvent &event() const { return m_event; }
@@ -63,9 +60,6 @@ private:
   MarkdownView *m_bodyView = nullptr;
   QPlainTextEdit *m_bodyEdit = nullptr;
 
-  // Proposal card widgets. Owned by the body layout once built. Kept as
-  // members so refreshProposalControls can update them without a
-  // rebuild.
   QWidget *m_proposalButtonRow = nullptr;
   QPushButton *m_proposalAccept = nullptr;
   QPushButton *m_proposalReject = nullptr;

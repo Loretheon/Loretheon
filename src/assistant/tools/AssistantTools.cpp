@@ -1,19 +1,19 @@
 #include "../../../include/assistant/tools/AssistantTools.h"
 
-#include "../../../include/app/DocumentManager.h"
-#include "../../../include/app/Settings.h"
 #include "../../../include/assistant/AssistantMemory.h"
 #include "../../../include/assistant/AssistantProfile.h"
 #include "../../../include/assistant/AssistantToolRegistry.h"
-#include "../../../include/avatar/AvatarWidget.h"
+#include "../../../include/overseer/OverseerSessionManager.h"
 #include "../../../include/search/SearchService.h"
-#include "../../../include/text/TextEdit.h"
+#include "NotePromoter.h"
+#include "OverseerRunner.h"
+#include "OverseerSession.h"
+#include "Settings.h"
 #include "inference/InferenceService.h"
 
 #include <QDir>
 #include <QFileInfo>
 #include <QJsonArray>
-#include <QTextCursor>
 
 namespace assistant {
 
@@ -33,42 +33,22 @@ AssistantTool::Result makeOk(const QString &output) {
   return result;
 }
 
-QString describeHits(const QVector<SearchHit> &hits, int maxLength) {
-  QString text;
-
-  int index = 1;
-
-  for (const SearchHit &hit : hits) {
-    text += QStringLiteral("%1. ").arg(index++);
-    text += QFileInfo(hit.filePath).fileName();
-
-    if (!hit.heading.isEmpty()) {
-      text += QStringLiteral(" — ") + hit.heading;
-    }
-
-    text += QStringLiteral("\n   ");
-    text += hit.body.left(200).simplified();
-    text += QStringLiteral("\n");
-  }
-
-  return text.left(maxLength);
-}
-
 } // namespace
 
 // ---------------------------------------------------------------------
-// SearchNotesTool
+// SearchTool
 // ---------------------------------------------------------------------
 
-QString SearchNotesTool::description() const {
+QString SearchTool::description() const {
   return QStringLiteral(
-      "Search the user's notes by meaning. Use this when the user asks "
-      "about something that might be in their notes and you do not "
-      "already know the answer. Returns the top matching notes with a "
-      "short snippet from each.");
+      "Search the user's notes by meaning and return a synthesised "
+      "answer with citations. Use this when the user asks about "
+      "something that might be in their notes and you do not already "
+      "know the answer. The answer is produced from the notes "
+      "themselves, so cite it rather than paraphrasing.");
 }
 
-QJsonObject SearchNotesTool::parametersSchema() const {
+QJsonObject SearchTool::parametersSchema() const {
   QJsonObject query;
   query.insert(QStringLiteral("type"), QStringLiteral("string"));
   query.insert(QStringLiteral("description"),
@@ -86,13 +66,9 @@ QJsonObject SearchNotesTool::parametersSchema() const {
   return schema;
 }
 
-AssistantTool::Result SearchNotesTool::execute(
+AssistantTool::Result SearchTool::execute(
     const QJsonObject &arguments,
     const AssistantToolContext &context) const {
-  if (!context.search || !context.search->isReady()) {
-    return makeError(QStringLiteral("Search index is not ready."));
-  }
-
   const QString query =
       arguments.value(QStringLiteral("query")).toString().trimmed();
 
@@ -100,136 +76,172 @@ AssistantTool::Result SearchNotesTool::execute(
     return makeError(QStringLiteral("'query' is required."));
   }
 
-  const QVector<SearchHit> hits = context.search->search(query, 6);
-
-  if (hits.isEmpty()) {
-    return makeOk(QStringLiteral("No notes matched that query."));
+  if (!context.search || !context.search->isReady()) {
+    return makeError(QStringLiteral("Search index is not ready."));
   }
 
-  return makeOk(describeHits(hits, 1600));
+  // The assistant's search runs through the RetrievalLoop that
+  // LoreAssistant owns, not through this tool. This tool only exists
+  // so the model can signal intent. The conductor in LoreAssistant
+  // intercepts the call and does the work; the tool itself returns a
+  // marker that the conductor recognises.
+  return makeOk(QStringLiteral("__lore_search__:") + query);
 }
 
 // ---------------------------------------------------------------------
-// OpenFileTool
+// DelegateTool
 // ---------------------------------------------------------------------
 
-QString OpenFileTool::description() const {
+QString DelegateTool::description() const {
   return QStringLiteral(
-      "Open a note in the editor. Use this when you want to draw the "
-      "user's attention to a specific note, or when the next step of "
-      "your work depends on a file being open. The path must be an "
-      "absolute path to a note that exists.");
+      "Hand a task to the worker. The worker creates and modifies "
+      "notes.\n"
+      "\n"
+      "There are three ways to call this:\n"
+      "\n"
+      "  1. With a session name you already know. Use this when you "
+      "have just been shown the session list, or when the user named "
+      "a session explicitly.\n"
+      "\n"
+      "  2. With create=true, a name, and a description. Use this "
+      "when no existing session fits and the task deserves its own. "
+      "The description must be a short, intentional sentence that "
+      "says what the session is about. It will be read later by you "
+      "when you are choosing where other tasks belong.\n"
+      "\n"
+      "  3. With no session at all. The application will show you "
+      "the list of existing sessions and their descriptions, and you "
+      "will be asked again to pick one.\n"
+      "\n"
+      "The task runs in the background. Reply to the user with a "
+      "short acknowledgement and stop.");
 }
 
-QJsonObject OpenFileTool::parametersSchema() const {
-  QJsonObject path;
-  path.insert(QStringLiteral("type"), QStringLiteral("string"));
-  path.insert(QStringLiteral("description"),
-              QStringLiteral("Absolute path to the note."));
+QJsonObject DelegateTool::parametersSchema() const {
+  QJsonObject instruction;
+  instruction.insert(QStringLiteral("type"), QStringLiteral("string"));
+  instruction.insert(
+      QStringLiteral("description"),
+      QStringLiteral("What to produce, in the user's own words where "
+                     "possible. The worker sees this verbatim."));
+
+  QJsonObject session;
+  session.insert(QStringLiteral("type"), QStringLiteral("string"));
+  session.insert(
+      QStringLiteral("description"),
+      QStringLiteral("The session to run the task in. Leave empty to "
+                     "be shown the session list, or to create a new "
+                     "one."));
+
+  QJsonObject create;
+  create.insert(QStringLiteral("type"), QStringLiteral("boolean"));
+  create.insert(
+      QStringLiteral("description"),
+      QStringLiteral("Set to true to create a new session. Requires "
+                     "'session' as the name and 'description' as the "
+                     "intentional description."));
+
+  QJsonObject description;
+  description.insert(QStringLiteral("type"), QStringLiteral("string"));
+  description.insert(
+      QStringLiteral("description"),
+      QStringLiteral("Only when create is true. A short, "
+                     "intentional sentence describing what this "
+                     "session is about. Read later when choosing "
+                     "where other tasks belong."));
 
   QJsonObject properties;
-  properties.insert(QStringLiteral("path"), path);
+  properties.insert(QStringLiteral("instruction"), instruction);
+  properties.insert(QStringLiteral("session"), session);
+  properties.insert(QStringLiteral("create"), create);
+  properties.insert(QStringLiteral("description"), description);
 
   QJsonObject schema;
   schema.insert(QStringLiteral("type"), QStringLiteral("object"));
   schema.insert(QStringLiteral("properties"), properties);
   schema.insert(QStringLiteral("required"),
-                QJsonArray{QStringLiteral("path")});
+                QJsonArray{QStringLiteral("instruction")});
 
   return schema;
 }
 
-AssistantTool::Result OpenFileTool::execute(
+AssistantTool::Result DelegateTool::execute(
     const QJsonObject &arguments,
     const AssistantToolContext &context) const {
-  if (!context.documents) {
-    return makeError(QStringLiteral("No document manager available."));
+  if (!context.overseerManager) {
+    return makeError(QStringLiteral("The worker is not available."));
   }
 
-  const QString path =
-      arguments.value(QStringLiteral("path")).toString().trimmed();
+  const QString instruction =
+      arguments.value(QStringLiteral("instruction")).toString().trimmed();
 
-  if (path.isEmpty()) {
-    return makeError(QStringLiteral("'path' is required."));
+  if (instruction.isEmpty()) {
+    return makeError(QStringLiteral("'instruction' is required."));
   }
 
-  const QFileInfo info(path);
+  const QString session =
+      arguments.value(QStringLiteral("session")).toString().trimmed();
 
-  if (!info.exists() || !info.isFile()) {
-    return makeError(QStringLiteral("File does not exist: %1").arg(path));
-  }
+  const bool create =
+      arguments.value(QStringLiteral("create")).toBool(false);
 
-  if (!context.documents->openFile(info.absoluteFilePath())) {
-    return makeError(QStringLiteral("Could not open the file."));
-  }
+  const QString description =
+      arguments.value(QStringLiteral("description")).toString().trimmed();
 
-  return makeOk(QStringLiteral("Opened %1.").arg(info.fileName()));
-}
-
-// ---------------------------------------------------------------------
-// InsertTextTool
-// ---------------------------------------------------------------------
-
-QString InsertTextTool::description() const {
-  return QStringLiteral(
-      "Insert text at the cursor in the currently open note. This "
-      "modifies the user's file. Use it only when the user has asked "
-      "for something to be written, or when a review has been "
-      "approved. Prefer asking first if you are unsure.");
-}
-
-QJsonObject InsertTextTool::parametersSchema() const {
-  QJsonObject text;
-  text.insert(QStringLiteral("type"), QStringLiteral("string"));
-  text.insert(QStringLiteral("description"),
-              QStringLiteral("The text to insert at the cursor."));
-
-  QJsonObject properties;
-  properties.insert(QStringLiteral("text"), text);
-
-  QJsonObject schema;
-  schema.insert(QStringLiteral("type"), QStringLiteral("object"));
-  schema.insert(QStringLiteral("properties"), properties);
-  schema.insert(QStringLiteral("required"),
-                QJsonArray{QStringLiteral("text")});
-
-  return schema;
-}
-
-AssistantTool::Result InsertTextTool::execute(
-    const QJsonObject &arguments,
-    const AssistantToolContext &context) const {
-  if (!context.editor) {
-    return makeError(QStringLiteral("No editor is focused."));
-  }
-
-  const QString text =
-      arguments.value(QStringLiteral("text")).toString();
-
-  if (text.isEmpty()) {
-    return makeError(QStringLiteral("'text' is empty."));
-  }
-
-  if (context.requestReview) {
-    const bool approved = context.requestReview(
-        QStringLiteral("Insert text"),
-        text.left(400));
-
-    if (!approved) {
-      return makeOk(QStringLiteral("Insert was declined."));
+  if (create) {
+    if (session.isEmpty()) {
+      return makeError(
+          QStringLiteral("'session' is required when create is true."));
     }
+
+    if (description.isEmpty()) {
+      return makeError(
+          QStringLiteral("'description' is required when create is "
+                         "true."));
+    }
+
+    if (context.overseerManager->sessionExists(session)) {
+      return makeError(
+          QStringLiteral("A session named '%1' already exists.")
+              .arg(session));
+    }
+
+    if (!context.overseerManager->createSession(session, description)) {
+      return makeError(
+          QStringLiteral("Could not create session '%1'.").arg(session));
+    }
+
+    const QString requestId = context.overseerManager->submitToSession(
+        session, instruction, Origin::Lore);
+
+    if (requestId.isEmpty()) {
+      return makeError(
+          QStringLiteral("The session was created but the task could "
+                         "not be submitted."));
+    }
+
+    return makeOk(QStringLiteral("__lore_delegated__:") + requestId +
+                  QStringLiteral(":") + session);
   }
 
-  QTextCursor cursor = context.editor->textCursor();
-
-  if (cursor.isNull()) {
-    return makeError(QStringLiteral("Cursor is not valid."));
+  if (session.isEmpty()) {
+    return makeOk(QStringLiteral("__lore_needs_session__:") + instruction);
   }
 
-  cursor.insertText(text);
+  if (!context.overseerManager->sessionExists(session)) {
+    return makeError(
+        QStringLiteral("No session named '%1'.").arg(session));
+  }
 
-  return makeOk(QStringLiteral("Inserted %1 characters.")
-                    .arg(text.size()));
+  const QString requestId = context.overseerManager->submitToSession(
+      session, instruction, Origin::Lore);
+
+  if (requestId.isEmpty()) {
+    return makeError(QStringLiteral("The worker could not accept the task."));
+  }
+
+  return makeOk(QStringLiteral("__lore_delegated__:") + requestId +
+                QStringLiteral(":") + session);
 }
 
 // ---------------------------------------------------------------------
@@ -238,19 +250,29 @@ AssistantTool::Result InsertTextTool::execute(
 
 QString RememberFactTool::description() const {
   return QStringLiteral(
-      "Propose a fact to remember. The fact is written to the "
-      "assistant's memory under the given topic. Use this when you "
-      "learn something durable about the user or about the world that "
-      "should persist across sessions. The user is asked to approve "
-      "the fact before it is written, unless they have turned the "
-      "review gate off.");
+      "Remember a fact. Use this when the user tells you something "
+      "about themselves or about you that should persist. The scope "
+      "argument decides where it goes: 'user' for facts about the "
+      "user, 'self' for facts about you, 'memory' for everything "
+      "else. The fact is written immediately; the user does not need "
+      "to approve it.");
 }
 
 QJsonObject RememberFactTool::parametersSchema() const {
+  QJsonObject scope;
+  scope.insert(QStringLiteral("type"), QStringLiteral("string"));
+  scope.insert(
+      QStringLiteral("description"),
+      QStringLiteral("Where the fact belongs. One of: 'user' (a fact "
+                     "about the user), 'self' (a fact about you), "
+                     "'memory' (a topic fact that may grow)."));
+
   QJsonObject topic;
   topic.insert(QStringLiteral("type"), QStringLiteral("string"));
-  topic.insert(QStringLiteral("description"),
-               QStringLiteral("Short topic name, e.g. 'programming'."));
+  topic.insert(
+      QStringLiteral("description"),
+      QStringLiteral("Short topic name, e.g. 'programming'. Required "
+                     "only when scope is 'memory'."));
 
   QJsonObject fact;
   fact.insert(QStringLiteral("type"), QStringLiteral("string"));
@@ -258,6 +280,7 @@ QJsonObject RememberFactTool::parametersSchema() const {
               QStringLiteral("A single sentence stating the fact."));
 
   QJsonObject properties;
+  properties.insert(QStringLiteral("scope"), scope);
   properties.insert(QStringLiteral("topic"), topic);
   properties.insert(QStringLiteral("fact"), fact);
 
@@ -265,7 +288,7 @@ QJsonObject RememberFactTool::parametersSchema() const {
   schema.insert(QStringLiteral("type"), QStringLiteral("object"));
   schema.insert(QStringLiteral("properties"), properties);
   schema.insert(QStringLiteral("required"),
-                QJsonArray{QStringLiteral("topic"),
+                QJsonArray{QStringLiteral("scope"),
                            QStringLiteral("fact")});
 
   return schema;
@@ -274,110 +297,89 @@ QJsonObject RememberFactTool::parametersSchema() const {
 AssistantTool::Result RememberFactTool::execute(
     const QJsonObject &arguments,
     const AssistantToolContext &context) const {
-  if (!context.memory) {
-    return makeError(QStringLiteral("Memory is not available."));
-  }
-
-  const QString topic =
-      arguments.value(QStringLiteral("topic")).toString().trimmed();
+  const QString scope =
+      arguments.value(QStringLiteral("scope")).toString().trimmed().toLower();
 
   const QString fact =
       arguments.value(QStringLiteral("fact")).toString().trimmed();
 
-  if (topic.isEmpty() || fact.isEmpty()) {
-    return makeError(
-        QStringLiteral("Both 'topic' and 'fact' are required."));
+  if (fact.isEmpty()) {
+    return makeError(QStringLiteral("'fact' is empty."));
   }
 
-  if (context.requestReview) {
-    const bool approved = context.requestReview(
-        QStringLiteral("Remember: %1").arg(topic), fact);
-
-    if (!approved) {
-      return makeOk(QStringLiteral("Memory was declined."));
+  if (scope == QStringLiteral("user")) {
+    if (!context.profile) {
+      return makeError(QStringLiteral("Profile is not available."));
     }
+
+    QString body = context.profile->user();
+
+    if (!body.endsWith(QChar('\n'))) {
+      body += QChar('\n');
+    }
+
+    body += QStringLiteral("\n- ");
+    body += fact;
+    body += QChar('\n');
+
+    context.profile->setUser(body);
+
+    if (!context.profile->save()) {
+      return makeError(QStringLiteral("Could not write user.md."));
+    }
+
+    return makeOk(QStringLiteral("Noted about you: %1").arg(fact));
   }
 
-  const QString slug = AssistantMemory::slugify(topic);
+  if (scope == QStringLiteral("self")) {
+    if (!context.profile) {
+      return makeError(QStringLiteral("Profile is not available."));
+    }
 
-  if (!context.memory->appendToTopic(slug, fact)) {
-    return makeError(QStringLiteral("Could not write to memory."));
+    QString body = context.profile->self();
+
+    if (!body.endsWith(QChar('\n'))) {
+      body += QChar('\n');
+    }
+
+    body += QStringLiteral("\n- ");
+    body += fact;
+    body += QChar('\n');
+
+    context.profile->setSelf(body);
+
+    if (!context.profile->save()) {
+      return makeError(QStringLiteral("Could not write self.md."));
+    }
+
+    return makeOk(QStringLiteral("Noted about me: %1").arg(fact));
   }
 
-  return makeOk(QStringLiteral("Remembered under '%1'.").arg(slug));
-}
+  if (scope == QStringLiteral("memory")) {
+    if (!context.memory) {
+      return makeError(QStringLiteral("Memory is not available."));
+    }
 
-// ---------------------------------------------------------------------
-// ChangeSettingTool
-// ---------------------------------------------------------------------
+    const QString topic =
+        arguments.value(QStringLiteral("topic")).toString().trimmed();
 
-QString ChangeSettingTool::description() const {
-  return QStringLiteral(
-      "Change one of the assistant's own settings. You may only make a "
-      "setting more restrictive, never less. If the user asks you to "
-      "loosen a restriction, refuse and tell them to do it themselves "
-      "in the settings panel. Field names: autonomy, speakResponses, "
-      "listenMode, accessSearch, accessTools, accessUserMemory, "
-      "accessSelfMemory, reviewGate, activityWatch.");
-}
+    if (topic.isEmpty()) {
+      return makeError(
+          QStringLiteral("'topic' is required when scope is 'memory'."));
+    }
 
-QJsonObject ChangeSettingTool::parametersSchema() const {
-  QJsonObject field;
-  field.insert(QStringLiteral("type"), QStringLiteral("string"));
-  field.insert(QStringLiteral("description"),
-               QStringLiteral("The setting to change."));
+    const QString slug = AssistantMemory::slugify(topic);
 
-  QJsonObject value;
-  value.insert(QStringLiteral("type"), QStringLiteral("integer"));
-  value.insert(
-      QStringLiteral("description"),
-      QStringLiteral("The new numeric value. Booleans use 0 or 1. "
-                     "Enums use their integer rank."));
+    if (!context.memory->appendToTopic(slug, fact)) {
+      return makeError(QStringLiteral("Could not write to memory."));
+    }
 
-  QJsonObject properties;
-  properties.insert(QStringLiteral("field"), field);
-  properties.insert(QStringLiteral("value"), value);
-
-  QJsonObject schema;
-  schema.insert(QStringLiteral("type"), QStringLiteral("object"));
-  schema.insert(QStringLiteral("properties"), properties);
-  schema.insert(QStringLiteral("required"),
-                QJsonArray{QStringLiteral("field"),
-                           QStringLiteral("value")});
-
-  return schema;
-}
-
-AssistantTool::Result ChangeSettingTool::execute(
-    const QJsonObject &arguments,
-    const AssistantToolContext &context) const {
-  Q_UNUSED(context);
-
-  const QString field =
-      arguments.value(QStringLiteral("field")).toString().trimmed();
-
-  const int value = arguments.value(QStringLiteral("value")).toInt();
-
-  if (field.isEmpty()) {
-    return makeError(QStringLiteral("'field' is required."));
+    return makeOk(QStringLiteral("Remembered under '%1'.").arg(slug));
   }
 
-  if (Settings::assistantWriteDirectionFor(field) ==
-      Settings::AssistantWriteDirection::None) {
-    return makeError(
-        QStringLiteral("Field '%1' is not writable by the assistant.")
-            .arg(field));
-  }
-
-  QString reason;
-
-  if (!Settings::setAssistantFieldRestricted(field, value, &reason)) {
-    return makeError(reason);
-  }
-
-  return makeOk(
-      QStringLiteral("Set %1 to %2.")
-          .arg(field, Settings::describeAssistantField(field)));
+  return makeError(
+      QStringLiteral("Unknown scope '%1'. Use 'user', 'self', or "
+                     "'memory'.").arg(scope));
 }
 
 // ---------------------------------------------------------------------
@@ -387,9 +389,9 @@ AssistantTool::Result ChangeSettingTool::execute(
 QString SpeakTool::description() const {
   return QStringLiteral(
       "Speak a line aloud through the user's speakers. Use this when "
-      "you want to say something that does not need to appear in the "
-      "chat transcript, or when the user has asked you to read "
-      "something. Speech is animated on the avatar if it is visible.");
+      "the user has asked you to read something, or when a spoken "
+      "line is more natural than text. Speech is animated on the "
+      "avatar when it is visible.");
 }
 
 QJsonObject SpeakTool::parametersSchema() const {
@@ -429,17 +431,157 @@ AssistantTool::Result SpeakTool::execute(
   return makeOk(QStringLiteral("Spoke."));
 }
 
+
+QString PromoteNoteTool::description() const {
+  return QStringLiteral(
+      "Copy a file the worker produced into the user's notes. Use "
+      "this when a generated file is worth keeping permanently. The "
+      "file is copied, not moved. It lands under a folder named "
+      "after the session. If a file with the same name already "
+      "exists in the notes folder, it is skipped rather than "
+      "overwritten.");
+}
+
+QJsonObject PromoteNoteTool::parametersSchema() const {
+  QJsonObject path;
+  path.insert(QStringLiteral("type"), QStringLiteral("string"));
+  path.insert(
+      QStringLiteral("description"),
+      QStringLiteral("Path to the file or folder inside the session's "
+                     "output, relative to the session root. For "
+                     "example 'cv/Sujan_CV.md' or 'projects'."));
+
+  QJsonObject session;
+  session.insert(QStringLiteral("type"), QStringLiteral("string"));
+  session.insert(
+      QStringLiteral("description"),
+      QStringLiteral("The session the file came from. Leave empty to "
+                     "use the current session."));
+
+  QJsonObject properties;
+  properties.insert(QStringLiteral("path"), path);
+  properties.insert(QStringLiteral("session"), session);
+
+  QJsonObject schema;
+  schema.insert(QStringLiteral("type"), QStringLiteral("object"));
+  schema.insert(QStringLiteral("properties"), properties);
+  schema.insert(QStringLiteral("required"),
+                QJsonArray{QStringLiteral("path")});
+
+  return schema;
+}
+
+AssistantTool::Result PromoteNoteTool::execute(
+    const QJsonObject &arguments,
+    const AssistantToolContext &context) const {
+  if (!context.overseerManager) {
+    return makeError(QStringLiteral("The worker is not available."));
+  }
+
+  if (!context.promoter) {
+    return makeError(QStringLiteral("The promoter is not available."));
+  }
+
+  const QString relativePath =
+      arguments.value(QStringLiteral("path")).toString().trimmed();
+
+  if (relativePath.isEmpty()) {
+    return makeError(QStringLiteral("'path' is required."));
+  }
+
+  QString session =
+      arguments.value(QStringLiteral("session")).toString().trimmed();
+
+  if (session.isEmpty()) {
+    session = context.overseerManager->activeSessionName();
+  }
+
+  if (session.isEmpty()) {
+    return makeError(
+        QStringLiteral("No session is open and none was named."));
+  }
+
+  OverseerRunner *runner = context.overseerManager->runner(session);
+
+  if (!runner || !runner->session()) {
+    return makeError(
+        QStringLiteral("Session '%1' is not open.").arg(session));
+  }
+
+  const QString sessionOutput = runner->session()->outputPath();
+
+  const QString absolute =
+      QDir(sessionOutput).absoluteFilePath(relativePath);
+
+  if (!QFileInfo::exists(absolute)) {
+    return makeError(
+        QStringLiteral("No such file in session '%1': %2")
+            .arg(session, relativePath));
+  }
+
+  const QString notesRoot = Settings::getRootDirectory();
+
+  const NotePromoter::Result result =
+      context.promoter->promote(absolute, session, notesRoot);
+
+  if (!result.ok()) {
+    return makeError(result.error);
+  }
+
+  QString summary;
+
+  if (result.written.isEmpty() && result.skipped.isEmpty() &&
+      result.copiedNotIndexed.isEmpty()) {
+    return makeOk(QStringLiteral(
+        "Nothing was promoted. The path may not contain any "
+        "markdown files."));
+      }
+
+  if (!result.written.isEmpty()) {
+    summary += QStringLiteral("Promoted %1 file(s) into notes/%2.")
+                   .arg(result.written.size())
+                   .arg(session);
+  }
+
+  if (!result.skipped.isEmpty()) {
+    if (!summary.isEmpty())
+      summary += QStringLiteral(" ");
+
+    summary += QStringLiteral("Skipped %1 file(s) that already "
+                              "existed.")
+                   .arg(result.skipped.size());
+  }
+
+  if (!result.copiedNotIndexed.isEmpty()) {
+    if (!summary.isEmpty())
+      summary += QStringLiteral(" ");
+
+    summary += QStringLiteral("%1 file(s) were copied but not indexed; "
+                              "the search index may need a rebuild.")
+                   .arg(result.copiedNotIndexed.size());
+  }
+
+  if (!result.failed.isEmpty()) {
+    if (!summary.isEmpty())
+      summary += QStringLiteral(" ");
+
+    summary += QStringLiteral("Failed on %1 file(s).")
+                   .arg(result.failed.size());
+  }
+
+  return makeOk(summary);
+}
+
 // ---------------------------------------------------------------------
 // Installation
 // ---------------------------------------------------------------------
 
 void AssistantTools::installAll(AssistantToolRegistry &registry) {
-  registry.registerTool(std::make_unique<SearchNotesTool>());
-  registry.registerTool(std::make_unique<OpenFileTool>());
-  registry.registerTool(std::make_unique<InsertTextTool>());
+  registry.registerTool(std::make_unique<SearchTool>());
+  registry.registerTool(std::make_unique<DelegateTool>());
   registry.registerTool(std::make_unique<RememberFactTool>());
-  registry.registerTool(std::make_unique<ChangeSettingTool>());
   registry.registerTool(std::make_unique<SpeakTool>());
+  registry.registerTool(std::make_unique<PromoteNoteTool>());
 }
 
 } // namespace assistant

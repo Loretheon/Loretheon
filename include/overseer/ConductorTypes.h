@@ -3,12 +3,23 @@
 #include <QDateTime>
 #include <QString>
 
+// Where a request came from. User requests are typed into the Overseer
+// input. Lore requests are submitted by the assistant on the user's
+// behalf. The transcript distinguishes them so the user can see which
+// requests they made and which ones Lore made.
+enum class Origin {
+  User,
+  Lore,
+};
+
 // A user request as it appears in the queue and on the conductor's
 // board. Immutable except for its state, which the conductor advances.
 struct ConductorRequest {
   QString id;              // uuid
   QString text;            // verbatim user text
   QDateTime queuedAt;
+
+  Origin origin = Origin::User;
 
   // "inbox", "routing", "delegated", "awaiting", "done", "failed",
   // "rejected"

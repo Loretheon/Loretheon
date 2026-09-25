@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ConductorTypes.h"
+
 #include <QDateTime>
 #include <QJsonArray>
 #include <QJsonObject>
@@ -24,6 +26,7 @@ struct TranscriptEvent {
   QUuid id;
   quint64 sequence = 0;
   Type type = Type::Notice;
+  Origin origin = Origin::User;
   QDateTime timestamp;
 
   QString role;
@@ -43,9 +46,7 @@ struct TranscriptEvent {
   QString proposalRationale;
   QString proposalStatus;   // "pending", "accepted", "rejected"
   QString proposalScope;    // "global" or "session"
-  QString proposalAcceptedScope; // scope actually accepted into
-  // The assistant message text that was emitted alongside this proposal.
-  // Rendered above the fact in the proposal card.
+  QString proposalAcceptedScope;
   QString proposalContext;
 
   // Edit plan fields.

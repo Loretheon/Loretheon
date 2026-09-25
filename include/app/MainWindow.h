@@ -14,6 +14,8 @@
 #include "ThemeManager.h"
 #include "inference/InferenceService.h"
 
+class NotePromoter;
+class OverseerSessionManager;
 class AssistantIcon;
 class AssistantWidget;
 class DocumentArea;
@@ -158,6 +160,7 @@ private:
   ChatWidget *m_chatWidget = nullptr;
 
   OverseerPage *m_overseerPage = nullptr;
+  OverseerSessionManager *m_overseerSessionManager = nullptr;
   SearchPage *m_searchPage = nullptr;
 
   QStackedWidget *m_centralStack = nullptr;
@@ -237,7 +240,7 @@ private:
 
   std::unique_ptr<ScopeIndex> m_scopeIndex;
   SearchService *m_searchService = nullptr;
-
+  NotePromoter *m_notePromoter = nullptr;
   QHash<TextEdit *, LoreTrigger *> m_loreTriggers;
 };
 

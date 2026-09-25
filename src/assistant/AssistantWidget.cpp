@@ -5,7 +5,7 @@
 #include "../../include/voice/SpeechController.h"
 
 #include <QApplication>
-#include <QCursor>
+#include <QComboBox>
 #include <QFrame>
 #include <QGuiApplication>
 #include <QHBoxLayout>
@@ -42,6 +42,7 @@ constexpr int kCardRadius = 12;
 constexpr int kDocumentMargin = 18;
 
 constexpr auto kPanelPosKey = "assistant/panelPos";
+constexpr auto kPolicyKey = "assistant/completionPolicy";
 
 } // namespace
 
@@ -81,6 +82,28 @@ void AssistantWidget::setThemeTokens(const ThemeTokens &tokens) {
 
 void AssistantWidget::setAssistant(LoreAssistant *assistant) {
   m_assistant = assistant;
+
+  if (!m_assistant || !m_policy) {
+    return;
+  }
+
+  QSettings settings;
+  const int stored = settings
+                         .value(kPolicyKey,
+                                static_cast<int>(
+                                    LoreAssistant::CompletionPolicy::Automatic))
+                         .toInt();
+
+  const int index = m_policy->findData(stored);
+
+  if (index >= 0) {
+    m_policy->blockSignals(true);
+    m_policy->setCurrentIndex(index);
+    m_policy->blockSignals(false);
+  }
+
+  m_assistant->setCompletionPolicy(
+      static_cast<LoreAssistant::CompletionPolicy>(stored));
 }
 
 void AssistantWidget::setSpeechController(SpeechController *speech) {
@@ -116,9 +139,26 @@ void AssistantWidget::buildUi() {
   m_header->setAttribute(Qt::WA_TranslucentBackground, true);
   m_header->setAutoFillBackground(false);
 
-  auto *title = new QLabel(tr("Lore"), m_header);
-  title->setObjectName(QStringLiteral("assistantTitle"));
-  title->setAttribute(Qt::WA_TranslucentBackground, true);
+  m_title = new QLabel(tr("Lore"), m_header);
+  m_title->setObjectName(QStringLiteral("assistantTitle"));
+  m_title->setAttribute(Qt::WA_TranslucentBackground, true);
+
+  m_policy = new QComboBox(m_header);
+  m_policy->setObjectName(QStringLiteral("assistantPolicy"));
+  m_policy->addItem(tr("Results: automatic"),
+                    static_cast<int>(
+                        LoreAssistant::CompletionPolicy::Automatic));
+  m_policy->addItem(tr("Results: paste in chat"),
+                    static_cast<int>(
+                        LoreAssistant::CompletionPolicy::PasteInChat));
+  m_policy->addItem(tr("Results: feed to Lore"),
+                    static_cast<int>(
+                        LoreAssistant::CompletionPolicy::FeedToQueue));
+  m_policy->addItem(tr("Results: next message"),
+                    static_cast<int>(
+                        LoreAssistant::CompletionPolicy::AppendToNextUserMessage));
+  m_policy->setToolTip(
+      tr("What to do when a background task finishes."));
 
   m_close = new QPushButton(QStringLiteral("✕"), m_header);
   m_close->setObjectName(QStringLiteral("assistantClose"));
@@ -129,8 +169,9 @@ void AssistantWidget::buildUi() {
   auto *headerLayout = new QHBoxLayout(m_header);
   headerLayout->setContentsMargins(18, 12, 12, 12);
   headerLayout->setSpacing(8);
-  headerLayout->addWidget(title);
+  headerLayout->addWidget(m_title);
   headerLayout->addStretch(1);
+  headerLayout->addWidget(m_policy);
   headerLayout->addWidget(m_close);
 
   m_transcript = new QTextEdit(m_card);
@@ -219,6 +260,9 @@ void AssistantWidget::buildUi() {
           &AssistantWidget::onReadAloudClicked);
   connect(m_close, &QPushButton::clicked, this,
           &AssistantWidget::onCloseClicked);
+
+  connect(m_policy, QOverload<int>::of(&QComboBox::currentIndexChanged),
+          this, &AssistantWidget::onPolicyChanged);
 }
 
 void AssistantWidget::open() {
@@ -253,11 +297,6 @@ void AssistantWidget::dockTo(QWidget *parent) { Q_UNUSED(parent); }
 void AssistantWidget::undock() {}
 
 QScreen *AssistantWidget::screenForCurrentPosition() const {
-  // During a drag or a resize, the cursor is the anchor: it is the
-  // point that actually crosses the screen boundary, and it is what
-  // the user is looking at. Otherwise, pick the screen with the
-  // largest intersection with the panel, so a panel straddling two
-  // screens belongs to the one it mostly covers.
   if (m_drag != DragKind::None) {
     const QPoint cursor = QCursor::pos();
 
@@ -445,6 +484,13 @@ bool AssistantWidget::isDragPoint(const QPoint &pos) const {
   if (m_close && m_close->isVisible()) {
     const QPoint closePos = m_close->mapFrom(this, pos);
     if (m_close->rect().contains(closePos)) {
+      return false;
+    }
+  }
+
+  if (m_policy && m_policy->isVisible()) {
+    const QPoint policyPos = m_policy->mapFrom(this, pos);
+    if (m_policy->rect().contains(policyPos)) {
       return false;
     }
   }
@@ -698,6 +744,22 @@ void AssistantWidget::onReadAloudClicked() {
 }
 
 void AssistantWidget::onCloseClicked() { close(); }
+
+void AssistantWidget::onPolicyChanged(int index) {
+  if (!m_assistant || !m_policy) {
+    return;
+  }
+
+  const int value = m_policy->itemData(index).toInt();
+
+  const auto policy =
+      static_cast<LoreAssistant::CompletionPolicy>(value);
+
+  m_assistant->setCompletionPolicy(policy);
+
+  QSettings settings;
+  settings.setValue(kPolicyKey, value);
+}
 
 void AssistantWidget::applySpeechButtonState(QToolButton *button,
                                              bool active) {

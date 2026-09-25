@@ -311,6 +311,101 @@ int ScopeIndex::rebuild(const QString &notesRoot) {
   return scopes;
 }
 
+int ScopeIndex::addFile(const QString &absolutePath) {
+  if (m_indexDirectory.isEmpty()) {
+    qWarning() << "[ScopeIndex] No index directory set";
+    return -1;
+  }
+
+  if (!m_inference || !m_inference->isEmbedderReady()) {
+    qWarning() << "[ScopeIndex] Embedder is not ready";
+    return -1;
+  }
+
+  // Load the existing index if it has not been loaded yet. A first
+  // promote with no index on disk behaves like the start of a rebuild.
+  if (!isReady()) {
+    const QString indexPath =
+        QDir(m_indexDirectory).filePath(kIndexFile);
+    const QString sidecarPath =
+        QDir(m_indexDirectory).filePath(kSidecarFile);
+
+    const bool indexExists = QFileInfo::exists(indexPath);
+    const bool sidecarExists = QFileInfo::exists(sidecarPath);
+
+    if (indexExists && sidecarExists) {
+      if (!load()) {
+        qWarning() << "[ScopeIndex] Could not load the existing index";
+        return -1;
+      }
+    } else {
+      m_dimensions = m_inference->embedderDimensions();
+
+      if (m_dimensions <= 0) {
+        return -1;
+      }
+
+      if (!m_vectors->create(m_dimensions)) {
+        return -1;
+      }
+
+      m_entries.clear();
+    }
+  }
+
+  const QVector<Entry> scopes = extractScopes(absolutePath);
+
+  if (scopes.isEmpty()) {
+    return 0;
+  }
+
+  int added = 0;
+
+  for (const Entry &entry : scopes) {
+    const std::vector<float> vector = m_inference->embed(entry.body);
+
+    if (vector.empty()) {
+      continue;
+    }
+
+    const int64_t id = m_vectors->add(vector);
+
+    if (id < 0) {
+      continue;
+    }
+
+    m_entries.append(entry);
+    ++added;
+  }
+
+  if (added == 0) {
+    return 0;
+  }
+
+  QDir().mkpath(m_indexDirectory);
+
+  const QString indexPath =
+      QDir(m_indexDirectory).filePath(kIndexFile);
+  const QString sidecarPath =
+      QDir(m_indexDirectory).filePath(kSidecarFile);
+
+  if (!m_vectors->save(indexPath)) {
+    qWarning() << "[ScopeIndex] Failed to save after addFile";
+    return -1;
+  }
+
+  if (!saveSidecar(sidecarPath)) {
+    qWarning() << "[ScopeIndex] Failed to save sidecar after addFile";
+    return -1;
+  }
+
+  qDebug() << "[ScopeIndex] Added" << added << "scopes from"
+           << absolutePath;
+
+  return added;
+}
+
+
 bool ScopeIndex::isReady() const {
   return m_vectors && m_vectors->isValid() && m_vectors->size() > 0;
 }
