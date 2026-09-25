@@ -1,32 +1,32 @@
 @theme normal
 
-@base           #171624
-@surface0       #1F1D30
-@surface1       #29263E
-@surface2       #34304C
-@surface-raised #1F1D30
-@structure      #4A3A8F
+@base           #0A0F1F
+@surface0       #131D35
+@surface1       #1A2A48
+@surface2       #24365C
+@surface-raised #131D35
+@structure      #1A2A48
 
-@text           #ECE8F5
-@text-muted     #B0A4C8
-@text-subtle    #8274A0
-@text-disabled  #60547A
+@text           #E0E8F0
+@text-muted     #9EAFC0
+@text-subtle    #7A8FA8
+@text-disabled  #5A7090
 
-@accent         #8B71FF
-@accent-hover   #9F8BFF
-@accent-pressed #7B61FF
-@accent-muted   #7B61FF
-@accent-fg      #171624
+@accent         #E69F00
+@accent-hover   #F0AE1A
+@accent-pressed #D89000
+@accent-muted   #F5C44D
+@accent-fg      #0A0F1F
 
-@hint-cool      #B0C0F0
-@hint-warm      #F0B0C8
-@hint-neutral   #C0B0E8
+@hint-cool      #56B4E9
+@hint-warm      #D55E00
+@hint-neutral   #009E73
 
-@border         #4A3A8F
-@border-strong  #7B61FF
-@divider        #3A2E5F
+@border         #24365C
+@border-strong  #E69F00
+@divider        #1A2A48
 
-@success        #7BC67B
-@warning        #E8C76B
-@error          #E05C7A
-@info           #B0C0F0
+@success        #009E73
+@warning        #F0E442
+@error          #D55E00
+@info           #56B4E9
