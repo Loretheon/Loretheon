@@ -102,6 +102,83 @@ void DocumentArea::setEditSession(EditSession *session) {
       page->setPreviewSession(session);
     }
   }
+
+  // The session drives one editor at a time. Bind it to the editor that
+  // is active right now, and re-bind whenever the active tab changes.
+  wireSessionToEditor(session, currentEditor());
+}
+
+void DocumentArea::wireSessionToEditor(EditSession *session,
+                                       TextEdit *editor) {
+  if (m_sessionEditor == editor && m_session == session) {
+    return;
+  }
+
+  if (m_sessionEditor) {
+    disconnect(m_sessionEditor, nullptr, session, nullptr);
+    disconnect(session, nullptr, m_sessionEditor, nullptr);
+
+    m_sessionEditor = nullptr;
+  }
+
+  if (!session || !editor) {
+    return;
+  }
+
+  m_sessionEditor = editor;
+
+  // Session -> editor. These drive the review bar and the highlights.
+  connect(session, &EditSession::pendingEditStarted, editor,
+          [editor](const PendingEdit &edit) { editor->showPendingEdit(edit); });
+
+  connect(session, &EditSession::pendingEditUpdated, editor,
+          [editor](const PendingEdit &edit) { editor->updatePendingEdit(edit); });
+
+  connect(session, &EditSession::pendingEditFinished, editor,
+          [editor](const PendingEdit &edit) { editor->updatePendingEdit(edit); });
+
+  connect(session, &EditSession::pendingEditsChanged, editor,
+          [editor]() { editor->refreshPendingEdits(); });
+
+  connect(session, &EditSession::reviewReady, editor,
+          [editor]() { editor->refreshPendingEdits(); });
+
+  connect(session, &EditSession::planReady, editor,
+          [editor](const QVector<EditCommand> &) {
+            editor->refreshPendingEdits();
+          });
+
+  connect(session, &EditSession::aborted, editor,
+          [editor]() { editor->clearPendingEdits(); });
+
+  // Editor -> session. These are the ones that were missing. The review
+  // bar emits them; the session must be listening.
+  connect(editor, &TextEdit::acceptPendingEditRequested, session,
+          [session](int id) { session->acceptPendingEdit(id); });
+
+  connect(editor, &TextEdit::rejectPendingEditRequested, session,
+          [session](int id) { session->rejectPendingEdit(id); });
+
+  connect(editor, &TextEdit::acceptAllPendingEditsRequested, session,
+          [session]() {
+            session->acceptAllPendingEdits();
+            session->applyAcceptedPendingEdits();
+          });
+
+  connect(editor, &TextEdit::rejectAllPendingEditsRequested, session,
+          [session]() { session->rejectAllPendingEdits(); });
+
+  // Auto-accept. When enabled, an approved plan is applied without
+  // waiting for a click.
+  connect(editor, &TextEdit::autoAcceptChanged, session,
+          [session](bool enabled) {
+            if (!enabled) {
+              return;
+            }
+
+            session->acceptAllPendingEdits();
+            session->applyAcceptedPendingEdits();
+          });
 }
 
 void DocumentArea::setThemeTokens(const ThemeTokens &tokens) {
@@ -180,6 +257,10 @@ void DocumentArea::onDocumentClosed(TextDocument *document) {
     return;
   }
 
+  if (m_sessionEditor == page->editor()) {
+    wireSessionToEditor(m_session, nullptr);
+  }
+
   const int index = m_tabs->indexOf(page);
 
   m_widgets.remove(document);
@@ -206,6 +287,8 @@ void DocumentArea::onCurrentChanged(int index) {
   auto *page = qobject_cast<TextWidget *>(m_tabs->widget(index));
 
   if (!page) {
+    wireSessionToEditor(m_session, nullptr);
+
     emit currentEditorChanged(nullptr);
     emit currentTextWidgetChanged(nullptr);
     return;
@@ -227,6 +310,8 @@ void DocumentArea::onCurrentChanged(int index) {
   m_syncing = true;
   m_manager->setCurrentDocument(document);
   m_syncing = false;
+
+  wireSessionToEditor(m_session, page->editor());
 
   emit currentEditorChanged(page->editor());
   emit currentTextWidgetChanged(page);

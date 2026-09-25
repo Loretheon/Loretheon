@@ -29,11 +29,8 @@ public:
 public slots:
   void setThemeTokens(const ThemeTokens &tokens);
 
-  // Show a media file in the pane. Called by whoever connects to
-  // DocumentManager::mediaFileRequested.
   void showMediaFile(const QString &absolutePath);
 
-  // Return to the text tabs.
   void showTextTabs();
 
   signals:
@@ -52,8 +49,11 @@ private:
   TextWidget *widgetForDocument(TextDocument *document) const;
   int indexForDocument(TextDocument *document) const;
 
+  void wireSessionToEditor(EditSession *session, TextEdit *editor);
+
   DocumentManager *m_manager = nullptr;
   EditSession *m_session = nullptr;
+  TextEdit *m_sessionEditor = nullptr;
 
   QTabWidget *m_tabs = nullptr;
   MediaPane *m_mediaPane = nullptr;

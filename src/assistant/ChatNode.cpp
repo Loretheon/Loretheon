@@ -13,6 +13,7 @@ bool ChatNode::defaultCollapsed(Kind kind) {
   case Kind::JobDelegate:
   case Kind::JobPromote:
   case Kind::JobRead:
+  case Kind::JobEdit:
   case Kind::Tool:
     return true;
   default:

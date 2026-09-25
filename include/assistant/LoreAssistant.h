@@ -24,6 +24,7 @@ class DocumentArea;
 class DocumentManager;
 class InferenceService;
 class MemoryIndex;
+class NoteEditJob;
 class NotePromoter;
 class OverseerSessionManager;
 class RetrievalLoop;
@@ -143,6 +144,9 @@ private slots:
 
 private:
   QString startSearchJob(const QString &query, const QString &nodeId);
+  QString startNoteEditJob(const QString &notePath,
+                           const QString &instruction,
+                           const QString &nodeId);
 
   void applyJobCompletion(const Job &job);
 
@@ -180,6 +184,8 @@ private:
 
   QHash<QString, RetrievalLoop *> m_searchLoops;
   QHash<QString, QString> m_searchBuffers;
+
+  QHash<QString, NoteEditJob *> m_noteEditJobs;
 
   QHash<QString, CompletionPolicy> m_jobPolicies;
 

@@ -240,6 +240,7 @@ MainWindow::MainWindow() {
 
   m_editSession = new EditSession(nullptr, this);
 
+  m_editSession->setInferenceService(m_inferenceService);
   if (!loadAllThemes()) {
     QMessageBox::critical(
         this, tr("Theme load failure"),

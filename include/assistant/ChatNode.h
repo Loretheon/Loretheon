@@ -13,6 +13,7 @@ public:
     JobDelegate,
     JobPromote,
     JobRead,
+    JobEdit,
     Tool,
     Status,
     Error,
@@ -53,7 +54,8 @@ public:
 
   bool isJob() const {
     return kind == Kind::JobSearch || kind == Kind::JobDelegate ||
-           kind == Kind::JobPromote || kind == Kind::JobRead;
+           kind == Kind::JobPromote || kind == Kind::JobRead ||
+           kind == Kind::JobEdit;
   }
 
   bool isText() const {

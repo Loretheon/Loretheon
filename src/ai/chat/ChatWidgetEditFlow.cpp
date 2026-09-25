@@ -212,7 +212,10 @@ void ChatWidgetEditFlow::onPlanApprovalRequested(
 
   if (!m_widget->m_editSession->executePlan(editedCommands)) {
     resetState();
+    return;
   }
+
+  m_widget->m_editSession->startAllPendingEdits();
 }
 
 void ChatWidgetEditFlow::beginStreamingResolvedPlan() {

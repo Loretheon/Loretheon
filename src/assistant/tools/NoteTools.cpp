@@ -332,8 +332,9 @@ QString EditNoteTool::description() const {
       "Change an existing note. Provide the path and a plain-English "
       "instruction describing the change. The note is opened in the "
       "editor and the standard edit pipeline plans and applies the "
-      "change. Use this instead of write_note whenever the note "
-      "already exists.");
+      "change autonomously, without review. Returns a job id "
+      "immediately. Use read_job to read the result when the edit "
+      "completes.");
 }
 
 QJsonObject EditNoteTool::parametersSchema() const {
@@ -396,14 +397,12 @@ AssistantTool::Result EditNoteTool::execute(
     return makeError(QStringLiteral("The instruction is empty."));
   }
 
-  if (!context.documents->openFile(absolute)) {
-    return makeError(
-        QStringLiteral("Could not open the note in the editor."));
-  }
-
-  return makeOk(QStringLiteral(
-      "Opened %1 for editing. The user can review the change in the "
-      "editor.").arg(absolute));
+  // The conductor intercepts this marker, starts the edit job, and
+  // returns the job id to the model. Nothing blocks. The path and
+  // instruction are joined with a newline, because a path cannot
+  // contain a newline.
+  return makeOk(QStringLiteral("__job_edit__:") + absolute +
+                QChar('\n') + instruction);
 }
 
 // ---------------------------------------------------------------------

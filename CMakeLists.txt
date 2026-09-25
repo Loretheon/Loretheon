@@ -588,6 +588,8 @@ add_executable(Lore
         include/assistant/ChatTree.h
         src/assistant/ChatNodeWidget.cpp
         include/assistant/ChatNodeWidget.h
+        src/assistant/NoteEditJob.cpp
+        include/assistant/NoteEditJob.h
 )
 
 add_dependencies(Lore

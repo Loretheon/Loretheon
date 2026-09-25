@@ -22,6 +22,8 @@ QString glyphFor(ChatNode::Kind kind) {
     return QStringLiteral("★");
   case ChatNode::Kind::JobRead:
     return QStringLiteral("⤓");
+  case ChatNode::Kind::JobEdit:
+    return QStringLiteral("✎");
   case ChatNode::Kind::Tool:
     return QStringLiteral("⚙");
   case ChatNode::Kind::Status:
@@ -57,6 +59,7 @@ bool isMono(ChatNode::Kind kind) {
          kind == ChatNode::Kind::JobDelegate ||
          kind == ChatNode::Kind::JobPromote ||
          kind == ChatNode::Kind::JobRead ||
+         kind == ChatNode::Kind::JobEdit ||
          kind == ChatNode::Kind::Tool;
 }
 

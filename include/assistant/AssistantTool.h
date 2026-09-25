@@ -4,7 +4,6 @@
 #include <QString>
 #include <QStringList>
 
-#include <functional>
 class LoreAssistant;
 class DocumentManager;
 class InferenceService;
@@ -34,8 +33,6 @@ struct AssistantToolContext {
   QString notesRoot;
 
   QStringList recentActivity;
-
-  std::function<bool(const QString &title, const QString &body)> requestReview;
 };
 
 class AssistantTool {

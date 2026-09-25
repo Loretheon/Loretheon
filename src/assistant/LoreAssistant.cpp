@@ -7,6 +7,7 @@
 #include "../../include/assistant/AssistantProfile.h"
 #include "../../include/assistant/AssistantToolRegistry.h"
 #include "../../include/assistant/MemoryIndex.h"
+#include "../../include/assistant/NoteEditJob.h"
 #include "../../include/assistant/SpeechAnimator.h"
 #include "../../include/assistant/tools/AssistantTools.h"
 #include "../../include/assistant/tools/NoteTools.h"
@@ -352,8 +353,6 @@ assistant::AssistantToolContext LoreAssistant::buildToolContext() {
     context.recentActivity = m_activity->recent();
   }
 
-  context.requestReview = nullptr;
-
   return context;
 }
 
@@ -416,7 +415,7 @@ void LoreAssistant::runToolRound(const QJsonArray &toolCalls,
     emit assistantReplyStarted(m_activeReplyNode);
   }
 
-  
+
   --m_toolRoundsRemaining;
 
   const assistant::AssistantToolContext context = buildToolContext();
@@ -489,9 +488,9 @@ void LoreAssistant::runToolRound(const QJsonArray &toolCalls,
       payload = tr("Job started. id=%1. Read it with read_job when you "
                    "need it.").arg(jobId);
     } else if (result.output.startsWith(
-                   QStringLiteral("__job_delegated__:"))) {
+                   QStringLiteral("__lore_delegated__:"))) {
       const QString rest = result.output.mid(
-          QStringLiteral("__job_delegated__:").size());
+          QStringLiteral("__lore_delegated__:").size());
 
       const int colon = rest.indexOf(QChar(':'));
 
@@ -519,6 +518,24 @@ void LoreAssistant::runToolRound(const QJsonArray &toolCalls,
 
       payload = tr("Job started. id=%1. Read it with read_job when you "
                    "need it.").arg(job.id);
+    } else if (result.output.startsWith(
+                   QStringLiteral("__job_edit__:"))) {
+      const QString rest = result.output.mid(
+          QStringLiteral("__job_edit__:").size());
+
+      const int newline = rest.indexOf(QChar('\n'));
+
+      const QString notePath =
+          newline < 0 ? rest : rest.left(newline);
+
+      const QString instruction =
+          newline < 0 ? QString() : rest.mid(newline + 1);
+
+      const QString jobId =
+          startNoteEditJob(notePath, instruction, m_activeReplyNode);
+
+      payload = tr("Job started. id=%1. Read it with read_job when you "
+                   "need it.").arg(jobId);
     } else if (result.output.startsWith(
                    QStringLiteral("__job_promoted__:"))) {
       payload = result.output.mid(
@@ -632,6 +649,84 @@ QString LoreAssistant::startSearchJob(const QString &query,
   return jobId;
 }
 
+QString LoreAssistant::startNoteEditJob(const QString &notePath,
+                                        const QString &instruction,
+                                        const QString &nodeId) {
+  const QString jobId =
+      QStringLiteral("edit-%1").arg(m_nextJobOrdinal++);
+
+  Job job;
+  job.id = jobId;
+  job.kind = ChatNode::Kind::JobEdit;
+  job.state = ChatNode::State::Running;
+  job.nodeId = nodeId;
+  job.summary = tr("Editing %1").arg(QFileInfo(notePath).fileName());
+  job.createdAt = QDateTime::currentDateTime();
+  job.updatedAt = job.createdAt;
+
+  m_jobs.insert(jobId, job);
+  m_jobPolicies.insert(jobId, m_completionPolicy);
+
+  emit jobCreated(jobId, nodeId, ChatNode::Kind::JobEdit,
+                  tr("Editing: %1").arg(QFileInfo(notePath).fileName()),
+                  instruction);
+
+  if (!m_config.documents || !m_config.documentArea || !m_config.inference) {
+    m_jobs[jobId].state = ChatNode::State::Failed;
+    m_jobs[jobId].error = tr("The edit pipeline is unavailable.");
+    emit jobFailed(jobId, m_jobs[jobId].error);
+    return jobId;
+  }
+
+  auto *editJob = new NoteEditJob(m_config.documents, m_config.documentArea,
+                                  m_config.inference, notePath, instruction,
+                                  this);
+
+  m_noteEditJobs.insert(jobId, editJob);
+
+  connect(editJob, &NoteEditJob::finished, this,
+          [this, jobId](const QString &summary) {
+            auto it = m_jobs.find(jobId);
+
+            if (it == m_jobs.end()) {
+              return;
+            }
+
+            it->state = ChatNode::State::Done;
+            it->result = summary;
+            it->updatedAt = QDateTime::currentDateTime();
+
+            m_noteEditJobs.remove(jobId);
+
+            emit jobCompleted(jobId, summary);
+            emit statusChanged(tr("Idle"));
+
+            applyJobCompletion(*it);
+          });
+
+  connect(editJob, &NoteEditJob::failed, this,
+          [this, jobId](const QString &reason) {
+            auto it = m_jobs.find(jobId);
+
+            if (it == m_jobs.end()) {
+              return;
+            }
+
+            it->state = ChatNode::State::Failed;
+            it->error = reason;
+            it->updatedAt = QDateTime::currentDateTime();
+
+            m_noteEditJobs.remove(jobId);
+
+            emit jobFailed(jobId, reason);
+            emit statusChanged(tr("Idle"));
+          });
+
+  editJob->start();
+
+  return jobId;
+}
+
 void LoreAssistant::onSearchJobFinished(const QString &jobId,
                                         const QString &result) {
   auto it = m_jobs.find(jobId);
@@ -707,12 +802,22 @@ void LoreAssistant::applyJobCompletion(const Job &job) {
   }
 
   switch (effective) {
-  case CompletionPolicy::PasteInChat:
-    if (!m_activeReplyNode.isEmpty()) {
-      emit assistantChunk(m_activeReplyNode,
-                          QStringLiteral("\n\n") + line);
+  case CompletionPolicy::PasteInChat: {
+    // If a turn is in flight, the reply node exists and the result can
+    // be appended to it. If no turn is in flight — the user has sent
+    // the next message and the first delta has not yet arrived, or the
+    // exchange has already finished — there is no node to paste into.
+    // Create a fresh root for the result so it is not dropped.
+    QString target = m_activeReplyNode;
+
+    if (target.isEmpty()) {
+      target = QUuid::createUuid().toString(QUuid::WithoutBraces);
+      emit assistantReplyStarted(target);
     }
+
+    emit assistantChunk(target, QStringLiteral("\n\n") + line);
     break;
+  }
   case CompletionPolicy::FeedToQueue:
     m_pendingForPrompt.append(line);
     emit statusMessage(tr("A background task finished."));
@@ -808,6 +913,10 @@ void LoreAssistant::abortJob(const QString &jobId) {
 
   if (it == m_jobs.end() || it->isTerminal()) {
     return;
+  }
+
+  if (NoteEditJob *editJob = m_noteEditJobs.take(jobId)) {
+    editJob->abort();
   }
 
   RetrievalLoop *loop = m_searchLoops.take(jobId);
