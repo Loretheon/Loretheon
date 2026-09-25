@@ -5,6 +5,7 @@
 #include "../../../include/assistant/AssistantToolRegistry.h"
 #include "../../../include/overseer/OverseerSessionManager.h"
 #include "../../../include/search/SearchService.h"
+#include "LoreAssistant.h"
 #include "NotePromoter.h"
 #include "OverseerRunner.h"
 #include "OverseerSession.h"
@@ -69,6 +70,8 @@ QJsonObject SearchTool::parametersSchema() const {
 AssistantTool::Result SearchTool::execute(
     const QJsonObject &arguments,
     const AssistantToolContext &context) const {
+  Q_UNUSED(context);
+
   const QString query =
       arguments.value(QStringLiteral("query")).toString().trimmed();
 
@@ -76,16 +79,9 @@ AssistantTool::Result SearchTool::execute(
     return makeError(QStringLiteral("'query' is required."));
   }
 
-  if (!context.search || !context.search->isReady()) {
-    return makeError(QStringLiteral("Search index is not ready."));
-  }
-
-  // The assistant's search runs through the RetrievalLoop that
-  // LoreAssistant owns, not through this tool. This tool only exists
-  // so the model can signal intent. The conductor in LoreAssistant
-  // intercepts the call and does the work; the tool itself returns a
-  // marker that the conductor recognises.
-  return makeOk(QStringLiteral("__lore_search__:") + query);
+  // The conductor intercepts this marker, starts the job, and returns
+  // the job id to the model. Nothing blocks.
+  return makeOk(QStringLiteral("__job_search__:") + query);
 }
 
 // ---------------------------------------------------------------------
@@ -572,6 +568,58 @@ AssistantTool::Result PromoteNoteTool::execute(
   return makeOk(summary);
 }
 
+QString ReadJobTool::description() const {
+  return QStringLiteral(
+      "Read the result of a job by id. Returns immediately if the job "
+      "is done. Waits if it is still running. Returns an error if the "
+      "job failed, was cancelled, or the user aborted the wait. Only "
+      "call this for a job you started and actually need the result "
+      "of.");
+}
+
+QJsonObject ReadJobTool::parametersSchema() const {
+  QJsonObject id;
+  id.insert(QStringLiteral("type"), QStringLiteral("string"));
+  id.insert(QStringLiteral("description"),
+            QStringLiteral("The job id returned when the job started."));
+
+  QJsonObject properties;
+  properties.insert(QStringLiteral("id"), id);
+
+  QJsonObject schema;
+  schema.insert(QStringLiteral("type"), QStringLiteral("object"));
+  schema.insert(QStringLiteral("properties"), properties);
+  schema.insert(QStringLiteral("required"),
+                QJsonArray{QStringLiteral("id")});
+
+  return schema;
+}
+
+AssistantTool::Result ReadJobTool::execute(
+    const QJsonObject &arguments,
+    const AssistantToolContext &context) const {
+  if (!context.assistant) {
+    return makeError(QStringLiteral("The assistant is not available."));
+  }
+
+  const QString jobId =
+      arguments.value(QStringLiteral("id")).toString().trimmed();
+
+  if (jobId.isEmpty()) {
+    return makeError(QStringLiteral("'id' is required."));
+  }
+
+  QString result;
+  QString error;
+
+  if (!context.assistant->waitForJob(jobId, &result, &error)) {
+    return makeError(error);
+  }
+
+  return makeOk(result);
+}
+
+
 // ---------------------------------------------------------------------
 // Installation
 // ---------------------------------------------------------------------
@@ -582,6 +630,7 @@ void AssistantTools::installAll(AssistantToolRegistry &registry) {
   registry.registerTool(std::make_unique<RememberFactTool>());
   registry.registerTool(std::make_unique<SpeakTool>());
   registry.registerTool(std::make_unique<PromoteNoteTool>());
+  registry.registerTool(std::make_unique<ReadJobTool>());
 }
 
 } // namespace assistant

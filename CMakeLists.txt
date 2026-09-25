@@ -576,6 +576,18 @@ add_executable(Lore
         include/assistant/tools/NoteTools.h
         src/ingest/MarkdownExtractor.cpp
         include/ingest/MarkdownExtractor.h
+        src/assistant/MindMapNode.cpp
+        include/assistant/MindMapNode.h
+        src/assistant/MindMapScene.cpp
+        include/assistant/MindMapScene.h
+        src/assistant/MindMapView.cpp
+        include/assistant/MindMapView.h
+        src/assistant/ChatNode.cpp
+        include/assistant/ChatNode.h
+        src/assistant/ChatTree.cpp
+        include/assistant/ChatTree.h
+        src/assistant/ChatNodeWidget.cpp
+        include/assistant/ChatNodeWidget.h
 )
 
 add_dependencies(Lore

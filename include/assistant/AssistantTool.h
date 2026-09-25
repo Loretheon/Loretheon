@@ -5,7 +5,7 @@
 #include <QStringList>
 
 #include <functional>
-
+class LoreAssistant;
 class DocumentManager;
 class InferenceService;
 class SearchService;
@@ -30,7 +30,7 @@ struct AssistantToolContext {
   OverseerSessionManager *overseerManager = nullptr;
   NotePromoter *promoter = nullptr;
   ScopeIndex *scopeIndex = nullptr;
-
+  LoreAssistant *assistant = nullptr;
   QString notesRoot;
 
   QStringList recentActivity;

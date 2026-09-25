@@ -1,7 +1,10 @@
 #include "../../include/assistant/AssistantWidget.h"
 
 #include "../../include/app/theme/ThemeRegistry.h"
+#include "../../include/assistant/ChatNodeWidget.h"
 #include "../../include/assistant/LoreAssistant.h"
+#include "../../include/assistant/MindMapScene.h"
+#include "../../include/assistant/MindMapView.h"
 #include "../../include/voice/SpeechController.h"
 
 #include <QApplication>
@@ -18,19 +21,20 @@
 #include <QPushButton>
 #include <QResizeEvent>
 #include <QScreen>
+#include <QScrollArea>
 #include <QScrollBar>
 #include <QSettings>
 #include <QStyle>
-#include <QTextEdit>
+#include <QTabWidget>
 #include <QToolButton>
 #include <QVBoxLayout>
 
 namespace {
 
 constexpr int kPanelMargin = 24;
-constexpr int kPanelDefaultWidth = 440;
-constexpr int kPanelMinWidth = 320;
-constexpr int kPanelMinHeight = 280;
+constexpr int kPanelDefaultWidth = 560;
+constexpr int kPanelMinWidth = 360;
+constexpr int kPanelMinHeight = 320;
 constexpr int kPanelDefaultHeightFractionNum = 3;
 constexpr int kPanelDefaultHeightFractionDen = 4;
 
@@ -39,10 +43,14 @@ constexpr int kEdgeBand = 6;
 
 constexpr int kCardAlpha = 235;
 constexpr int kCardRadius = 12;
-constexpr int kDocumentMargin = 18;
 
 constexpr auto kPanelPosKey = "assistant/panelPos";
 constexpr auto kPolicyKey = "assistant/completionPolicy";
+
+bool isTopLevelNode(ChatNode::Kind kind) {
+  return kind == ChatNode::Kind::UserText ||
+         kind == ChatNode::Kind::AssistantText;
+}
 
 } // namespace
 
@@ -65,6 +73,15 @@ AssistantWidget::AssistantWidget(QWidget *parent) : QWidget(parent) {
   setMouseTracking(true);
   setVisible(false);
 
+  m_tree = new ChatTree(this);
+
+  connect(m_tree, &ChatTree::nodeAdded, this,
+          &AssistantWidget::onNodeAdded);
+  connect(m_tree, &ChatTree::nodeChanged, this,
+          &AssistantWidget::onNodeChanged);
+  connect(m_tree, &ChatTree::cleared, this,
+          &AssistantWidget::onTreeCleared);
+
   m_tokens = ThemeRegistry::instance().tokens(
       ThemeRegistry::instance().activeTheme());
 
@@ -76,7 +93,6 @@ AssistantWidget::~AssistantWidget() = default;
 
 void AssistantWidget::setThemeTokens(const ThemeTokens &tokens) {
   m_tokens = tokens;
-  renderTranscript();
   update();
 }
 
@@ -141,7 +157,9 @@ void AssistantWidget::buildUi() {
 
   m_title = new QLabel(tr("Lore"), m_header);
   m_title->setObjectName(QStringLiteral("assistantTitle"));
-  m_title->setAttribute(Qt::WA_TranslucentBackground, true);
+
+  m_status = new QLabel(tr("Idle"), m_header);
+  m_status->setObjectName(QStringLiteral("assistantStatus"));
 
   m_policy = new QComboBox(m_header);
   m_policy->setObjectName(QStringLiteral("assistantPolicy"));
@@ -157,8 +175,6 @@ void AssistantWidget::buildUi() {
   m_policy->addItem(tr("Results: next message"),
                     static_cast<int>(
                         LoreAssistant::CompletionPolicy::AppendToNextUserMessage));
-  m_policy->setToolTip(
-      tr("What to do when a background task finishes."));
 
   m_close = new QPushButton(QStringLiteral("✕"), m_header);
   m_close->setObjectName(QStringLiteral("assistantClose"));
@@ -166,35 +182,75 @@ void AssistantWidget::buildUi() {
   m_close->setFlat(true);
   m_close->setFixedSize(28, 28);
 
-  auto *headerLayout = new QHBoxLayout(m_header);
+  auto *headerRow = new QHBoxLayout;
+  headerRow->setContentsMargins(0, 0, 0, 0);
+  headerRow->setSpacing(8);
+  headerRow->addWidget(m_title);
+  headerRow->addWidget(m_status);
+  headerRow->addStretch(1);
+  headerRow->addWidget(m_policy);
+  headerRow->addWidget(m_close);
+
+  auto *headerLayout = new QVBoxLayout(m_header);
   headerLayout->setContentsMargins(18, 12, 12, 12);
-  headerLayout->setSpacing(8);
-  headerLayout->addWidget(m_title);
-  headerLayout->addStretch(1);
-  headerLayout->addWidget(m_policy);
-  headerLayout->addWidget(m_close);
+  headerLayout->setSpacing(4);
+  headerLayout->addLayout(headerRow);
 
-  m_transcript = new QTextEdit(m_card);
-  m_transcript->setObjectName(QStringLiteral("transcript"));
-  m_transcript->setReadOnly(true);
-  m_transcript->setAcceptRichText(true);
-  m_transcript->setLineWrapMode(QTextEdit::WidgetWidth);
-  m_transcript->setFrameShape(QFrame::NoFrame);
-  m_transcript->setAttribute(Qt::WA_TranslucentBackground, true);
-  m_transcript->setAutoFillBackground(false);
-  m_transcript->viewport()->setAttribute(Qt::WA_TranslucentBackground, true);
-  m_transcript->viewport()->setAutoFillBackground(false);
-  m_transcript->document()->setDocumentMargin(kDocumentMargin);
+  m_tabs = new QTabWidget(m_card);
+  m_tabs->setObjectName(QStringLiteral("assistantTabs"));
+  m_tabs->addTab(buildChatTab(), tr("Chat"));
+  m_tabs->addTab(buildMindTab(), tr("Mind"));
 
-  m_controls = new QWidget(m_card);
-  m_controls->setObjectName(QStringLiteral("assistantControls"));
-  m_controls->setAttribute(Qt::WA_TranslucentBackground, true);
-  m_controls->setAutoFillBackground(false);
+  auto *cardLayout = new QVBoxLayout(m_card);
+  cardLayout->setContentsMargins(0, 0, 0, 0);
+  cardLayout->setSpacing(0);
+  cardLayout->addWidget(m_header);
+  cardLayout->addWidget(m_tabs, 1);
 
-  auto makeSpeechButton = [this](const QString &name,
-                                 const QString &glyph,
-                                 const QString &tooltip) {
-    auto *button = new QToolButton(m_controls);
+  auto *panelLayout = new QVBoxLayout(this);
+  panelLayout->setContentsMargins(0, 0, 0, 0);
+  panelLayout->setSpacing(0);
+  panelLayout->addWidget(m_card);
+
+  connect(m_close, &QPushButton::clicked, this,
+          &AssistantWidget::onCloseClicked);
+  connect(m_tabs, &QTabWidget::currentChanged, this,
+          &AssistantWidget::onTabChanged);
+  connect(m_policy, QOverload<int>::of(&QComboBox::currentIndexChanged),
+          this, &AssistantWidget::onPolicyChanged);
+}
+
+QWidget *AssistantWidget::buildChatTab() {
+  auto *page = new QWidget(m_tabs);
+  page->setAttribute(Qt::WA_TranslucentBackground, true);
+  page->setAutoFillBackground(false);
+
+  m_chatScroll = new QScrollArea(page);
+  m_chatScroll->setObjectName(QStringLiteral("assistantChatScroll"));
+  m_chatScroll->setWidgetResizable(true);
+  m_chatScroll->setFrameShape(QFrame::NoFrame);
+  m_chatScroll->setAttribute(Qt::WA_TranslucentBackground, true);
+  m_chatScroll->viewport()->setAttribute(Qt::WA_TranslucentBackground, true);
+
+  m_chatHost = new QWidget;
+  m_chatHost->setAttribute(Qt::WA_TranslucentBackground, true);
+  m_chatHost->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Minimum);
+
+  m_chatLayout = new QVBoxLayout(m_chatHost);
+  m_chatLayout->setContentsMargins(8, 8, 8, 8);
+  m_chatLayout->setSpacing(6);
+  m_chatLayout->setAlignment(Qt::AlignTop);
+
+  m_chatScroll->setWidget(m_chatHost);
+
+  auto *controls = new QWidget(page);
+  controls->setObjectName(QStringLiteral("assistantControls"));
+  controls->setAttribute(Qt::WA_TranslucentBackground, true);
+
+  auto makeSpeechButton = [this, controls](const QString &name,
+                                            const QString &glyph,
+                                            const QString &tooltip) {
+    auto *button = new QToolButton(controls);
     button->setObjectName(name);
     button->setText(glyph);
     button->setToolTip(tooltip);
@@ -207,27 +263,32 @@ void AssistantWidget::buildUi() {
   m_dictate = makeSpeechButton(QStringLiteral("assistantDictate"),
                                QStringLiteral("●"),
                                tr("Dictate: record once, transcribe, send."));
-
   m_live = makeSpeechButton(QStringLiteral("assistantLive"),
                             QStringLiteral("◉"),
                             tr("Live dictate: stream speech to text."));
-
   m_readAloud = makeSpeechButton(
       QStringLiteral("assistantReadAloud"), QStringLiteral("▶"),
       tr("Read the last reply aloud."));
 
-  m_input = new QLineEdit(m_controls);
+  m_input = new QLineEdit(controls);
   m_input->setObjectName(QStringLiteral("chatInput"));
   m_input->setPlaceholderText(tr("Message"));
   m_input->setClearButtonEnabled(true);
 
-  m_send = new QPushButton(tr("Send"), m_controls);
+  m_send = new QPushButton(tr("Send"), controls);
   m_send->setObjectName(QStringLiteral("sendButton"));
   m_send->setProperty("accent", QStringLiteral("primary"));
   m_send->setCursor(Qt::PointingHandCursor);
   m_send->setDefault(true);
 
-  auto *controlsLayout = new QHBoxLayout(m_controls);
+  m_abort = new QPushButton(QStringLiteral("✕"), controls);
+  m_abort->setObjectName(QStringLiteral("assistantAbort"));
+  m_abort->setCursor(Qt::PointingHandCursor);
+  m_abort->setFixedSize(28, 28);
+  m_abort->setToolTip(tr("Cancel all in-flight work."));
+  m_abort->setVisible(false);
+
+  auto *controlsLayout = new QHBoxLayout(controls);
   controlsLayout->setContentsMargins(14, 10, 14, 14);
   controlsLayout->setSpacing(8);
   controlsLayout->addWidget(m_dictate);
@@ -235,43 +296,270 @@ void AssistantWidget::buildUi() {
   controlsLayout->addWidget(m_readAloud);
   controlsLayout->addSpacing(4);
   controlsLayout->addWidget(m_input, 1);
+  controlsLayout->addWidget(m_abort);
   controlsLayout->addWidget(m_send);
 
-  auto *cardLayout = new QVBoxLayout(m_card);
-  cardLayout->setContentsMargins(0, 0, 0, 0);
-  cardLayout->setSpacing(0);
-  cardLayout->addWidget(m_header);
-  cardLayout->addWidget(m_transcript, 1);
-  cardLayout->addWidget(m_controls);
-
-  auto *panelLayout = new QVBoxLayout(this);
-  panelLayout->setContentsMargins(0, 0, 0, 0);
-  panelLayout->setSpacing(0);
-  panelLayout->addWidget(m_card);
+  auto *layout = new QVBoxLayout(page);
+  layout->setContentsMargins(0, 0, 0, 0);
+  layout->setSpacing(0);
+  layout->addWidget(m_chatScroll, 1);
+  layout->addWidget(controls);
 
   connect(m_send, &QPushButton::clicked, this, &AssistantWidget::onSubmit);
   connect(m_input, &QLineEdit::returnPressed, this,
           &AssistantWidget::onSubmit);
+  connect(m_abort, &QPushButton::clicked, this,
+          &AssistantWidget::onAbortClicked);
   connect(m_dictate, &QToolButton::clicked, this,
           &AssistantWidget::onDictateClicked);
   connect(m_live, &QToolButton::clicked, this,
           &AssistantWidget::onLiveDictateClicked);
   connect(m_readAloud, &QToolButton::clicked, this,
           &AssistantWidget::onReadAloudClicked);
-  connect(m_close, &QPushButton::clicked, this,
-          &AssistantWidget::onCloseClicked);
 
-  connect(m_policy, QOverload<int>::of(&QComboBox::currentIndexChanged),
-          this, &AssistantWidget::onPolicyChanged);
+  return page;
+}
+
+QWidget *AssistantWidget::buildMindTab() {
+  auto *page = new QWidget(m_tabs);
+  page->setAttribute(Qt::WA_TranslucentBackground, true);
+
+  m_mindScene = new MindMapScene(this);
+  m_mindView = new MindMapView(m_mindScene, page);
+  m_mindView->setObjectName(QStringLiteral("assistantMindView"));
+
+  auto *layout = new QVBoxLayout(page);
+  layout->setContentsMargins(0, 0, 0, 0);
+  layout->addWidget(m_mindView, 1);
+
+  return page;
+}
+
+QString AssistantWidget::beginUserMessage(const QString &text) {
+  return m_tree->appendText(ChatNode::Kind::UserText, text, QString());
+}
+
+void AssistantWidget::onAssistantReplyStarted(const QString &nodeId) {
+  if (!m_tree || nodeId.isEmpty()) {
+    return;
+  }
+
+  ChatNode node(ChatNode::Kind::AssistantText, QString());
+
+  m_tree->appendWithId(node, nodeId, QString());
+
+  m_activeReplyNode = nodeId;
+}
+
+QString AssistantWidget::beginAssistantReply(const QString &parentId) {
+  const QString id = m_tree->appendText(
+      ChatNode::Kind::AssistantText, QString(), parentId);
+
+  m_activeReplyNode = id;
+
+  return id;
+}
+
+void AssistantWidget::appendAssistantChunk(const QString &nodeId,
+                                           const QString &chunk) {
+  if (!m_tree || nodeId.isEmpty()) {
+    return;
+  }
+
+  m_tree->appendText(nodeId, chunk);
+}
+
+void AssistantWidget::appendStatusMessage(const QString &text) {
+  if (!m_tree) {
+    return;
+  }
+
+  m_tree->appendText(ChatNode::Kind::Status, text, m_activeReplyNode);
+}
+
+QString AssistantWidget::beginJob(const QString &parentId,
+                                  ChatNode::Kind kind,
+                                  const QString &title,
+                                  const QString &detail,
+                                  const QString &jobId) {
+  const QString parent =
+      parentId.isEmpty() ? m_activeReplyNode : parentId;
+
+  return m_tree->appendJob(kind, title, detail, jobId, parent);
+}
+
+void AssistantWidget::setJobState(const QString &nodeId,
+                                  ChatNode::State state) {
+  m_tree->setState(nodeId, state);
+}
+
+void AssistantWidget::setJobResult(const QString &nodeId,
+                                   const QString &result) {
+  m_tree->setResult(nodeId, result);
+}
+
+void AssistantWidget::setJobError(const QString &nodeId,
+                                  const QString &error) {
+  m_tree->setError(nodeId, error);
+}
+
+QString AssistantWidget::jobIdFor(const QString &jobId) const {
+  if (!m_tree) {
+    return {};
+  }
+
+  return m_tree->nodeForJob(jobId);
+}
+
+void AssistantWidget::setStatus(const QString &status) {
+  if (m_status) {
+    m_status->setText(status);
+  }
+}
+
+void AssistantWidget::clearConversation() {
+  m_tree->clear();
+  m_activeReplyNode.clear();
+}
+
+void AssistantWidget::onNodeAdded(const QString &id) {
+  if (!m_tree) {
+    return;
+  }
+
+  const ChatNode *node = m_tree->node(id);
+
+  if (!node) {
+    return;
+  }
+
+  if (!isTopLevelNode(node->kind)) {
+    updateWidget(node->parentId);
+    return;
+  }
+
+  appendTopLevelWidget(id);
+}
+void AssistantWidget::onNodeChanged(const QString &id) {
+  if (!m_tree) {
+    return;
+  }
+
+  const ChatNode *node = m_tree->node(id);
+
+  if (!node) {
+    return;
+  }
+
+  if (isTopLevelNode(node->kind)) {
+    updateWidget(id);
+  } else {
+    updateWidget(node->parentId);
+  }
+
+  if (node->isJob()) {
+    const int count = m_tree->inFlightCount();
+
+    if (count > 0) {
+      setStatus(tr("%n job(s) in flight", "", count));
+      m_abort->setVisible(true);
+    } else {
+      setStatus(tr("Idle"));
+      m_abort->setVisible(false);
+    }
+  }
+}
+void AssistantWidget::appendTopLevelWidget(const QString &nodeId) {
+  const ChatNode *node = m_tree->node(nodeId);
+
+  if (!node) {
+    return;
+  }
+
+  auto *widget = new ChatNodeWidget(*node, m_tree, m_chatHost);
+
+  connect(widget, &ChatNodeWidget::abortRequested, this,
+          [this](const QString &jobId) {
+            if (!m_assistant || jobId.isEmpty()) {
+              emit abortRequested();
+              return;
+            }
+
+            m_assistant->abortJob(jobId);
+          });
+
+  m_chatLayout->addWidget(widget);
+  m_topLevelWidgets.insert(nodeId, widget);
+
+  scrollToBottom();
+}
+void AssistantWidget::updateWidget(const QString &nodeId) {
+  if (nodeId.isEmpty()) {
+    return;
+  }
+
+  ChatNodeWidget *widget = m_topLevelWidgets.value(nodeId, nullptr);
+
+  if (!widget || !m_tree) {
+    return;
+  }
+
+  const ChatNode *node = m_tree->node(nodeId);
+
+  if (!node) {
+    return;
+  }
+
+  widget->updateNode(*node);
+}
+
+void AssistantWidget::scrollToBottom() {
+  if (!m_chatScroll) {
+    return;
+  }
+
+  QScrollBar *bar = m_chatScroll->verticalScrollBar();
+
+  if (bar) {
+    bar->setValue(bar->maximum());
+  }
+}
+
+void AssistantWidget::onTreeCleared() {
+  for (ChatNodeWidget *widget : std::as_const(m_topLevelWidgets)) {
+    if (widget) {
+      m_chatLayout->removeWidget(widget);
+      widget->hide();
+      widget->deleteLater();
+    }
+  }
+
+  m_topLevelWidgets.clear();
+  m_activeReplyNode.clear();
+  setStatus(tr("Idle"));
+  m_abort->setVisible(false);
+}
+
+void AssistantWidget::onTabChanged(int index) {
+  if (index != 1 || !m_mindScene || !m_mindView || !m_assistant) {
+    return;
+  }
+
+  const QString root = m_assistant->rootPath();
+
+  if (root.isEmpty()) {
+    return;
+  }
+
+  m_mindScene->build(root);
+  m_mindView->refresh();
 }
 
 void AssistantWidget::open() {
   positionPanel();
-
   setVisible(true);
   raise();
   activateWindow();
-
   m_open = true;
 
   if (m_input) {
@@ -700,7 +988,20 @@ void AssistantWidget::onSubmit() {
 
   m_input->clear();
 
+  // A new user message starts a new exchange. The reply node that the
+  // next assistant turn will use is not known yet; clear it so a stale
+  // id from a previous exchange does not parent this turn's jobs to an
+  // old reply.
+  m_activeReplyNode.clear();
+
+  if (m_tree) {
+    m_tree->appendText(ChatNode::Kind::UserText, text, QString());
+  }
+
   emit messageSubmitted(text);
+}
+void AssistantWidget::onAbortClicked() {
+  emit abortRequested();
 }
 
 void AssistantWidget::onDictateClicked() {
@@ -806,76 +1107,6 @@ void AssistantWidget::onLiveTranscribed(const QString &text, bool isFinal) {
   if (isFinal) {
     onSubmit();
   }
-}
-
-void AssistantWidget::renderTranscript() {
-  if (!m_transcript) {
-    return;
-  }
-
-  QString markdown;
-
-  for (const Entry &entry : m_entries) {
-    switch (entry.kind) {
-    case Entry::Kind::User:
-      markdown += QStringLiteral("**You:** ");
-      markdown += entry.text;
-      markdown += QStringLiteral("\n\n");
-      break;
-    case Entry::Kind::Assistant:
-      markdown += entry.text;
-      markdown += QStringLiteral("\n\n");
-      break;
-    case Entry::Kind::Status:
-      markdown += QStringLiteral("*");
-      markdown += entry.text;
-      markdown += QStringLiteral("*\n\n");
-      break;
-    }
-  }
-
-  const int scroll = m_transcript->verticalScrollBar()->value();
-
-  m_transcript->document()->setMarkdown(
-      markdown, QTextDocument::MarkdownDialectGitHub);
-
-  m_transcript->verticalScrollBar()->setValue(scroll);
-  m_transcript->ensureCursorVisible();
-}
-
-void AssistantWidget::appendUserMessage(const QString &text) {
-  Entry entry;
-  entry.kind = Entry::Kind::User;
-  entry.text = text;
-  m_entries.append(entry);
-  renderTranscript();
-}
-
-void AssistantWidget::appendAssistantChunk(const QString &text) {
-  if (!m_entries.isEmpty() &&
-      m_entries.last().kind == Entry::Kind::Assistant) {
-    m_entries.last().text += text;
-  } else {
-    Entry entry;
-    entry.kind = Entry::Kind::Assistant;
-    entry.text = text;
-    m_entries.append(entry);
-  }
-
-  renderTranscript();
-}
-
-void AssistantWidget::appendStatusMessage(const QString &text) {
-  Entry entry;
-  entry.kind = Entry::Kind::Status;
-  entry.text = text;
-  m_entries.append(entry);
-  renderTranscript();
-}
-
-void AssistantWidget::clearTranscript() {
-  m_entries.clear();
-  renderTranscript();
 }
 
 void AssistantWidget::setBusy(bool busy) {

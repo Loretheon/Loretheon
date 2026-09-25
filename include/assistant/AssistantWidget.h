@@ -1,8 +1,10 @@
 #pragma once
 
+#include "ChatTree.h"
 #include "LoreAssistant.h"
 #include "ThemeAware.h"
 
+#include <QHash>
 #include <QPoint>
 #include <QRect>
 #include <QWidget>
@@ -13,10 +15,15 @@ class QLabel;
 class QLineEdit;
 class QPushButton;
 class QScreen;
-class QTextEdit;
+class QScrollArea;
+class QTabWidget;
 class QToolButton;
+class QVBoxLayout;
 
+class ChatNodeWidget;
 class LoreAssistant;
+class MindMapScene;
+class MindMapView;
 class SpeechController;
 
 class AssistantWidget : public QWidget, public ThemeAware {
@@ -42,16 +49,32 @@ public:
 
   void positionPanel();
 
-  void appendUserMessage(const QString &text);
-  void appendAssistantChunk(const QString &text);
+  QString beginUserMessage(const QString &text);
+  QString beginAssistantReply(const QString &parentId);
+  void appendAssistantChunk(const QString &nodeId, const QString &chunk);
   void appendStatusMessage(const QString &text);
-  void clearTranscript();
+  QString beginJob(const QString &parentId, ChatNode::Kind kind,
+                   const QString &title, const QString &detail,
+                   const QString &jobId);
+  void setJobState(const QString &nodeId, ChatNode::State state);
+  void setJobResult(const QString &nodeId, const QString &result);
+  void setJobError(const QString &nodeId, const QString &error);
+
+  QString jobIdFor(const QString &jobId) const;
+
+  void setStatus(const QString &status);
+
+  void clearConversation();
 
   void setBusy(bool busy);
   bool isBusy() const { return m_busy; }
 
+public slots:
+  void onAssistantReplyStarted(const QString &nodeId);
+
 signals:
   void messageSubmitted(const QString &text);
+  void abortRequested();
   void positionChanged();
 
 protected:
@@ -64,6 +87,7 @@ protected:
 
 private slots:
   void onSubmit();
+  void onAbortClicked();
   void onDictateClicked();
   void onLiveDictateClicked();
   void onReadAloudClicked();
@@ -72,6 +96,10 @@ private slots:
   void onTranscribed(const QString &text);
   void onLiveTranscribed(const QString &text, bool isFinal);
   void onPolicyChanged(int index);
+  void onTabChanged(int index);
+  void onNodeAdded(const QString &id);
+  void onNodeChanged(const QString &id);
+  void onTreeCleared();
 
 private:
   enum class DragKind {
@@ -88,8 +116,13 @@ private:
   };
 
   void buildUi();
+  QWidget *buildChatTab();
+  QWidget *buildMindTab();
   void applySpeechButtonState(QToolButton *button, bool active);
-  void renderTranscript();
+
+  void appendTopLevelWidget(const QString &nodeId);
+  void updateWidget(const QString &nodeId);
+  void scrollToBottom();
 
   DragKind bandFor(const QPoint &localPos) const;
   bool isDragPoint(const QPoint &pos) const;
@@ -103,34 +136,44 @@ private:
 
   QFrame *m_card = nullptr;
   QWidget *m_header = nullptr;
-  QWidget *m_controls = nullptr;
+  QTabWidget *m_tabs = nullptr;
 
   QLabel *m_title = nullptr;
+  QLabel *m_status = nullptr;
   QComboBox *m_policy = nullptr;
-  QTextEdit *m_transcript = nullptr;
+
+  QScrollArea *m_chatScroll = nullptr;
+  QWidget *m_chatHost = nullptr;
+  QVBoxLayout *m_chatLayout = nullptr;
+
+  // One widget per top-level node, keyed by node id. Top-level nodes
+  // are user messages and assistant replies. Everything else lives
+  // inside its parent's ChatNodeWidget.
+  QHash<QString, ChatNodeWidget *> m_topLevelWidgets;
+
   QLineEdit *m_input = nullptr;
   QPushButton *m_send = nullptr;
+  QPushButton *m_abort = nullptr;
   QPushButton *m_close = nullptr;
   QToolButton *m_dictate = nullptr;
   QToolButton *m_live = nullptr;
   QToolButton *m_readAloud = nullptr;
+
+  MindMapView *m_mindView = nullptr;
+  MindMapScene *m_mindScene = nullptr;
+
+  ChatTree *m_tree = nullptr;
 
   LoreAssistant *m_assistant = nullptr;
   SpeechController *m_speech = nullptr;
 
   ThemeTokens m_tokens;
 
-  struct Entry {
-    enum class Kind { User, Assistant, Status };
-    Kind kind = Kind::Assistant;
-    QString text;
-  };
-
-  QVector<Entry> m_entries;
-
   DragKind m_drag = DragKind::None;
   QPoint m_dragOriginGlobal;
   QRect m_originGeometry;
+
+  QString m_activeReplyNode;
 
   bool m_open = false;
   bool m_busy = false;

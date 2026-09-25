@@ -27,20 +27,58 @@ proposal tools.
 
 Used by the assistant. The context is different because the assistant
 has access to different things: the inference service, the search
-service, the assistant's own memory and profile, the avatar, and the
-recent activity stream. The tools here are:
+service, the assistant's own memory and profile, the notes root, the
+note promoter, the Overseer session manager, and the recent activity
+stream. The tools are split into two files.
 
-    search_notes       search the user's notes by meaning
-    open_file          open a note in the editor
-    insert_text        insert text at the cursor
-    remember_fact      propose a fact for the memory tree
-    change_setting     change one of the assistant's own settings
-    speak              speak a line aloud
-    set_expression     change the avatar's facial expression
+### `AssistantTools` — jobs and dispatch
+
+These do not complete in the turn. Each one returns a marker that
+`LoreAssistant` intercepts, starts a background job, and reports back
+as a job id. The model does not see the result unless it asks.
+
+    search             start a search job. Returns a job id.
+    read_job           read a job's result. Blocks if the job is
+                       still running.
+    delegate           hand a task to the Overseer worker. Returns a
+                       job id.
+    promote_note       copy a worker file into the notes. Returns a
+                       job id.
+    remember_fact      write a durable fact about the user or about
+                       the assistant herself.
+    speak              speak a line aloud.
+
+### `NoteTools` — direct operations on the notes folder
+
+These complete in the same turn. They are the assistant's direct
+access to `/notes`.
+
+    list_notes         every note with a one-line preview
+    read_note          the full body of a note
+    write_note         create a new note. Never overwrites.
+    edit_note          change an existing note by instruction
+    delete_note        move a note to the trash
 
 Each tool declares its name, description, category, whether it is
 destructive, and a JSON schema for its arguments. The registry hands
 the whole set of schemas to the LLM in the request.
+
+## Jobs and the cache
+
+Anything that reaches outside the conversation is a job. A job is
+created by a tool, handed a stable id, and run in the background. The
+conversation is not blocked.
+
+The result of a job is stored in a cache on `LoreAssistant`, keyed by
+id. The model is not told the result automatically. It knows the id
+because it created the job, and it can call `read_job` to read the
+result when it needs it. If the job is still running, `read_job`
+waits; the user can abort the wait.
+
+When a job finishes, the completion policy chosen by the user decides
+what happens to the result: paste it in the chat, feed it to the
+assistant's next prompt, append it to the user's next message, or let
+the assistant decide based on whether the user is mid-turn.
 
 ## Destructive tools
 

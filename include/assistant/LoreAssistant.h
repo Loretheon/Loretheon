@@ -1,7 +1,9 @@
 #pragma once
 
 #include "AssistantToolRegistry.h"
+#include "ChatNode.h"
 
+#include <QHash>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QObject>
@@ -55,6 +57,24 @@ public:
   };
   Q_ENUM(CompletionPolicy)
 
+  struct Job {
+    QString id;
+    ChatNode::Kind kind = ChatNode::Kind::JobSearch;
+    ChatNode::State state = ChatNode::State::Pending;
+    QString nodeId;
+    QString summary;
+    QString result;
+    QString error;
+    QDateTime createdAt;
+    QDateTime updatedAt;
+
+    bool isTerminal() const {
+      return state == ChatNode::State::Done ||
+             state == ChatNode::State::Failed ||
+             state == ChatNode::State::Cancelled;
+    }
+  };
+
   explicit LoreAssistant(const Config &config,
                          QObject *parent = nullptr);
   ~LoreAssistant() override;
@@ -69,9 +89,19 @@ public:
   bool isTurnActive() const { return m_turnActive; }
 
   QString lastReply() const { return m_lastReply; }
+  QString rootPath() const { return m_config.root; }
 
   CompletionPolicy completionPolicy() const { return m_completionPolicy; }
   void setCompletionPolicy(CompletionPolicy policy);
+
+  const Job *job(const QString &jobId) const;
+  QStringList jobIds() const;
+
+  void abortJob(const QString &jobId);
+  void abortAll();
+
+  bool waitForJob(const QString &jobId, QString *resultOut,
+                  QString *errorOut);
 
   AssistantProfile *profile() const { return m_profile; }
   AssistantMemory *memory() const { return m_memory; }
@@ -81,10 +111,21 @@ public:
 
 signals:
   void assistantSaid(const QString &text);
-  void assistantChunk(const QString &text);
-  void assistantStatus(const QString &text);
-  void jobCompleted(const QString &summary);
-  void assistantTurnFinished();
+
+  void assistantReplyStarted(const QString &nodeId);
+  void assistantChunk(const QString &nodeId, const QString &text);
+  void assistantTurnFinished(const QString &nodeId);
+
+  void statusMessage(const QString &text);
+  void statusChanged(const QString &status);
+
+  void jobCreated(const QString &jobId, const QString &nodeId,
+                  ChatNode::Kind kind, const QString &title,
+                  const QString &detail);
+
+  void jobStateChanged(const QString &jobId, ChatNode::State state);
+  void jobCompleted(const QString &jobId, const QString &result);
+  void jobFailed(const QString &jobId, const QString &error);
 
 private slots:
   void onLlmDelta(const QUuid &token, const QString &text);
@@ -97,15 +138,19 @@ private slots:
                                  const QString &summary,
                                  const QString &filePath);
 
+  void onSearchJobFinished(const QString &jobId, const QString &result);
+  void onSearchJobFailed(const QString &jobId, const QString &reason);
+
 private:
-  QString runSearchForTool(const QString &query);
+  QString startSearchJob(const QString &query, const QString &nodeId);
+
+  void applyJobCompletion(const Job &job);
 
   QJsonArray buildMessages(const QString &userText);
   assistant::AssistantToolContext buildToolContext();
   void runToolRound(const QJsonArray &toolCalls,
                     const QJsonArray &priorMessages);
   void finishTurn();
-  void applyCompletionPolicy(const QString &summary);
   QString systemPrompt() const;
 
   Config m_config;
@@ -122,20 +167,22 @@ private:
   bool m_turnActive = false;
   QUuid m_turnToken;
   QJsonArray m_turnMessages;
-  int m_toolRoundsRemaining = 5;
+  int m_toolRoundsRemaining = 8;
 
   QString m_turnReplyBuffer;
   QString m_lastReply;
-
+  QString m_activeReplyNode;
+  QString m_currentViewNodeId;
   CompletionPolicy m_completionPolicy = CompletionPolicy::Automatic;
 
-  QHash<QString, CompletionPolicy> m_pendingJobs;
-  QHash<QString, QString> m_jobSessions;
+  QHash<QString, Job> m_jobs;
+  quint64 m_nextJobOrdinal = 1;
+
+  QHash<QString, RetrievalLoop *> m_searchLoops;
+  QHash<QString, QString> m_searchBuffers;
+
+  QHash<QString, CompletionPolicy> m_jobPolicies;
 
   QStringList m_pendingForPrompt;
   QStringList m_pendingForUserMessage;
-
-  RetrievalLoop *m_searchLoop = nullptr;
-  QString m_searchAnswerBuffer;
-  bool m_searchInFlight = false;
 };

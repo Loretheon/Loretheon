@@ -92,6 +92,107 @@ on them as objects. Closer to a node editor than a tabbed editor.
 - [x] **Review dock** — kanban board for pending work; transcript
   goes read-only while the board is open
 - [x] **Notifications** — unified toasts and native notifications
+- [x] **Session descriptions** — every session carries an
+  intentional one-line description, written at creation by the
+  human or the model, read by the model when choosing a session
+- [x] **Session manager** — `OverseerSessionManager` owns every live
+  `OverseerRunner`; one runner per open session, all running
+  concurrently
+- [x] **`OverseerRunner`** — per-session conductor state and logic,
+  independent of the view. Two sessions run requests at once.
+- [x] **`requestFinished`** — every terminal transition emits a
+  signal carrying the request id, the outcome, a summary, and any
+  output file
+- [x] **Origin marker** — requests carry `Origin::User` or
+  `Origin::Lore`; the transcript badge shows which
+- [x] **Lore delegation** — the assistant submits to any session by
+  name through the manager; the transcript shows her requests in the
+  same board the user sees
+
+### Assistant
+- [x] **`LoreAssistant`** — conductor for the assistant. Owns the
+  profile, memory, memory index, activity stream, tool registry,
+  speech animator, and job cache.
+- [x] **Profile** — `identity.md`, `user.md`, `self.md` under the
+  assistant root, read at startup and included verbatim in the
+  system prompt on every turn.
+- [x] **Memory tree** — `memories/topics/<slug>.md` and
+  `memories/sessions/<timestamp>.md`, indexed by `MemoryIndex` and
+  recalled semantically.
+- [x] **Memory index rebuild** — built at startup if missing, so
+  recall works on first run.
+- [x] **Always-in-context profile** — the prompt tells her the
+  profile is what she knows; she answers from it without searching.
+- [x] **`remember_fact`** — writes to `user.md`, `self.md`, or the
+  memory tree depending on scope. No approval gate.
+- [x] **Turn loop** — `handleUserMessage` builds the messages array,
+  sends with tool schemas, streams the reply, dispatches tool calls
+  through the registry, and finishes on the last round.
+- [x] **Job cache** — every background job stored in `m_jobs` on
+  `LoreAssistant`, keyed by id. Results are not pushed to the model.
+- [x] **`search` starts a job** — returns a job id, does not block.
+- [x] **`read_job`** — reads a job's result by id. Blocks if the job
+  is still running. The user can abort the wait.
+- [x] **`delegate`** — hands a task to a session through
+  `OverseerSessionManager`. Returns a job id.
+- [x] **`promote_note`** — copies a worker file into
+  `/notes/<session>/` and indexes it.
+- [x] **`list_notes`, `read_note`, `write_note`, `edit_note`,
+  `delete_note`** — the assistant's direct access to the notes
+  folder.
+- [x] **Completion policy** — paste in chat, feed to queue, append
+  to next user message, or automatic
+- [x] **Per-job abort** — the abort control on a job node cancels
+  that job and its wait
+- [x] **Global abort** — the abort button cancels every in-flight
+  job and the current turn
+- [x] **`AssistantWidget`** — top-level window with two tabs:
+  Chat and Mind
+- [x] **Chat tab** — outliner. User messages and assistant replies
+  are roots; every job, status, and error is a child of the reply,
+  indented and collapsed by default
+- [x] **Streaming into one node** — the first delta creates the
+  reply node, every later delta appends to it. No duplicate nodes.
+- [x] **Tool styling** — job nodes render in JetBrains Mono with a
+  kind glyph; text nodes render in the UI font
+- [x] **Markdown in replies** — `MarkdownView` renders the body
+  once the turn finishes; raw text while streaming
+- [x] **Status strip** — always visible in the header: `Idle`,
+  `Thinking`, `N jobs in flight`
+- [x] **Mind tab** — `MindMapScene` + `MindMapView` render the
+  assistant root as a nested graph: profile files as leaves, topics
+  expand to their facts
+- [x] **No-click navigation** — hovering a node focuses its
+  subtree; hovering near the left or right edge of the view zooms
+  the visible depth out or in
+- [x] **Note promotion** — `NotePromoter` copies files from a
+  session output folder into `/notes/<session>/`, skipping
+  duplicates. Every promoted file is indexed immediately.
+- [x] **Notes are a unit** — small, self-contained, one topic per
+  file. Everything else goes to Overseer.
+- [x] **Notes are the vault** — only `/notes` is indexed. Overseer
+  output is working material; it becomes knowledge only when
+  promoted.
+
+### Search index
+- [x] **Incremental add** — `ScopeIndex::addFile` indexes one file
+  without a rebuild
+- [x] **Incremental remove** — `ScopeIndex::removeFile` uses FAISS
+  `remove_ids` to drop a file's vectors without re-embedding the
+  survivors
+- [x] **Refresh** — `refreshFile` removes then re-adds, used on edit
+- [x] **Debounced updates** — `markDirty` collects saved files and
+  refreshes them on a 3-second timer
+- [x] **Auto-index on import** — every successful import calls
+  `addFile` on the new note
+- [x] **Auto-index on promote** — every promoted file is indexed
+- [x] **Auto-index on delete** — `DocumentManager::fileDeleted`
+  calls `removeFile`
+- [x] **Lazy build at startup** — if the index is missing, the app
+  builds it on the first search rather than blocking startup
+- [x] **Markdown passthrough** — importing a `.md` file copies it
+  into the notes folder unchanged, with no provenance block and no
+  added heading
 
 ### Assistant avatar
 - [x] **CC Base model** — `Lore.glb`, 7 meshes, 18 primitives, 1
@@ -181,16 +282,23 @@ on them as objects. Closer to a node editor than a tabbed editor.
 - [x] **HTML** — readable text from `.html` / `.htm`.
 - [x] **EPUB** — spine-ordered chapters from `.epub`, one section
   per chapter with `## Chapter N` headings.
+- [x] **Markdown passthrough** — `.md` files are copied into the
+  notes folder unchanged.
 - [x] **Provenance frontmatter** — each note records source path,
   source hash, extraction timestamp, page count, and MIME type.
+  Skipped for Markdown passthrough.
 - [x] **Import Files…** — multi-select from the File menu.
-- [x] **Import Folder…** — recursive walk, all supported formats.
+- [x] **Import Folder…** — recursive walk, all supported formats,
+  source folder structure preserved under the notes folder.
 - [x] **File tree context menu** — "Import…" and "Import All…" on
   any supported file.
 - [x] **Chat panel Import button** — pick files from the chat
   input row.
 - [x] **Threaded extraction** — extraction runs on worker threads;
   results are marshalled back to the main thread.
+- [x] **Queued imports** — the folder import keeps the concurrency
+  cap and feeds the next file on each completion instead of
+  rejecting beyond the cap
 - [x] **Collision-safe note names** — importing the same source
   twice produces `lecture.md` and `lecture (2).md`.
 - [x] **Sources are never modified** — import reads the source and
@@ -198,6 +306,19 @@ on them as objects. Closer to a node editor than a tabbed editor.
 - [x] **Live extension registry** — the file tree, the file
   dialogs, and the folder walk all read from `IngestRegistry`,
   so a new extractor is offered without a second list.
+
+### Note promotion
+- [x] **Promote to notes** — copy a file or folder from a session's
+  output into `/notes/<session>/<relative path>`. Skips duplicates,
+  never overwrites.
+- [x] **Promote from the file tree** — right-click a file or folder
+  in a session's output, choose "Promote to notes"
+- [x] **Promote from the assistant** — `promote_note` tool, callable
+  by the model
+- [x] **Promote is indexed** — every promoted file is added to the
+  search index immediately
+- [x] **Promote reports** — the toast and the tool result say how
+  many files were written, skipped, and failed to index
 
 ### Media viewing
 - [x] **Raster images** — PNG, JPG, GIF (animated), BMP, WebP, TIFF.
@@ -240,9 +361,9 @@ on them as objects. Closer to a node editor than a tabbed editor.
 - [ ] **Source ingest — PDF OCR** — Tesseract fallback for scanned
   PDFs and photographed pages. `tesseract` and `leptonica` are
   already linked; the extractor does not call them yet.
-- [ ] **Source ingest — bulk queue** — the concurrency cap currently
-  rejects rather than queues. A real backlog with a pump on slot
-  release would let "Import Folder" accept hundreds of files.
+- [ ] **Source ingest — bulk queue persistence** — the folder
+  import now queues in memory. If the app is closed mid-import, the
+  remaining files are lost.
 - [ ] **Raster images — editing**
 - [ ] **Vector images — editing**
 - [ ] **Large-file handling** — opening a very large Markdown file
@@ -268,6 +389,7 @@ on them as objects. Closer to a node editor than a tabbed editor.
 - [x] PowerPoint (`.pptx`)
 - [x] Word (`.docx`)
 - [x] EPUB (`.epub`)
+- [x] Markdown (`.md`, `.markdown`) — passthrough
 
 ### Media formats (view only)
 - [x] Raster images (`.png`, `.jpg`, `.jpeg`, `.gif`, `.bmp`, `.webp`, `.tiff`, `.tif`, `.ico`, `.ppm`, `.pgm`, `.pbm`)

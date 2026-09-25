@@ -24,12 +24,14 @@
 #include <QEventLoop>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QTimer>
 
 namespace {
 
 constexpr double kTurnTemperature = 0.6;
 constexpr int kTurnTimeoutMs = 120000;
 constexpr int kMemoryRecallLimit = 4;
+constexpr int kJobWaitTimeoutMs = 180000;
 
 QString memoryContext(AssistantMemory *memory, const QString &query) {
   if (!memory) {
@@ -149,13 +151,7 @@ void LoreAssistant::stop() {
     return;
   }
 
-  if (m_turnActive && m_config.inference) {
-    m_config.inference->abortChatRequest(m_turnToken);
-  }
-
-  m_turnActive = false;
-  m_turnMessages = QJsonArray();
-  m_turnReplyBuffer.clear();
+  abortAll();
 
   m_activity->stopBatchTimer();
 
@@ -180,49 +176,51 @@ void LoreAssistant::setCompletionPolicy(CompletionPolicy policy) {
   m_completionPolicy = policy;
 }
 
+const LoreAssistant::Job *LoreAssistant::job(const QString &jobId) const {
+  auto it = m_jobs.constFind(jobId);
+  return it == m_jobs.constEnd() ? nullptr : &it.value();
+}
+
+QStringList LoreAssistant::jobIds() const { return m_jobs.keys(); }
+
 void LoreAssistant::handleUserMessage(const QString &text) {
-  QString trimmed = text.trimmed();
+  const QString trimmed = text.trimmed();
 
   if (trimmed.isEmpty()) {
     return;
   }
 
   if (!m_started) {
-    emit assistantStatus(tr("The assistant is not started."));
+    emit statusMessage(tr("The assistant is not started."));
     return;
   }
 
   if (!m_config.inference || !m_config.inference->isLlmReady()) {
-    emit assistantStatus(tr("No language model is ready."));
-    emit assistantTurnFinished();
+    emit statusMessage(tr("No language model is ready."));
     return;
   }
 
   if (m_turnActive) {
-    emit assistantStatus(tr("One moment — I am still answering."));
+    emit statusMessage(tr("One moment — I am still answering."));
     return;
   }
 
-  if (!m_pendingForUserMessage.isEmpty()) {
-    const QString joined =
-        m_pendingForUserMessage.join(QStringLiteral("\n\n"));
-
-    m_pendingForUserMessage.clear();
-
-    trimmed += QStringLiteral("\n\n---\n\n");
-    trimmed += joined;
-  }
-
+  // Reset the reply node at the start of a new exchange only.
+  m_activeReplyNode.clear();
   m_turnReplyBuffer.clear();
+
   m_turnActive = true;
+  m_toolRoundsRemaining = 8;
+
   m_turnMessages = buildMessages(trimmed);
-  m_toolRoundsRemaining = 5;
 
   const QJsonArray tools = m_tools ? m_tools->schemas() : QJsonArray();
 
   m_turnToken = m_config.inference->sendChatRequest(
       m_turnMessages, QString(), kTurnTemperature, kTurnTimeoutMs,
       QString(), QJsonObject(), tools, QString());
+
+  emit statusChanged(tr("Thinking"));
 }
 
 QJsonArray LoreAssistant::buildMessages(const QString &userText) {
@@ -283,82 +281,50 @@ QString LoreAssistant::systemPrompt() const {
   }
 
   prompt += QStringLiteral(
-      "You are Lore. You are speaking to the user through a small "
-      "chat panel. Keep replies short.\n"
+      "## Runtime\n"
       "\n"
-      "The material above is everything you know about yourself and "
-      "about the user. It is already loaded. It is not a reference to "
-      "consult. It is what you know right now, in this moment.\n"
+      "You are speaking to the user through a small chat panel. "
+      "Keep replies short. The material above is what you already "
+      "know; it is not a reference to consult.\n"
       "\n"
-      "If the user asks you something that is answered by what is "
-      "written above — their name, their preferences, anything you "
-      "have been told before — answer directly from it. Do not "
-      "search. Do not say you do not know. The answer is in front "
-      "of you.\n"
+      "## Jobs and the cache\n"
       "\n"
-      "## Notes versus Overseer\n"
+      "Anything that reaches outside this conversation — a search, "
+      "a delegate, a promote — is a job. Jobs run in the background. "
+      "A job returns a job id immediately and does not block. You "
+      "can start a job and keep talking.\n"
       "\n"
-      "The user's notes folder holds units: small, self-contained "
-      "files, one topic each. A shopping list, a single meeting's "
-      "notes, a CV, a one-page summary. Notes do not reference each "
-      "other.\n"
-      "\n"
-      "Anything too large or too entangled for one file goes to "
-      "Overseer instead: a semester's notes, a corpus, a set of "
-      "linked documents, anything that needs planning or spans many "
-      "files. Use delegate for those.\n"
-      "\n"
-      "When the user asks for something small, do it yourself with "
-      "the note tools. When the work is large, delegate.\n"
+      "The result of a job is stored in a cache keyed by its id. "
+      "You are not told the result automatically. If you need it, "
+      "call read_job with the id. If the job is still running, the "
+      "call waits; the user can abort the wait at any time.\n"
       "\n"
       "## Tools\n"
       "\n"
-      "- search: ask a question of the user's notes. Use only when "
-      "the user asks about something that might be written in their "
-      "notes and is not already known to you. Never use it for things "
-      "about the user themselves. If the index is not ready, say so "
-      "and stop; do not retry.\n"
+      "- search: start a search job. Returns the job id. Does not "
+      "return the result. Call read_job to read it.\n"
       "\n"
-      "- list_notes: see every note with a one-line preview. Use "
-      "before reading or writing if you do not know what exists.\n"
+      "- read_job: read the result of a job by id. Returns "
+      "immediately if the job is done. Waits if it is still "
+      "running.\n"
       "\n"
-      "- read_note: read the full body of a note.\n"
-      "\n"
-      "- write_note: create a new note. It never overwrites. If the "
-      "note already exists, use edit_note.\n"
-      "\n"
-      "- edit_note: change an existing note by instruction. The note "
-      "opens in the editor and the user reviews the change.\n"
-      "\n"
-      "- delete_note: move a note to the trash. Only when the user "
-      "has asked for it.\n"
-      "\n"
-      "- delegate: hand a task to the worker. Use for anything that "
-      "spans many files, needs planning, or produces something that "
-      "will be reviewed before it lands. Call this with only the "
-      "instruction. Do not guess a session name; the application will "
-      "show you the list and you will call again with your choice.\n"
+      "- delegate: hand a task to the worker. Returns the job id.\n"
       "\n"
       "- promote_note: copy a file the worker produced into the "
-      "notes. Use when a generated file is worth keeping. Copied, not "
-      "moved, skipped if it already exists.\n"
+      "notes.\n"
       "\n"
-      "- remember_fact: write a durable fact about the user or about "
-      "yourself into the always-in-context profile.\n"
+      "- list_notes, read_note, write_note, edit_note, delete_note: "
+      "operate on the user's notes folder.\n"
       "\n"
-      "- speak: say something aloud through the user's speakers.\n"
+      "- remember_fact: write a durable fact about the user or "
+      "about yourself.\n"
       "\n"
-      "## Citations\n"
+      "- speak: say something aloud.\n"
       "\n"
-      "When search or a note gives you a source, cite it inline as "
-      "[1], [2], and so on, in the order the sources were given. Do "
-      "not type file paths; the application resolves the markers.\n"
+      "## Failure\n"
       "\n"
-      "## Failures\n"
-      "\n"
-      "If a tool fails, do not retry it with the same arguments. Tell "
-      "the user what failed and stop. If the failure is the search "
-      "index or a session, say so plainly.");
+      "If a tool fails, do not retry it with the same arguments. "
+      "Tell the user what failed and stop.");
 
   return prompt;
 }
@@ -376,6 +342,7 @@ assistant::AssistantToolContext LoreAssistant::buildToolContext() {
   context.promoter = m_config.promoter;
   context.scopeIndex = m_config.scopeIndex;
   context.notesRoot = m_config.notesRoot;
+  context.assistant = this;
 
   context.editor = m_config.documentArea
                        ? m_config.documentArea->currentEditor()
@@ -395,9 +362,16 @@ void LoreAssistant::onLlmDelta(const QUuid &token, const QString &text) {
     return;
   }
 
+  if (m_activeReplyNode.isEmpty()) {
+    m_activeReplyNode =
+        QUuid::createUuid().toString(QUuid::WithoutBraces);
+
+    emit assistantReplyStarted(m_activeReplyNode);
+  }
+
   m_turnReplyBuffer += text;
 
-  emit assistantChunk(text);
+  emit assistantChunk(m_activeReplyNode, text);
 }
 
 void LoreAssistant::onLlmFinished(const QUuid &token) {
@@ -415,7 +389,7 @@ void LoreAssistant::onLlmToolCalls(const QUuid &token,
   }
 
   if (m_toolRoundsRemaining <= 0) {
-    emit assistantStatus(tr("Too many tool rounds; stopping."));
+    emit statusMessage(tr("Too many tool rounds; stopping."));
     finishTurn();
     return;
   }
@@ -428,12 +402,21 @@ void LoreAssistant::onLlmError(const QUuid &token, const QString &error) {
     return;
   }
 
-  emit assistantStatus(error);
+  emit statusMessage(error);
   finishTurn();
 }
 
 void LoreAssistant::runToolRound(const QJsonArray &toolCalls,
                                  const QJsonArray &priorMessages) {
+
+  if (m_activeReplyNode.isEmpty()) {
+    m_activeReplyNode =
+        QUuid::createUuid().toString(QUuid::WithoutBraces);
+
+    emit assistantReplyStarted(m_activeReplyNode);
+  }
+
+  
   --m_toolRoundsRemaining;
 
   const assistant::AssistantToolContext context = buildToolContext();
@@ -476,13 +459,10 @@ void LoreAssistant::runToolRound(const QJsonArray &toolCalls,
       if (parseError.error == QJsonParseError::NoError &&
           parsed.isObject()) {
         arguments = parsed.object();
-      } else {
-        qWarning() << "[LoreAssistant] Tool arguments did not parse:"
-                   << parseError.errorString();
       }
     }
 
-    emit assistantStatus(tr("Running %1…").arg(name));
+    emit statusChanged(tr("Running %1").arg(name));
 
     assistant::AssistantTool::Result result;
 
@@ -499,48 +479,56 @@ void LoreAssistant::runToolRound(const QJsonArray &toolCalls,
       payload = result.error.isEmpty()
                     ? QStringLiteral("Tool failed.")
                     : result.error;
-      emit assistantStatus(tr("%1 failed: %2").arg(name, payload));
     } else if (result.output.startsWith(
-                   QStringLiteral("__lore_search__:"))) {
+                   QStringLiteral("__job_search__:"))) {
       const QString query =
-          result.output.mid(QStringLiteral("__lore_search__:").size());
+          result.output.mid(QStringLiteral("__job_search__:").size());
 
-      payload = runSearchForTool(query);
+      const QString jobId = startSearchJob(query, m_activeReplyNode);
 
-      emit assistantStatus(tr("Search complete."));
+      payload = tr("Job started. id=%1. Read it with read_job when you "
+                   "need it.").arg(jobId);
     } else if (result.output.startsWith(
-                   QStringLiteral("__lore_delegated__:"))) {
+                   QStringLiteral("__job_delegated__:"))) {
       const QString rest = result.output.mid(
-          QStringLiteral("__lore_delegated__:").size());
+          QStringLiteral("__job_delegated__:").size());
 
       const int colon = rest.indexOf(QChar(':'));
 
       const QString requestId =
           colon < 0 ? rest : rest.left(colon);
 
-      if (!requestId.isEmpty()) {
-        m_pendingJobs.insert(requestId, m_completionPolicy);
+      const QString sessionPart =
+          colon < 0 ? QString() : rest.mid(colon + 1).trimmed();
 
-        const QString sessionPart =
-            colon < 0 ? QString() : rest.mid(colon + 1).trimmed();
+      Job job;
+      job.id = requestId;
+      job.kind = ChatNode::Kind::JobDelegate;
+      job.state = ChatNode::State::Running;
+      job.nodeId = m_activeReplyNode;
+      job.summary = tr("Delegated to %1").arg(
+          sessionPart.isEmpty() ? tr("the worker") : sessionPart);
+      job.createdAt = QDateTime::currentDateTime();
+      job.updatedAt = job.createdAt;
 
-        if (!sessionPart.isEmpty()) {
-          m_jobSessions.insert(requestId, sessionPart);
-        }
-      }
+      m_jobs.insert(job.id, job);
+      m_jobPolicies.insert(job.id, m_completionPolicy);
 
-      payload = tr("Task submitted. Request %1. You will be told when "
-                   "it is done.")
-                    .arg(requestId.left(8));
+      emit jobCreated(job.id, m_activeReplyNode, job.kind,
+                      tr("Delegated"), job.summary);
 
-      emit assistantStatus(tr("Task submitted."));
+      payload = tr("Job started. id=%1. Read it with read_job when you "
+                   "need it.").arg(job.id);
+    } else if (result.output.startsWith(
+                   QStringLiteral("__job_promoted__:"))) {
+      payload = result.output.mid(
+          QStringLiteral("__job_promoted__:").size());
     } else if (result.output.startsWith(
                    QStringLiteral("__lore_needs_session__:"))) {
       const QString instruction = result.output.mid(
           QStringLiteral("__lore_needs_session__:").size());
 
-      QString listing = tr("The worker needs a session. Existing "
-                           "sessions:\n");
+      QString listing = tr("Existing sessions:\n");
 
       if (m_config.overseerManager) {
         const auto sessions =
@@ -557,22 +545,14 @@ void LoreAssistant::runToolRound(const QJsonArray &toolCalls,
                                     : info.description);
           }
         }
-      } else {
-        listing += tr("(the worker is not available)\n");
       }
 
-      listing += tr("\nCall delegate again with a session name. Or "
-                    "call delegate with create=true, a name, and a "
-                    "short intentional description to make a new "
-                    "session.\n\nThe task was:\n");
-      listing += instruction;
+      listing += tr("\nCall delegate again with a session name, or "
+                    "with create=true, a name, and a description.");
 
       payload = listing;
-
-      emit assistantStatus(tr("Choosing a session."));
     } else {
       payload = result.output;
-      emit assistantStatus(tr("%1 done.").arg(name));
     }
 
     QJsonObject toolMessage;
@@ -584,6 +564,12 @@ void LoreAssistant::runToolRound(const QJsonArray &toolCalls,
   }
 
   m_turnMessages = messages;
+
+  // Do not clear the reply buffer or the reply node. The tool round is
+  // a continuation of the same exchange; the final answer streams into
+  // the same node. Only the buffer that becomes the final reply text
+  // is reset, because the tool-call preamble is not part of the spoken
+  // answer.
   m_turnReplyBuffer.clear();
 
   const QJsonArray tools = m_tools ? m_tools->schemas() : QJsonArray();
@@ -593,112 +579,113 @@ void LoreAssistant::runToolRound(const QJsonArray &toolCalls,
       QString(), QJsonObject(), tools, QString());
 }
 
-QString LoreAssistant::runSearchForTool(const QString &query) {
+QString LoreAssistant::startSearchJob(const QString &query,
+                                      const QString &nodeId) {
+  const QString jobId = QStringLiteral("search-%1")
+                            .arg(m_nextJobOrdinal++);
+
+  Job job;
+  job.id = jobId;
+  job.kind = ChatNode::Kind::JobSearch;
+  job.state = ChatNode::State::Running;
+  job.nodeId = nodeId;
+  job.summary = query;
+  job.createdAt = QDateTime::currentDateTime();
+  job.updatedAt = job.createdAt;
+
+  m_jobs.insert(jobId, job);
+  m_jobPolicies.insert(jobId, m_completionPolicy);
+
+  emit jobCreated(jobId, nodeId, ChatNode::Kind::JobSearch,
+                  tr("Searching: %1").arg(query), QString());
+
   if (!m_config.search || !m_config.inference) {
-    return QStringLiteral("Search is unavailable.");
+    m_jobs[jobId].state = ChatNode::State::Failed;
+    m_jobs[jobId].error = tr("Search is unavailable.");
+    emit jobFailed(jobId, m_jobs[jobId].error);
+    return jobId;
   }
 
-  if (!m_config.search->isReady()) {
-    return QStringLiteral(
-        "The search index is not ready. Do not retry; tell the user "
-        "the index needs to be built.");
-  }
+  auto *loop = new RetrievalLoop(m_config.search,
+                                 m_config.inference, this);
 
-  if (!m_searchLoop) {
-    m_searchLoop = new RetrievalLoop(m_config.search,
-                                     m_config.inference, this);
-  }
+  m_searchLoops.insert(jobId, loop);
+  m_searchBuffers.insert(jobId, QString());
 
-  if (m_searchInFlight) {
-    m_searchLoop->cancel();
-  }
+  connect(loop, &RetrievalLoop::answerChunk, this,
+          [this, jobId](const QString &chunk) {
+            m_searchBuffers[jobId] += chunk;
+          });
 
-  m_searchAnswerBuffer.clear();
-  m_searchInFlight = true;
+  connect(loop, &RetrievalLoop::finished, this,
+          [this, jobId](const QString &answer) {
+            onSearchJobFinished(jobId, answer);
+          });
 
-  QEventLoop loop;
+  connect(loop, &RetrievalLoop::failed, this,
+          [this, jobId](const QString &reason) {
+            onSearchJobFailed(jobId, reason);
+          });
 
-  QMetaObject::Connection finishedConn = connect(
-      m_searchLoop, &RetrievalLoop::finished, &loop,
-      [this, &loop](const QString &answer) {
-        m_searchAnswerBuffer = answer;
-        m_searchInFlight = false;
-        loop.quit();
-      });
+  loop->start(query);
 
-  QMetaObject::Connection failedConn = connect(
-      m_searchLoop, &RetrievalLoop::failed, &loop,
-      [this, &loop](const QString &reason) {
-        m_searchAnswerBuffer =
-            QStringLiteral("Search failed: ") + reason;
-        m_searchInFlight = false;
-        loop.quit();
-      });
-
-  QMetaObject::Connection chunkConn = connect(
-      m_searchLoop, &RetrievalLoop::answerChunk, &loop,
-      [this](const QString &chunk) { m_searchAnswerBuffer += chunk; });
-
-  m_searchLoop->start(query);
-  loop.exec();
-
-  disconnect(finishedConn);
-  disconnect(failedConn);
-  disconnect(chunkConn);
-
-  const QString answer = m_searchAnswerBuffer;
-  m_searchAnswerBuffer.clear();
-
-  if (answer.isEmpty()) {
-    return QStringLiteral("No notes matched that query.");
-  }
-
-  return answer;
+  return jobId;
 }
 
-void LoreAssistant::finishTurn() {
-  m_turnActive = false;
-  m_turnMessages = QJsonArray();
-  m_toolRoundsRemaining = 0;
+void LoreAssistant::onSearchJobFinished(const QString &jobId,
+                                        const QString &result) {
+  auto it = m_jobs.find(jobId);
 
-  m_lastReply = m_turnReplyBuffer;
-  m_turnReplyBuffer.clear();
-
-  const Settings::AssistantSettings settings =
-      Settings::getAssistantSettings();
-
-  if (settings.speakResponses && !m_lastReply.isEmpty()) {
-    say(m_lastReply);
-  }
-
-  emit assistantTurnFinished();
-}
-
-void LoreAssistant::onOverseerRequestFinished(
-    const QString &sessionName, const QString &requestId, bool ok,
-    const QString &summary, const QString &filePath) {
-  Q_UNUSED(sessionName);
-
-  if (!m_pendingJobs.contains(requestId)) {
+  if (it == m_jobs.end()) {
     return;
   }
 
-  const CompletionPolicy policy = m_pendingJobs.take(requestId);
-  m_jobSessions.remove(requestId);
+  const QString buffer = m_searchBuffers.take(jobId);
+  const QString finalResult = result.isEmpty() ? buffer : result;
 
-  if (!ok) {
-    const QString line = tr("A task I started failed: %1").arg(summary);
-    emit assistantStatus(line);
-    emit jobCompleted(line);
+  it->state = ChatNode::State::Done;
+  it->result = finalResult;
+  it->updatedAt = QDateTime::currentDateTime();
+
+  RetrievalLoop *loop = m_searchLoops.take(jobId);
+
+  if (loop) {
+    loop->deleteLater();
+  }
+
+  emit jobCompleted(jobId, finalResult);
+  emit statusChanged(tr("Idle"));
+
+  applyJobCompletion(*it);
+}
+
+void LoreAssistant::onSearchJobFailed(const QString &jobId,
+                                      const QString &reason) {
+  auto it = m_jobs.find(jobId);
+
+  if (it == m_jobs.end()) {
     return;
   }
 
-  QString line = summary;
+  it->state = ChatNode::State::Failed;
+  it->error = reason;
+  it->updatedAt = QDateTime::currentDateTime();
 
-  if (!filePath.isEmpty()) {
-    line += QStringLiteral(" ");
-    line += tr("(%1)").arg(QFileInfo(filePath).fileName());
+  RetrievalLoop *loop = m_searchLoops.take(jobId);
+
+  if (loop) {
+    loop->deleteLater();
   }
+
+  m_searchBuffers.remove(jobId);
+
+  emit jobFailed(jobId, reason);
+  emit statusChanged(tr("Idle"));
+}
+
+void LoreAssistant::applyJobCompletion(const Job &job) {
+  const CompletionPolicy policy =
+      m_jobPolicies.value(job.id, CompletionPolicy::Automatic);
 
   CompletionPolicy effective = policy;
 
@@ -713,27 +700,208 @@ void LoreAssistant::onOverseerRequestFinished(
     }
   }
 
+  QString line = job.result;
+
+  if (line.isEmpty()) {
+    line = job.summary;
+  }
+
   switch (effective) {
   case CompletionPolicy::PasteInChat:
-    emit assistantChunk(QStringLiteral("\n\n") + line);
-    emit jobCompleted(line);
+    if (!m_activeReplyNode.isEmpty()) {
+      emit assistantChunk(m_activeReplyNode,
+                          QStringLiteral("\n\n") + line);
+    }
     break;
-
   case CompletionPolicy::FeedToQueue:
     m_pendingForPrompt.append(line);
-    emit assistantStatus(tr("A background task finished."));
+    emit statusMessage(tr("A background task finished."));
     break;
-
   case CompletionPolicy::AppendToNextUserMessage:
     m_pendingForUserMessage.append(line);
-    emit assistantStatus(tr("A background task finished."));
+    emit statusMessage(tr("A background task finished."));
     break;
-
   case CompletionPolicy::Automatic:
     break;
   }
 }
 
-void LoreAssistant::applyCompletionPolicy(const QString &summary) {
-  Q_UNUSED(summary);
+bool LoreAssistant::waitForJob(const QString &jobId, QString *resultOut,
+                               QString *errorOut) {
+  if (!m_jobs.contains(jobId)) {
+    if (errorOut) {
+      *errorOut = tr("No such job: %1").arg(jobId);
+    }
+    return false;
+  }
+
+  const Job *snapshot = job(jobId);
+
+  if (snapshot && snapshot->isTerminal()) {
+    if (snapshot->state == ChatNode::State::Done) {
+      if (resultOut) {
+        *resultOut = snapshot->result;
+      }
+      return true;
+    }
+
+    if (errorOut) {
+      *errorOut = snapshot->error.isEmpty()
+                      ? tr("Job failed or was cancelled.")
+                      : snapshot->error;
+    }
+    return false;
+  }
+
+  QEventLoop loop;
+  bool finished = false;
+
+  auto connCompleted = connect(
+      this, &LoreAssistant::jobCompleted, &loop,
+      [&](const QString &id, const QString &result) {
+        if (id != jobId) {
+          return;
+        }
+
+        finished = true;
+        if (resultOut) {
+          *resultOut = result;
+        }
+        loop.quit();
+      });
+
+  auto connFailed = connect(
+      this, &LoreAssistant::jobFailed, &loop,
+      [&](const QString &id, const QString &error) {
+        if (id != jobId) {
+          return;
+        }
+
+        finished = true;
+        if (errorOut) {
+          *errorOut = error;
+        }
+        loop.quit();
+      });
+
+  QTimer::singleShot(kJobWaitTimeoutMs, &loop, [&]() {
+    if (finished) {
+      return;
+    }
+
+    if (errorOut) {
+      *errorOut = tr("The job did not finish in time.");
+    }
+    loop.quit();
+  });
+
+  loop.exec();
+
+  disconnect(connCompleted);
+  disconnect(connFailed);
+
+  return finished;
+}
+
+void LoreAssistant::abortJob(const QString &jobId) {
+  auto it = m_jobs.find(jobId);
+
+  if (it == m_jobs.end() || it->isTerminal()) {
+    return;
+  }
+
+  RetrievalLoop *loop = m_searchLoops.take(jobId);
+
+  if (loop) {
+    loop->cancel();
+    loop->deleteLater();
+  }
+
+  m_searchBuffers.remove(jobId);
+
+  it->state = ChatNode::State::Cancelled;
+  it->error = tr("Cancelled.");
+  it->updatedAt = QDateTime::currentDateTime();
+
+  emit jobFailed(jobId, it->error);
+  emit statusChanged(tr("Idle"));
+}
+
+void LoreAssistant::abortAll() {
+  if (m_turnActive && m_config.inference && !m_turnToken.isNull()) {
+    m_config.inference->abortChatRequest(m_turnToken);
+  }
+
+  m_turnActive = false;
+  m_turnMessages = QJsonArray();
+  m_turnReplyBuffer.clear();
+  m_activeReplyNode.clear();
+
+  const QStringList ids = m_jobs.keys();
+
+  for (const QString &id : ids) {
+    abortJob(id);
+  }
+}
+
+void LoreAssistant::finishTurn() {
+  m_turnActive = false;
+  m_turnMessages = QJsonArray();
+  m_toolRoundsRemaining = 0;
+
+  m_lastReply = m_turnReplyBuffer;
+  m_turnReplyBuffer.clear();
+
+  // The reply node is not cleared here. It is cleared when the user
+  // sends the next message. That way every streamed delta in this
+  // exchange — including deltas after a tool round — lands in the
+  // same node and the tree does not create a second reply.
+
+  emit assistantTurnFinished(m_activeReplyNode);
+  emit statusChanged(tr("Idle"));
+
+  const Settings::AssistantSettings settings =
+      Settings::getAssistantSettings();
+
+  if (settings.speakResponses && !m_lastReply.isEmpty()) {
+    say(m_lastReply);
+  }
+}
+
+void LoreAssistant::onOverseerRequestFinished(
+    const QString &sessionName, const QString &requestId, bool ok,
+    const QString &summary, const QString &filePath) {
+  Q_UNUSED(sessionName);
+
+  auto it = m_jobs.find(requestId);
+
+  if (it == m_jobs.end()) {
+    return;
+  }
+
+  QString line = summary;
+
+  if (!filePath.isEmpty()) {
+    line += QStringLiteral(" ");
+    line += tr("(%1)").arg(QFileInfo(filePath).fileName());
+  }
+
+  if (!ok) {
+    it->state = ChatNode::State::Failed;
+    it->error = summary;
+    it->updatedAt = QDateTime::currentDateTime();
+
+    emit jobFailed(requestId, summary);
+    emit statusChanged(tr("Idle"));
+    return;
+  }
+
+  it->state = ChatNode::State::Done;
+  it->result = line;
+  it->updatedAt = QDateTime::currentDateTime();
+
+  emit jobCompleted(requestId, line);
+  emit statusChanged(tr("Idle"));
+
+  applyJobCompletion(*it);
 }

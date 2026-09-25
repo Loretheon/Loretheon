@@ -17,27 +17,30 @@ She is owned by `LoreAssistant`, which is constructed once by
 - an `AssistantActivity` — the user's action stream
 - an `AssistantToolRegistry` — the tools she can call
 - a `SpeechAnimator` — the viseme clock that drives the mouth
+- a job cache — every background job, keyed by id
 
 `LoreAssistant` owns none of the application objects it is given.
-`InferenceService`, `AvatarWidget`, `DocumentManager`, and
-`SearchService` are passed in through `Config` and held as raw
-pointers for the assistant's lifetime. This is deliberate: the
-assistant does not reach into `MainWindow`.
+`InferenceService`, `AvatarWidget`, `DocumentManager`,
+`SearchService`, `OverseerSessionManager`, `NotePromoter`, and
+`ScopeIndex` are passed in through `Config` and held as raw pointers
+for the assistant's lifetime. This is deliberate: the assistant does
+not reach into `MainWindow`.
 
 ## What happens on startup
 
 `MainWindow` constructs the avatar first, so the `AvatarWidget`
 pointer is valid. It then constructs `LoreAssistant` with a `Config`
 that carries the inference service, the avatar, the document manager,
-the search service, and the assistant root path. Then it calls
-`start()`.
+the document area, the search service, the Overseer session manager,
+the note promoter, the scope index, the notes root, and the assistant
+root path. Then it calls `start()`.
 
-`start()` does five things:
+`start()` does six things:
 
 1. Creates the assistant root directory if it does not exist.
 2. Loads the profile. Missing profile files are created with defaults.
 3. Ensures the memory tree exists. Loads the memory index if there is
-   one on disk; if not, recall returns empty until it is rebuilt.
+   one on disk; if not, builds one.
 4. Installs the tools into the registry.
 5. Starts the activity batch timer.
 
@@ -54,9 +57,9 @@ Three small files under the assistant root:
     user.md       what she knows about the user
     self.md       what she knows about herself
 
-These are read at startup and on every change. They are small on
-purpose. Anything that grows unbounded belongs in `memories/`, not
-here. The user can edit them directly.
+These are read at startup and on every change. They are put into the
+system prompt verbatim, on every turn. She does not search for them.
+The user can edit them directly, and can ask her to rewrite them.
 
 ## The memory tree
 
@@ -68,14 +71,13 @@ Two shapes, both under `memories/`:
     memories/topics/<slug>.md
         one file per topic, appended to across sessions
 
-Memory writes are gated. The assistant proposes a fact, the user
-approves it, and only then does it land on disk. The propose-and-
-approve flow lives in the conductor. `AssistantMemory` only performs
-the write once approval has been given.
-
 Recall is semantic. `AssistantMemory::recall` queries the memory
 index and returns the bodies of the top matches. This is what makes
 the assistant remember without being asked.
+
+Facts that never grow — the user's name, a preference, a standing
+fact — do not go here. They go in the profile, where they are always
+in context. The memory tree is for things that accumulate.
 
 ## The activity stream
 
@@ -94,11 +96,76 @@ memory file.
 automatically because `SpeechAnimator` is subscribed to the playback
 signal. See `docs/Voice.md`.
 
+## The turn
+
+`handleUserMessage` starts one turn. It builds the messages array —
+the system prompt, the profile, the memory recall, any pending
+background results, and the user's message — and sends it with the
+tool schemas attached.
+
+The reply streams back through `llmDelta`. The first delta creates a
+reply node; every subsequent delta appends to the same node. A turn
+is not finished until the model stops calling tools or the tool
+round limit is reached.
+
+Tool calls arrive through `llmToolCalls`. Each call is dispatched
+through the registry. Tools that return a job marker are intercepted:
+the conductor starts the job, records it in the job cache, and
+returns the job id to the model. The model acknowledges and moves on.
+
+`finishTurn` ends the turn. The reply node is not cleared. It is
+cleared when the user sends the next message. That way every delta
+in one exchange, including deltas after a tool round, lands in the
+same node.
+
+## Jobs and the cache
+
+Anything the assistant does that reaches outside the conversation —
+a search, a delegate, a promote — is a job. A job has a stable id,
+a state, and a result. It runs in the background. The conversation
+is not blocked.
+
+The result is stored in `m_jobs` on `LoreAssistant`, keyed by id.
+The model is not told the result automatically. It can call
+`read_job` to read it. If the job is still running, `read_job` waits.
+The user can abort the wait with the abort control on the job node
+or with the global abort button.
+
+`abortJob` cancels a single job and marks it `Cancelled`. `abortAll`
+cancels every non-terminal job and aborts the current turn.
+
+## The widget
+
+`AssistantWidget` is a top-level window with two tabs: Chat and Mind.
+
+The Chat tab renders the conversation as a tree. A user message is a
+root node. An assistant reply is a root node. Every job, status, and
+error the reply produces is a child of that reply node, indented and
+collapsed by default.
+
+The Mind tab renders the assistant's own files as a nested graph:
+`identity.md`, `user.md`, `self.md`, and everything under
+`memories/`. Topics expand to show the facts they contain. The graph
+is navigated by cursor position, not clicks: hovering a node focuses
+its subtree, and hovering near the left or right edge of the view
+zooms the visible depth out or in.
+
+## The prompt
+
+The system prompt is built from the profile, the memory recall, and
+a fixed runtime section. The runtime section explains the tools, the
+job model, the citation convention, and the failure rule. It does not
+hardcode her name or her behaviour. Those come from `identity.md`,
+which the user can rewrite.
+
 ## What is not built yet
 
-`LoreAssistant` currently does not run the LLM loop. It constructs
-the registry, installs the tools, and can be called to speak a line,
-but the code that turns an activity batch or a user message into a
-prompt, dispatches it, and acts on the reply is not in this class yet.
-The tool registry and the tool implementations are complete and ready
-to be driven; what is missing is the conductor that drives them.
+The mind map reads the assistant root at the moment the Mind tab is
+opened. It does not watch for changes. If a profile file is edited
+outside the application the graph is stale until the tab is
+reopened. A `QFileSystemWatcher` on the assistant root is the fix and
+it is small.
+
+The assistant can write to the profile through `remember_fact`. There
+is no UI to edit the profile files directly yet. The user can open
+them in the editor.

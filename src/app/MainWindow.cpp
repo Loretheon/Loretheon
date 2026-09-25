@@ -298,25 +298,82 @@ MainWindow::MainWindow() {
     connect(m_assistantWidget, &AssistantWidget::messageSubmitted,
             this, &MainWindow::onAssistantMessageSubmitted);
 
+    connect(m_assistantWidget, &AssistantWidget::abortRequested,
+            m_assistant, &LoreAssistant::abortAll);
+
     connect(m_assistantIcon, &AssistantIcon::clicked,
             this, &MainWindow::onAssistantIconClicked);
 
-    connect(m_assistant, &LoreAssistant::assistantChunk,
-            m_assistantWidget, &AssistantWidget::appendAssistantChunk);
+    connect(m_assistant, &LoreAssistant::assistantReplyStarted,
+            m_assistantWidget, &AssistantWidget::onAssistantReplyStarted);
 
-    connect(m_assistant, &LoreAssistant::assistantStatus,
+    connect(m_assistant, &LoreAssistant::assistantChunk,
+            m_assistantWidget,
+            [this](const QString &nodeId, const QString &text) {
+              if (m_assistantWidget) {
+                m_assistantWidget->appendAssistantChunk(nodeId, text);
+              }
+            });
+
+    connect(m_assistant, &LoreAssistant::jobCreated,
+            m_assistantWidget,
+            [this](const QString &jobId, const QString &nodeId,
+                   ChatNode::Kind kind, const QString &title,
+                   const QString &detail) {
+              if (m_assistantWidget) {
+                m_assistantWidget->beginJob(nodeId, kind, title, detail,
+                                            jobId);
+              }
+            });
+
+    connect(m_assistant, &LoreAssistant::jobCompleted,
+            m_assistantWidget,
+            [this](const QString &jobId, const QString &result) {
+              if (!m_assistantWidget) {
+                return;
+              }
+
+              const QString nodeId =
+                  m_assistantWidget->jobIdFor(jobId);
+
+              if (!nodeId.isEmpty()) {
+                m_assistantWidget->setJobResult(nodeId, result);
+              }
+            });
+
+    connect(m_assistant, &LoreAssistant::jobFailed,
+            m_assistantWidget,
+            [this](const QString &jobId, const QString &error) {
+              if (!m_assistantWidget) {
+                return;
+              }
+
+              const QString nodeId =
+                  m_assistantWidget->jobIdFor(jobId);
+
+              if (!nodeId.isEmpty()) {
+                m_assistantWidget->setJobError(nodeId, error);
+              }
+            });
+
+    connect(m_assistant, &LoreAssistant::statusMessage,
             m_assistantWidget, &AssistantWidget::appendStatusMessage);
 
-    connect(m_assistant, &LoreAssistant::assistantTurnFinished, this,
-            [this]() {
+    connect(m_assistant, &LoreAssistant::statusChanged,
+            m_assistantWidget, &AssistantWidget::setStatus);
+
+    connect(m_assistant, &LoreAssistant::assistantTurnFinished,
+            m_assistantWidget,
+            [this](const QString &nodeId) {
+              Q_UNUSED(nodeId);
+
               if (m_assistantWidget) {
                 m_assistantWidget->setBusy(false);
               }
             });
 
     // The icon is deliberately not shown here. It is shown by
-    // changeEvent when the main window is minimised, and hidden when
-    // the main window is restored.
+    // changeEvent when the main window is minimised.
   }
 
   connect(m_inferenceService, &InferenceService::ttsReady, this,
@@ -2046,7 +2103,6 @@ void MainWindow::onAssistantMessageSubmitted(const QString &text) {
     return;
   }
 
-  m_assistantWidget->appendUserMessage(text);
   m_assistantWidget->setBusy(true);
   m_assistant->handleUserMessage(text);
 }

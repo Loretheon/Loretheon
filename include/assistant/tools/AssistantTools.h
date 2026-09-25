@@ -22,15 +22,7 @@ class AssistantToolRegistry;
 //                   self profile, or the memory tree.
 //
 //   speak         — speaks a line through the user's speakers.
-class SearchTool : public AssistantTool {
-public:
-  QString name() const override { return QStringLiteral("search"); }
-  QString description() const override;
-  QString category() const override { return QStringLiteral("read"); }
-  QJsonObject parametersSchema() const override;
-  Result execute(const QJsonObject &arguments,
-                 const AssistantToolContext &context) const override;
-};
+
 
 class DelegateTool : public AssistantTool {
 public:
@@ -67,6 +59,26 @@ public:
   QString name() const override { return QStringLiteral("promote_note"); }
   QString description() const override;
   QString category() const override { return QStringLiteral("write"); }
+  QJsonObject parametersSchema() const override;
+  Result execute(const QJsonObject &arguments,
+                 const AssistantToolContext &context) const override;
+};
+
+class SearchTool : public AssistantTool {
+public:
+  QString name() const override { return QStringLiteral("search"); }
+  QString description() const override;
+  QString category() const override { return QStringLiteral("read"); }
+  QJsonObject parametersSchema() const override;
+  Result execute(const QJsonObject &arguments,
+                 const AssistantToolContext &context) const override;
+};
+
+class ReadJobTool : public AssistantTool {
+public:
+  QString name() const override { return QStringLiteral("read_job"); }
+  QString description() const override;
+  QString category() const override { return QStringLiteral("read"); }
   QJsonObject parametersSchema() const override;
   Result execute(const QJsonObject &arguments,
                  const AssistantToolContext &context) const override;
