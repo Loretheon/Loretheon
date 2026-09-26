@@ -30,7 +30,7 @@ QJsonObject ProposeMemoryFactTool::parametersSchema() const {
   return schema;
 }
 
-OverseerTool::Result ProposeMemoryFactTool::execute(
+Tool::Result ProposeMemoryFactTool::execute(
     const QJsonObject &arguments, const Context &context) const {
   Q_UNUSED(context);
 

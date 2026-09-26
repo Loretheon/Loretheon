@@ -15,6 +15,8 @@ class WorkstationWindow : public QWidget {
   Q_OBJECT
 
 public:
+  void setLocked(bool locked);
+  bool isLocked() const { return m_locked; }
   enum class Mode {
     Tiled,
     Floating,
@@ -178,7 +180,7 @@ private:
   bool m_dragOverHighlight = false;
   bool m_dropTargetHighlight = false;
   bool m_alsoOpenElsewhere = false;
-
+  bool m_locked = false;
   QTimer *m_transientTimer = nullptr;
 
   static constexpr int kHeaderHeight = 30;

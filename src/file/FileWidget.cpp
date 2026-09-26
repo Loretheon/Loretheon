@@ -131,6 +131,15 @@ FileWidget::FileWidget(QWidget *parent) : QWidget(parent) {
   connect(fileSystemView, &FileSystemView::addToOverseerRequested, this,
           &FileWidget::addToOverseerRequested);
 
+  connect(fileSystemView, &FileSystemView::importRequested, this,
+          &FileWidget::importRequested);
+
+  connect(fileSystemView, &FileSystemView::importAllRequested, this,
+          &FileWidget::importAllRequested);
+
+  connect(fileSystemView, &FileSystemView::promoteToNotesRequested, this,
+          &FileWidget::promoteToNotesRequested);
+
   auto saveExpanded = [this]() {
     DirectoryExplorerSettings::instance().setExpandedPaths(
         collectExpandedPaths(fileSystemModel, fileSystemView));
@@ -253,6 +262,11 @@ FileWidget::FileWidget(QWidget *parent) : QWidget(parent) {
   layout->addWidget(fileSystemView);
 
   QTimer::singleShot(0, this, [this]() { distributeColumnWidths(); });
+}
+void FileWidget::setImportableExtensions(const QStringList &extensions) {
+  if (fileSystemView) {
+    fileSystemView->setImportableExtensions(extensions);
+  }
 }
 
 void FileWidget::resizeEvent(QResizeEvent *event) {

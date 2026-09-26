@@ -21,6 +21,7 @@ namespace {
 constexpr int TranscriptOuterMargin = 14;
 constexpr int TranscriptInputHeight = 38;
 constexpr int TranscriptSendWidth = 76;
+constexpr int AttachButtonWidth = 38;
 } // namespace
 
 void ChatWidgetLayout::build(QWidget *parent, ContextModel *contextModel,
@@ -40,6 +41,15 @@ void ChatWidgetLayout::build(QWidget *parent, ContextModel *contextModel,
   input->setClearButtonEnabled(true);
   input->setMinimumHeight(TranscriptInputHeight);
   input->setObjectName("chatInput");
+
+  attachButton = new QPushButton(QObject::tr("Import"), parent);
+  attachButton->setMinimumHeight(TranscriptInputHeight);
+  attachButton->setMinimumWidth(AttachButtonWidth);
+  attachButton->setToolTip(
+      QObject::tr("Import a document as a note. The original file is "
+                  "converted and removed; the note lands in the notes "
+                  "folder and opens in the editor."));
+  attachButton->setObjectName("attachButton");
 
   sendButton = new QPushButton(QObject::tr("Send"), parent);
   sendButton->setMinimumHeight(TranscriptInputHeight);
@@ -90,6 +100,7 @@ void ChatWidgetLayout::build(QWidget *parent, ContextModel *contextModel,
   controlsLayout->setSpacing(8);
   controlsLayout->addWidget(editModeCheckbox);
   controlsLayout->addWidget(editModeCombo);
+  controlsLayout->addWidget(attachButton);
   controlsLayout->addWidget(input, 1);
   controlsLayout->addWidget(sendButton);
 

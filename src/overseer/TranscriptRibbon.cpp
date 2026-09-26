@@ -1,6 +1,7 @@
 #include "../../include/overseer/TranscriptRibbon.h"
 
 #include "../../include/app/theme/ThemeTokens.h"
+#include "ThemeRegistry.h"
 
 #include <QEvent>
 #include <QMouseEvent>

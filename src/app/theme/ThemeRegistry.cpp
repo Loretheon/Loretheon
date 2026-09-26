@@ -1,227 +1,149 @@
-#include "../../../include/app/theme/ThemeTokens.h"
+#include "ThemeRegistry.h"
 
 #include <QRegularExpression>
 
 namespace {
 
-QColor parseColor(const QString &raw) {
-  const QString v = raw.trimmed();
-  if (v.isEmpty()) return QColor();
+const QStringList &allTokens() {
+  static const QStringList tokens = {
+      QStringLiteral("base"),
+      QStringLiteral("surface0"),
+      QStringLiteral("surface1"),
+      QStringLiteral("surface2"),
+      QStringLiteral("surface-raised"),
+      QStringLiteral("structure"),
 
-  QColor c(v);
-  if (c.isValid()) return c;
+      QStringLiteral("text"),
+      QStringLiteral("text-muted"),
+      QStringLiteral("text-subtle"),
+      QStringLiteral("text-disabled"),
 
-  static const QRegularExpression rgb(
-      R"(rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*([\d.]+)\s*)?\))",
-      QRegularExpression::CaseInsensitiveOption);
-  const auto m = rgb.match(v);
-  if (m.hasMatch()) {
-    QColor out(m.captured(1).toInt(), m.captured(2).toInt(),
-               m.captured(3).toInt());
-    if (!m.captured(4).isEmpty()) {
-      out.setAlphaF(m.captured(4).toDouble());
-    }
-    return out;
-  }
+      QStringLiteral("accent"),
+      QStringLiteral("accent-hover"),
+      QStringLiteral("accent-pressed"),
+      QStringLiteral("accent-muted"),
+      QStringLiteral("accent-fg"),
 
-  return QColor();
+      QStringLiteral("hint-cool"),
+      QStringLiteral("hint-warm"),
+      QStringLiteral("hint-neutral"),
+
+      QStringLiteral("border"),
+      QStringLiteral("border-strong"),
+      QStringLiteral("divider"),
+
+      QStringLiteral("success"),
+      QStringLiteral("warning"),
+      QStringLiteral("error"),
+      QStringLiteral("info"),
+  };
+  return tokens;
 }
 
-QHash<QString, QString> extractDeclarations(const QString &qss) {
-  QHash<QString, QString> out;
+void setField(ThemeTokens &t, const QString &field, const QColor &color) {
+  if (!color.isValid())
+    return;
 
-  static const QRegularExpression block(R"(([^{}]+)\{([^{}]*)\})");
-  auto it = block.globalMatch(qss);
-  while (it.hasNext()) {
-    const auto m = it.next();
-    const QString selector = m.captured(1).trimmed();
-    const QString body = m.captured(2);
+  if (field == QStringLiteral("base")) { t.base = color; return; }
+  if (field == QStringLiteral("surface0")) { t.surface0 = color; return; }
+  if (field == QStringLiteral("surface1")) { t.surface1 = color; return; }
+  if (field == QStringLiteral("surface2")) { t.surface2 = color; return; }
+  if (field == QStringLiteral("surface-raised")) { t.surfaceRaised = color; return; }
+  if (field == QStringLiteral("structure")) { t.structure = color; return; }
 
-    static const QRegularExpression decl(R"(([a-zA-Z-]+)\s*:\s*([^;]+);?)");
-    auto dit = decl.globalMatch(body);
-    while (dit.hasNext()) {
-      const auto d = dit.next();
-      const QString key = selector + "|" + d.captured(1).trimmed().toLower();
-      out.insert(key, d.captured(2).trimmed());
-    }
-  }
+  if (field == QStringLiteral("text")) { t.text = color; return; }
+  if (field == QStringLiteral("text-muted")) { t.textMuted = color; return; }
+  if (field == QStringLiteral("text-subtle")) { t.textSubtle = color; return; }
+  if (field == QStringLiteral("text-disabled")) { t.textDisabled = color; return; }
 
-  return out;
-}
+  if (field == QStringLiteral("accent")) { t.accent = color; return; }
+  if (field == QStringLiteral("accent-hover")) { t.accentHover = color; return; }
+  if (field == QStringLiteral("accent-pressed")) { t.accentPressed = color; return; }
+  if (field == QStringLiteral("accent-muted")) { t.accentMuted = color; return; }
+  if (field == QStringLiteral("accent-fg")) { t.accentFg = color; return; }
 
-QColor lookup(const QHash<QString, QString> &decls,
-              const QStringList &candidates,
-              const QColor &fallback) {
-  for (const QString &key : candidates) {
-    auto it = decls.constFind(key);
-    if (it == decls.constEnd()) continue;
-    const QColor c = parseColor(it.value());
-    if (c.isValid()) return c;
-  }
-  return fallback;
+  if (field == QStringLiteral("hint-cool")) { t.hintCool = color; return; }
+  if (field == QStringLiteral("hint-warm")) { t.hintWarm = color; return; }
+  if (field == QStringLiteral("hint-neutral")) { t.hintNeutral = color; return; }
+
+  if (field == QStringLiteral("border")) { t.border = color; return; }
+  if (field == QStringLiteral("border-strong")) { t.borderStrong = color; return; }
+  if (field == QStringLiteral("divider")) { t.divider = color; return; }
+
+  if (field == QStringLiteral("success")) { t.success = color; return; }
+  if (field == QStringLiteral("warning")) { t.warning = color; return; }
+  if (field == QStringLiteral("error")) { t.error = color; return; }
+  if (field == QStringLiteral("info")) { t.info = color; return; }
 }
 
 QColor fieldFor(const ThemeTokens &t, const QString &field) {
   if (field == QStringLiteral("base")) return t.base;
-  if (field == QStringLiteral("mantle")) return t.mantle;
-  if (field == QStringLiteral("crust")) return t.crust;
   if (field == QStringLiteral("surface0")) return t.surface0;
   if (field == QStringLiteral("surface1")) return t.surface1;
   if (field == QStringLiteral("surface2")) return t.surface2;
-  if (field == QStringLiteral("overlay0")) return t.overlay0;
-  if (field == QStringLiteral("overlay1")) return t.overlay1;
-  if (field == QStringLiteral("overlay2")) return t.overlay2;
+  if (field == QStringLiteral("surface-raised")) return t.surfaceRaised;
+  if (field == QStringLiteral("structure")) return t.structure;
+
   if (field == QStringLiteral("text")) return t.text;
-  if (field == QStringLiteral("subtext0")) return t.subtext0;
-  if (field == QStringLiteral("subtext1")) return t.subtext1;
-  if (field == QStringLiteral("blue")) return t.blue;
-  if (field == QStringLiteral("lavender")) return t.lavender;
-  if (field == QStringLiteral("sapphire")) return t.sapphire;
-  if (field == QStringLiteral("sky")) return t.sky;
-  if (field == QStringLiteral("teal")) return t.teal;
-  if (field == QStringLiteral("green")) return t.green;
-  if (field == QStringLiteral("yellow")) return t.yellow;
-  if (field == QStringLiteral("peach")) return t.peach;
-  if (field == QStringLiteral("maroon")) return t.maroon;
-  if (field == QStringLiteral("red")) return t.red;
-  if (field == QStringLiteral("mauve")) return t.mauve;
-  if (field == QStringLiteral("pink")) return t.pink;
-  if (field == QStringLiteral("flamingo")) return t.flamingo;
-  if (field == QStringLiteral("rosewater")) return t.rosewater;
-  return t.overlay0;
+  if (field == QStringLiteral("text-muted")) return t.textMuted;
+  if (field == QStringLiteral("text-subtle")) return t.textSubtle;
+  if (field == QStringLiteral("text-disabled")) return t.textDisabled;
+
+  if (field == QStringLiteral("accent")) return t.accent;
+  if (field == QStringLiteral("accent-hover")) return t.accentHover;
+  if (field == QStringLiteral("accent-pressed")) return t.accentPressed;
+  if (field == QStringLiteral("accent-muted")) return t.accentMuted;
+  if (field == QStringLiteral("accent-fg")) return t.accentFg;
+
+  if (field == QStringLiteral("hint-cool")) return t.hintCool;
+  if (field == QStringLiteral("hint-warm")) return t.hintWarm;
+  if (field == QStringLiteral("hint-neutral")) return t.hintNeutral;
+
+  if (field == QStringLiteral("border")) return t.border;
+  if (field == QStringLiteral("border-strong")) return t.borderStrong;
+  if (field == QStringLiteral("divider")) return t.divider;
+
+  if (field == QStringLiteral("success")) return t.success;
+  if (field == QStringLiteral("warning")) return t.warning;
+  if (field == QStringLiteral("error")) return t.error;
+  if (field == QStringLiteral("info")) return t.info;
+
+  return QColor();
 }
 
 } // namespace
+
+bool ThemeTokens::isComplete() const {
+  return base.isValid() && surface0.isValid() && surface1.isValid() &&
+         surface2.isValid() && surfaceRaised.isValid() && structure.isValid() &&
+         text.isValid() && textMuted.isValid() && textSubtle.isValid() &&
+         textDisabled.isValid() && accent.isValid() && accentHover.isValid() &&
+         accentPressed.isValid() && accentMuted.isValid() &&
+         accentFg.isValid() && hintCool.isValid() && hintWarm.isValid() &&
+         hintNeutral.isValid() && border.isValid() && borderStrong.isValid() &&
+         divider.isValid() && success.isValid() && warning.isValid() &&
+         error.isValid() && info.isValid();
+}
 
 ThemeRegistry &ThemeRegistry::instance() {
   static ThemeRegistry reg;
   return reg;
 }
 
-ThemeRegistry::ThemeRegistry() {
-  ThemeTokens frappe;
-  frappe.base = QColor("#303446");
-  frappe.mantle = QColor("#292c3c");
-  frappe.crust = QColor("#232634");
-  frappe.surface0 = QColor("#414559");
-  frappe.surface1 = QColor("#51576d");
-  frappe.surface2 = QColor("#626880");
-  frappe.overlay0 = QColor("#737994");
-  frappe.overlay1 = QColor("#838ba7");
-  frappe.overlay2 = QColor("#949cbb");
-  frappe.text = QColor("#c6d0f5");
-  frappe.subtext0 = QColor("#a5adce");
-  frappe.subtext1 = QColor("#b5bfe2");
-  frappe.blue = QColor("#8caaee");
-  frappe.lavender = QColor("#babbf1");
-  frappe.sapphire = QColor("#85c1dc");
-  frappe.sky = QColor("#99d1db");
-  frappe.teal = QColor("#81c8be");
-  frappe.green = QColor("#a6d189");
-  frappe.yellow = QColor("#e5c890");
-  frappe.peach = QColor("#ef9f76");
-  frappe.maroon = QColor("#ea999c");
-  frappe.red = QColor("#e78284");
-  frappe.mauve = QColor("#ca9ee6");
-  frappe.pink = QColor("#f4b8e4");
-  frappe.flamingo = QColor("#eebebe");
-  frappe.rosewater = QColor("#f2d5cf");
+ThemeRegistry::ThemeRegistry() = default;
 
-  ThemeTokens latte;
-  latte.base = QColor("#eff1f5");
-  latte.mantle = QColor("#e6e9ef");
-  latte.crust = QColor("#dce0e8");
-  latte.surface0 = QColor("#ccd0da");
-  latte.surface1 = QColor("#bcc0cc");
-  latte.surface2 = QColor("#acb0be");
-  latte.overlay0 = QColor("#9ca0b0");
-  latte.overlay1 = QColor("#8c8fa1");
-  latte.overlay2 = QColor("#7c7f93");
-  latte.text = QColor("#4c4f69");
-  latte.subtext0 = QColor("#6c6f85");
-  latte.subtext1 = QColor("#5c5f77");
-  latte.blue = QColor("#1e66f5");
-  latte.lavender = QColor("#7287fd");
-  latte.sapphire = QColor("#209fb5");
-  latte.sky = QColor("#04a5e5");
-  latte.teal = QColor("#179299");
-  latte.green = QColor("#40a02b");
-  latte.yellow = QColor("#df8e1d");
-  latte.peach = QColor("#fe640b");
-  latte.maroon = QColor("#e64553");
-  latte.red = QColor("#d20f39");
-  latte.mauve = QColor("#8839ef");
-  latte.pink = QColor("#ea76cb");
-  latte.flamingo = QColor("#dd7878");
-  latte.rosewater = QColor("#dc8a78");
+QStringList ThemeRegistry::names() const { return m_order; }
 
-  ThemeTokens macchiato;
-  macchiato.base = QColor("#24273a");
-  macchiato.mantle = QColor("#1e2030");
-  macchiato.crust = QColor("#181926");
-  macchiato.surface0 = QColor("#363a4f");
-  macchiato.surface1 = QColor("#494d64");
-  macchiato.surface2 = QColor("#5b6078");
-  macchiato.overlay0 = QColor("#6e738d");
-  macchiato.overlay1 = QColor("#8087a2");
-  macchiato.overlay2 = QColor("#939ab7");
-  macchiato.text = QColor("#cad3f5");
-  macchiato.subtext0 = QColor("#a5adcb");
-  macchiato.subtext1 = QColor("#b8c0e0");
-  macchiato.blue = QColor("#8aadf4");
-  macchiato.lavender = QColor("#b7bdf8");
-  macchiato.sapphire = QColor("#7dc4e4");
-  macchiato.sky = QColor("#91d7e3");
-  macchiato.teal = QColor("#8bd5ca");
-  macchiato.green = QColor("#a6da95");
-  macchiato.yellow = QColor("#eed49f");
-  macchiato.peach = QColor("#f5a97f");
-  macchiato.maroon = QColor("#ee99a0");
-  macchiato.red = QColor("#ed8796");
-  macchiato.mauve = QColor("#c6a0f6");
-  macchiato.pink = QColor("#f5bde6");
-  macchiato.flamingo = QColor("#f0c6c6");
-  macchiato.rosewater = QColor("#f4dbd6");
+QStringList ThemeRegistry::selectableNames() const {
+  QStringList result;
 
-  ThemeTokens mocha;
-  mocha.base = QColor("#1e1e2e");
-  mocha.mantle = QColor("#181825");
-  mocha.crust = QColor("#11111b");
-  mocha.surface0 = QColor("#313244");
-  mocha.surface1 = QColor("#45475a");
-  mocha.surface2 = QColor("#585b70");
-  mocha.overlay0 = QColor("#6c7086");
-  mocha.overlay1 = QColor("#7f849c");
-  mocha.overlay2 = QColor("#9399b2");
-  mocha.text = QColor("#cdd6f4");
-  mocha.subtext0 = QColor("#a6adc8");
-  mocha.subtext1 = QColor("#bac2de");
-  mocha.blue = QColor("#89b4fa");
-  mocha.lavender = QColor("#b4befe");
-  mocha.sapphire = QColor("#74c7ec");
-  mocha.sky = QColor("#89dceb");
-  mocha.teal = QColor("#94e2d5");
-  mocha.green = QColor("#a6e3a1");
-  mocha.yellow = QColor("#f9e2af");
-  mocha.peach = QColor("#fab387");
-  mocha.maroon = QColor("#eba0ac");
-  mocha.red = QColor("#f38ba8");
-  mocha.mauve = QColor("#cba6f7");
-  mocha.pink = QColor("#f5c2e7");
-  mocha.flamingo = QColor("#f2cdcd");
-  mocha.rosewater = QColor("#f5e0dc");
+  for (const QString &name : m_order) {
+    if (name == baseName())
+      continue;
+    result.append(name);
+  }
 
-  registerTokens("frappe", frappe);
-  registerTokens("latte", latte);
-  registerTokens("macchiato", macchiato);
-  registerTokens("mocha", mocha);
-
-  m_default = QStringLiteral("mocha");
-  m_active = m_default;
-}
-
-QStringList ThemeRegistry::names() const {
-  return m_order;
+  return result;
 }
 
 bool ThemeRegistry::contains(const QString &name) const {
@@ -230,113 +152,187 @@ bool ThemeRegistry::contains(const QString &name) const {
 
 ThemeTokens ThemeRegistry::tokens(const QString &name) const {
   auto it = m_tokens.constFind(name);
-  if (it != m_tokens.constEnd()) return it.value();
-  auto def = m_tokens.constFind(m_default);
-  if (def != m_tokens.constEnd()) return def.value();
+  if (it != m_tokens.constEnd())
+    return it.value();
+
   return {};
 }
 
-bool ThemeRegistry::registerTokens(const QString &name,
-                                   const ThemeTokens &tokens) {
-  if (name.isEmpty()) return false;
-  if (!m_tokens.contains(name)) m_order.append(name);
-  m_tokens.insert(name, tokens);
-  return true;
+void ThemeRegistry::parseTokenBlock(const QString &qss, QString *outTheme,
+                                    QHash<QString, QColor> *outTokens) {
+  if (outTheme)
+    outTheme->clear();
+
+  if (outTokens)
+    outTokens->clear();
+
+  static const QRegularExpression tokenLine(
+      QStringLiteral(
+          R"(^\s*@([A-Za-z][A-Za-z0-9-]*)\s+(#[0-9A-Fa-f]{3,8})\s*$)"),
+      QRegularExpression::NoPatternOption);
+
+  static const QRegularExpression themeLine(
+      QStringLiteral(R"(^\s*@theme\s+(\S+)\s*$)"),
+      QRegularExpression::NoPatternOption);
+
+  const QStringList lines = qss.split(QChar('\n'));
+
+  bool inBlockComment = false;
+
+  for (const QString &rawLine : lines) {
+    const QString line = rawLine.trimmed();
+
+    if (inBlockComment) {
+      if (line.contains(QStringLiteral("*/")))
+        inBlockComment = false;
+      continue;
+    }
+
+    if (line.isEmpty())
+      continue;
+
+    if (line.startsWith(QStringLiteral("/*"))) {
+      if (!line.contains(QStringLiteral("*/")))
+        inBlockComment = true;
+      continue;
+    }
+
+    if (line.startsWith(QStringLiteral("//")))
+      continue;
+
+    const auto themeMatch = themeLine.match(line);
+
+    if (themeMatch.hasMatch()) {
+      if (outTheme)
+        *outTheme = themeMatch.captured(1).trimmed();
+      continue;
+    }
+
+    const auto tokenMatch = tokenLine.match(line);
+
+    if (tokenMatch.hasMatch()) {
+      const QString name = tokenMatch.captured(1).trimmed().toLower();
+      const QColor color(tokenMatch.captured(2));
+
+      if (color.isValid() && outTokens)
+        outTokens->insert(name, color);
+
+      continue;
+    }
+
+    // First non-token, non-comment, non-blank line ends the preamble.
+    break;
+  }
 }
 
 bool ThemeRegistry::registerFromStylesheet(const QString &name,
-                                           const QString &qss) {
-  if (name.isEmpty() || qss.isEmpty()) return false;
+                                           const QString &qss,
+                                           QStringList *outMissing) {
+  if (outMissing)
+    outMissing->clear();
 
-  const auto decls = extractDeclarations(qss);
+  if (qss.isEmpty())
+    return false;
 
-  ThemeTokens t = tokens(name);
+  QString themeName;
+  QHash<QString, QColor> parsed;
 
-  t.base = lookup(decls,
-                  {"QWidget|background-color", "QMainWindow|background-color"},
-                  t.base);
-  t.crust = lookup(decls,
-                   {"QMenuBar|background-color", "QStatusBar|background-color"},
-                   t.crust);
-  t.surface0 = lookup(decls,
-                      {"QLineEdit|background-color",
-                       "QTextEdit|background-color",
-                       "QPlainTextEdit|background-color",
-                       "QComboBox|background-color"},
-                      t.surface0);
-  t.surface1 = lookup(decls,
-                      {"QMenuBar::item:selected|background-color",
-                       "QMenu::item:selected|background-color",
-                       "QPushButton:hover|background-color"},
-                      t.surface1);
-  t.surface2 = lookup(decls, {"QWidget|selection-background-color"}, t.surface2);
-  t.overlay0 = lookup(decls,
-                      {"QLineEdit:disabled|color",
-                       "QComboBox:disabled|color"},
-                      t.overlay0);
-  t.overlay2 = lookup(decls,
-                      {"QMenu::separator|background-color",
-                       "QScrollBar::handle|background-color"},
-                      t.overlay2);
-  t.text = lookup(decls, {"QWidget|color", "QLabel|color"}, t.text);
-  t.blue = lookup(decls,
-                  {"QTabBar::tab:selected|border-bottom",
-                   "QLineEdit:focus|border"},
-                  t.blue);
-  t.lavender = lookup(decls,
-                      {"QProgressBar::chunk|background-color"},
-                      t.lavender);
+  parseTokenBlock(qss, &themeName, &parsed);
 
-  m_tokens.insert(name, t);
-  if (!m_order.contains(name)) m_order.append(name);
+  if (themeName.isEmpty()) {
+    qWarning() << "[ThemeRegistry] No @theme line in stylesheet" << name;
+    return false;
+  }
+
+  ThemeTokens tokens;
+  QStringList missing;
+
+  for (const QString &required : allTokens()) {
+    const auto it = parsed.constFind(required);
+
+    if (it == parsed.constEnd() || !it.value().isValid()) {
+      missing.append(required);
+      continue;
+    }
+
+    setField(tokens, required, it.value());
+  }
+
+  if (!missing.isEmpty()) {
+    if (outMissing)
+      *outMissing = missing;
+
+    qWarning() << "[ThemeRegistry] Theme" << themeName
+               << "is missing tokens:" << missing;
+
+    return false;
+  }
+
+  if (!tokens.isComplete()) {
+    qWarning() << "[ThemeRegistry] Theme" << themeName
+               << "produced an incomplete token set.";
+    return false;
+  }
+
+  if (!m_tokens.contains(themeName))
+    m_order.append(themeName);
+
+  m_tokens.insert(themeName, tokens);
+
   return true;
 }
 
-QString ThemeRegistry::defaultName() const {
-  return m_default;
-}
-
 void ThemeRegistry::setActiveTheme(const QString &name) {
-  if (name.isEmpty() || name == m_active) return;
+  if (name.isEmpty() || name == m_active)
+    return;
+
   m_active = name;
   emit activeThemeChanged(m_active);
 }
 
 QColor ThemeRegistry::color(const QString &role) const {
   static const QHash<QString, QString> roleToField = {
-      {"event.user", "blue"},
-      {"event.assistant", "mauve"},
-      {"event.tool.ok", "teal"},
-      {"event.tool.error", "red"},
-      {"event.proposal", "lavender"},
-      {"event.stage", "yellow"},
-      {"event.promotion", "green"},
-      {"event.error", "red"},
-      {"event.notice", "overlay1"},
+      {"event.user", "accent"},
+      {"event.assistant", "hint-neutral"},
+      {"event.tool.ok", "success"},
+      {"event.tool.error", "error"},
+      {"event.proposal", "hint-cool"},
+      {"event.stage", "warning"},
+      {"event.promotion", "success"},
+      {"event.error", "error"},
+      {"event.notice", "text-muted"},
 
-      {"reference.present", "green"},
-      {"reference.missing", "red"},
+      {"reference.present", "success"},
+      {"reference.missing", "error"},
 
-      {"badge.ai", "mauve"},
-      {"badge.staged", "yellow"},
-      {"badge.promoted", "green"},
-      {"badge.missing", "red"},
-      {"badge.editor", "blue"},
+      {"badge.ai", "hint-neutral"},
+      {"badge.staged", "warning"},
+      {"badge.promoted", "success"},
+      {"badge.missing", "error"},
+      {"badge.editor", "accent"},
 
-      {"accent", "blue"},
-      {"muted", "overlay0"},
-      {"muted.strong", "overlay1"},
+      {"accent", "accent"},
+      {"accent.hover", "accent-hover"},
+      {"accent.pressed", "accent-pressed"},
+      {"muted", "text-muted"},
+      {"muted.strong", "text-subtle"},
       {"surface", "surface0"},
-      {"surface.alt", "mantle"},
+      {"surface.alt", "surface-raised"},
+      {"border", "border"},
+      {"divider", "divider"},
+
+      {"notification.info", "info"},
+      {"notification.warning", "warning"},
+      {"notification.error", "error"},
+      {"notification.critical", "error"},
   };
 
   const ThemeTokens t = tokens(m_active);
 
   const auto it = roleToField.constFind(role);
 
-  if (it == roleToField.constEnd()) {
-    return t.overlay0;
-  }
+  if (it == roleToField.constEnd())
+    return t.textMuted;
 
   return fieldFor(t, it.value());
 }

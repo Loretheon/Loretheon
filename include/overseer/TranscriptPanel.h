@@ -20,6 +20,12 @@ class TranscriptPanel : public QWidget {
 public:
   explicit TranscriptPanel(TranscriptStore *store, QWidget *parent = nullptr);
 
+  // Re-point at a different store. Disconnects from the old store,
+  // clears the cards, connects to the new one, and rebuilds. Used when
+  // the Overseer view switches sessions.
+  void setStore(TranscriptStore *store);
+  TranscriptStore *store() const { return m_store; }
+
   void setShowTimestamps(bool show);
   bool showTimestamps() const { return m_showTimestamps; }
 

@@ -14,6 +14,7 @@
 //         overview.md
 //         memory.md                    (session-scoped facts)
 //         settings.json                (per-session toggles)
+//         logs/                        (per-session conductor/agent/edit logs)
 //         output/
 //
 // The session owns its folder and exposes read/write helpers for each
@@ -45,6 +46,11 @@ public:
   QString memoryPath() const { return m_memoryPath; }
   QString settingsPath() const { return m_settingsPath; }
 
+  // Per-session log folder for the conductor, file agents and scoped
+  // edit pipeline. Created on demand by the caller; not guaranteed to
+  // exist until something writes to it.
+  QString logsPath() const { return m_logsPath; }
+
   QString transcript() const;
   QString overview() const;
   QString memory() const;
@@ -72,6 +78,7 @@ private:
   QString m_overviewPath;
   QString m_memoryPath;
   QString m_settingsPath;
+  QString m_logsPath;
 
   bool m_valid = false;
 };

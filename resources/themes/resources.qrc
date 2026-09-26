@@ -1,0 +1,8 @@
+<!DOCTYPE RCC>
+<RCC version="1.0">
+    <qresource prefix="/themes">
+        <file>lore/stylesheet.qss</file>
+        <file>normal/stylesheet.qss</file>
+        <file>overseer/stylesheet.qss</file>
+    </qresource>
+</RCC>

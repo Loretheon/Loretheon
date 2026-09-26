@@ -3,6 +3,7 @@
 #include "../../include/app/theme/ThemeTokens.h"
 #include "TextDocument.h"
 #include "TextWidget.h"
+#include "ThemeRegistry.h"
 
 #include "../../include/ai/edit/EditSession.h"
 
@@ -368,6 +369,24 @@ void WorkstationWindow::setDropTargetHighlight(bool highlighted) {
   update();
 }
 
+void WorkstationWindow::setLocked(bool locked) {
+  if (m_locked == locked)
+    return;
+
+  m_locked = locked;
+
+  if (m_locked) {
+    setStatus(Status::Rewriting, tr("Under edit"));
+  } else {
+    refreshNeutralStatus();
+  }
+
+  setProperty("locked", locked);
+  style()->unpolish(this);
+  style()->polish(this);
+  update();
+}
+
 void WorkstationWindow::toggleMaximize() {
   if (!parentWidget())
     return;
@@ -524,22 +543,27 @@ void WorkstationWindow::paintEvent(QPaintEvent *event) {
   const bool focused = property("focused").toBool();
 
   QColor bg = tokens.base;
-  QColor border = focused ? tokens.blue : tokens.overlay0;
+  QColor border = focused ? tokens.accent : tokens.border;
   qreal borderWidth = focused ? 1.5 : 1.0;
 
   if (m_mode == Mode::Tiled) {
-    border = focused ? tokens.blue : tokens.overlay1;
+    border = focused ? tokens.accent : tokens.borderStrong;
     borderWidth = focused ? 1.5 : 1.0;
   } else {
-    border = focused ? tokens.mauve : tokens.overlay0;
+    border = focused ? tokens.hintNeutral : tokens.border;
     borderWidth = focused ? 1.5 : 1.0;
   }
 
+  if (m_locked) {
+    border = tokens.warning;
+    borderWidth = 2.0;
+  }
+
   if (m_dropTargetHighlight) {
-    border = tokens.green;
+    border = tokens.success;
     borderWidth = 2.5;
   } else if (m_dragOverHighlight) {
-    border = tokens.peach;
+    border = tokens.warning;
     borderWidth = 2.0;
   }
 

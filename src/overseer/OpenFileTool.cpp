@@ -1,4 +1,4 @@
-#include "OpenFileTool.h"
+#include "../../include/overseer/OpenFileTool.h"
 
 #include <QDir>
 #include <QFileInfo>
@@ -30,7 +30,7 @@ QJsonObject OpenFileTool::parametersSchema() const {
   return schema;
 }
 
-OverseerTool::Result
+Tool::Result
 OpenFileTool::execute(const QJsonObject &arguments,
                       const Context &context) const {
   Result result;

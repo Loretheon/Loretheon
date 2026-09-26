@@ -1,7 +1,6 @@
-#include "../../include/overseer/ToastStack.h"
+#include "ToastStack.h"
 
-#include "../../include/app/Settings.h"
-#include "../../include/overseer/MemoryProposalToast.h"
+#include "NotificationToast.h"
 
 #include <QEvent>
 #include <QPropertyAnimation>
@@ -9,54 +8,47 @@
 #include <QVBoxLayout>
 
 ToastStack::ToastStack(QWidget *parent) : QWidget(parent) {
-  setObjectName(QStringLiteral("overseerToastStack"));
+  setObjectName(QStringLiteral("notificationToastStack"));
   setAttribute(Qt::WA_ShowWithoutActivating, true);
   setFocusPolicy(Qt::NoFocus);
-  // The stack does not draw; only the toasts do.
-  setAttribute(Qt::WA_TransparentForMouseEvents, false);
 
   m_layout = new QVBoxLayout(this);
   m_layout->setContentsMargins(0, 0, 0, 0);
   m_layout->setSpacing(SpacingPx);
   m_layout->setAlignment(Qt::AlignTop | Qt::AlignRight);
 
-  if (parent) {
+  if (parent)
     parent->installEventFilter(this);
-  }
 }
 
 bool ToastStack::eventFilter(QObject *watched, QEvent *event) {
-  if (watched == parentWidget() && event->type() == QEvent::Resize) {
+  if (watched == parentWidget() && event->type() == QEvent::Resize)
     reposition();
-  }
 
   return QWidget::eventFilter(watched, event);
 }
 
-void ToastStack::showProposalToast(const QString &fact,
-                                   const QString &rationale,
-                                   const QString &scopeLabel) {
+void ToastStack::showNotification(const QString &id, const QString &title,
+                                  const QString &body,
+                                  NotificationService::Severity severity,
+                                  int lifetimeMs) {
   while (m_toasts.size() >= StackCap) {
-    MemoryProposalToast *oldest = m_toasts.takeFirst();
-    if (oldest) {
+    NotificationToast *oldest = m_toasts.takeFirst();
+    if (oldest)
       oldest->dismiss();
-    }
   }
 
-  const int lifetime = Settings::getOverseerToastDurationMs();
-
   auto *toast =
-      new MemoryProposalToast(fact, rationale, scopeLabel, lifetime, this);
+      new NotificationToast(id, title, body, severity, lifetimeMs, this);
 
   m_layout->insertWidget(0, toast);
   m_toasts.append(toast);
 
-  connect(toast, &MemoryProposalToast::finished, this, [this, toast]() {
+  connect(toast, &NotificationToast::finished, this, [this, toast]() {
     m_toasts.removeOne(toast);
 
-    if (m_layout) {
+    if (m_layout)
       m_layout->removeWidget(toast);
-    }
 
     toast->deleteLater();
 
@@ -68,14 +60,13 @@ void ToastStack::showProposalToast(const QString &fact,
   QTimer::singleShot(0, this, [this, toast]() {
     reposition();
 
-    if (!toast) {
+    if (!toast)
       return;
-    }
 
     const QPoint target = toast->pos();
 
     auto *slide = new QPropertyAnimation(toast, "pos", toast);
-    slide->setDuration(1000);
+    slide->setDuration(220);
     slide->setStartValue(QPoint(target.x() + toast->width(), target.y()));
     slide->setEndValue(target);
     slide->setEasingCurve(QEasingCurve::OutCubic);
@@ -86,36 +77,32 @@ void ToastStack::showProposalToast(const QString &fact,
 }
 
 void ToastStack::dismissAll() {
-  const QList<MemoryProposalToast *> snapshot = m_toasts;
+  const QList<NotificationToast *> snapshot = m_toasts;
   m_toasts.clear();
 
-  for (MemoryProposalToast *toast : snapshot) {
-    if (toast) {
+  for (NotificationToast *toast : snapshot) {
+    if (toast)
       toast->dismiss();
-    }
   }
 }
 
 void ToastStack::reposition() {
   QWidget *parent = parentWidget();
 
-  if (!parent) {
+  if (!parent)
     return;
-  }
 
   const int parentWidth = parent->width();
   const int parentHeight = parent->height();
 
-  if (parentWidth <= 0 || parentHeight <= 0) {
+  if (parentWidth <= 0 || parentHeight <= 0)
     return;
-  }
 
-  const int width = qMin(ToastWidthPx, qMax(240, parentWidth / 2));
+  const int width = qMin(ToastWidthPx, qMax(280, parentWidth / 3));
 
-  for (MemoryProposalToast *toast : std::as_const(m_toasts)) {
-    if (toast) {
+  for (NotificationToast *toast : std::as_const(m_toasts)) {
+    if (toast)
       toast->setFixedWidth(width);
-    }
   }
 
   adjustSize();

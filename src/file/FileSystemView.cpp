@@ -17,7 +17,16 @@
 namespace {
 
 constexpr const char *kNotesPathMimeType =
-    "application/x-lorefarer-notes-path";
+    "application/x-lore-notes-path";
+
+const QStringList &defaultImportableExtensions() {
+  static const QStringList kExtensions = {
+      QStringLiteral("pdf"),  QStringLiteral("html"),
+      QStringLiteral("htm"),  QStringLiteral("docx"),
+      QStringLiteral("pptx"), QStringLiteral("epub"),
+  };
+  return kExtensions;
+}
 
 } // namespace
 
@@ -35,6 +44,33 @@ FileSystemView::FileSystemView(QWidget *parent) : QTreeView(parent) {
   setDropIndicatorShown(false);
   setDragDropMode(QAbstractItemView::DragOnly);
   setDefaultDropAction(Qt::CopyAction);
+
+  m_importableExtensions = defaultImportableExtensions();
+}
+
+void FileSystemView::setImportableExtensions(const QStringList &extensions) {
+  QStringList normalized;
+  for (const QString &ext : extensions) {
+    QString key = ext.toLower();
+    if (key.startsWith(QLatin1Char('.'))) {
+      key.remove(0, 1);
+    }
+    if (!key.isEmpty() && !normalized.contains(key)) {
+      normalized.append(key);
+    }
+  }
+
+  m_importableExtensions =
+      normalized.isEmpty() ? defaultImportableExtensions() : normalized;
+}
+
+QStringList FileSystemView::importableExtensions() const {
+  return m_importableExtensions;
+}
+
+bool FileSystemView::isImportablePath(const QString &path) const {
+  const QString suffix = QFileInfo(path).suffix().toLower();
+  return !suffix.isEmpty() && m_importableExtensions.contains(suffix);
 }
 
 void FileSystemView::currentChanged(const QModelIndex &current,
@@ -82,7 +118,7 @@ void FileSystemView::saveColumnVisibility() {
   DirectoryExplorerSettings::instance().setColumnVisibility(visibility);
 }
 
-QStringList FileSystemView::selectedFilePaths() const {
+QStringList FileSystemView::selectedPaths(bool includeDirectories) const {
   QStringList paths;
 
   auto *fsModel = qobject_cast<FileSystemModel *>(model());
@@ -93,12 +129,12 @@ QStringList FileSystemView::selectedFilePaths() const {
 
   const QModelIndexList selected = selectionModel()->selectedRows(0);
 
-  auto appendIfFile = [&](const QModelIndex &index) {
+  auto append = [&](const QModelIndex &index) {
     if (!index.isValid()) {
       return;
     }
 
-    if (fsModel->isDir(index)) {
+    if (!includeDirectories && fsModel->isDir(index)) {
       return;
     }
 
@@ -119,16 +155,19 @@ QStringList FileSystemView::selectedFilePaths() const {
 
   if (!selected.isEmpty()) {
     for (const QModelIndex &index : selected) {
-      appendIfFile(index);
+      append(index);
     }
   }
 
-  // If nothing selected, fall back to whatever is under the cursor.
   if (paths.isEmpty()) {
-    appendIfFile(currentIndex());
+    append(currentIndex());
   }
 
   return paths;
+}
+
+QStringList FileSystemView::selectedFilePaths() const {
+  return selectedPaths(false);
 }
 
 void FileSystemView::startDrag(Qt::DropActions supportedActions) {
@@ -144,7 +183,6 @@ void FileSystemView::startDrag(Qt::DropActions supportedActions) {
   mime->setData(kNotesPathMimeType,
                 paths.join(QChar('\n')).toUtf8());
 
-  // Also set text/plain so dropping into other apps gets something readable.
   mime->setText(paths.join(QChar('\n')));
 
   auto *drag = new QDrag(this);
@@ -207,6 +245,20 @@ void FileSystemView::contextMenuEvent(QContextMenuEvent *event) {
       convertToPlantUmlAction = menu.addAction(tr("Convert to PlantUML"));
   }
 
+  QAction *importAction = nullptr;
+  QAction *importAllAction = nullptr;
+
+  if (!isDir && isImportablePath(path)) {
+    menu.addSeparator();
+    importAction = menu.addAction(tr("Import…"));
+
+    const QStringList selected = selectedFilePaths();
+    if (selected.size() > 1) {
+      importAllAction = menu.addAction(
+          tr("Import All (%1 files)…").arg(selected.size()));
+    }
+  }
+
   menu.addSeparator();
 
   QAction *addToOverseerAction = nullptr;
@@ -214,6 +266,10 @@ void FileSystemView::contextMenuEvent(QContextMenuEvent *event) {
   if (!isDir) {
     addToOverseerAction = menu.addAction(tr("Add to Overseer session"));
   }
+
+  menu.addSeparator();
+
+  QAction *promoteAction = menu.addAction(tr("Promote to notes"));
 
   menu.addSeparator();
 
@@ -240,10 +296,27 @@ void FileSystemView::contextMenuEvent(QContextMenuEvent *event) {
     emit convertToDotRequested(path);
   } else if (chosen == convertToPlantUmlAction) {
     emit convertToPlantUmlRequested(path);
+  } else if (chosen == importAction) {
+    emit importRequested(path);
+  } else if (chosen == importAllAction) {
+    QStringList paths;
+    for (const QString &candidate : selectedFilePaths()) {
+      if (isImportablePath(candidate)) {
+        paths.append(candidate);
+      }
+    }
+    if (!paths.isEmpty()) {
+      emit importAllRequested(paths);
+    }
   } else if (chosen == addToOverseerAction) {
     const QStringList paths = selectedFilePaths();
     if (!paths.isEmpty()) {
       emit addToOverseerRequested(paths);
+    }
+  } else if (chosen == promoteAction) {
+    const QStringList paths = selectedPaths(true);
+    if (!paths.isEmpty()) {
+      emit promoteToNotesRequested(paths);
     }
   } else if (chosen == copyPathAction) {
     QApplication::clipboard()->setText(path);

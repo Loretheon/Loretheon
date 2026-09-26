@@ -2,7 +2,8 @@
 
 #include "../../include/app/theme/ThemeTokens.h"
 #include "../../include/overseer/MarkdownView.h"
-#include "TranscriptEditPlanCard.h"
+#include "../../include/overseer/TranscriptEditPlanCard.h"
+#include "ThemeRegistry.h"
 
 #include <QClipboard>
 #include <QComboBox>
@@ -23,7 +24,13 @@ QString formatTimestamp(const QDateTime &ts) {
   return ts.toString(QStringLiteral("HH:mm:ss"));
 }
 
-QString roleForEvent(TranscriptEvent::Type type, bool toolOk) {
+QString roleForEvent(TranscriptEvent::Type type, Origin origin,
+                     bool toolOk) {
+  if (origin == Origin::Lore &&
+      type == TranscriptEvent::Type::UserMessage) {
+    return QStringLiteral("event.lore");
+  }
+
   switch (type) {
   case TranscriptEvent::Type::EditPlan:
     return QStringLiteral("event.proposal");
@@ -91,10 +98,6 @@ void TranscriptEventCard::updateEvent(const TranscriptEvent &event) {
   refreshStatusDot();
 
   if (proposalChanged) {
-    // In-place update only. The accept/reject buttons and their
-    // connections are left intact; we just show or hide them and set the
-    // status label. This is safe to call from inside the button's own
-    // clicked handler.
     refreshProposalControls();
   }
 
@@ -108,7 +111,7 @@ void TranscriptEventCard::updateEvent(const TranscriptEvent &event) {
 void TranscriptEventCard::refreshStatusDot() {
   setStatusDot(
       ThemeRegistry::instance()
-          .color(roleForEvent(m_event.type, m_event.toolOk))
+          .color(roleForEvent(m_event.type, m_event.origin, m_event.toolOk))
           .name());
 }
 
@@ -126,7 +129,7 @@ QString TranscriptEventCard::headerTitleFor(const TranscriptEvent &event) const 
   case TranscriptEvent::Type::EditPlan:
     return tr("Edit plan");
   case TranscriptEvent::Type::UserMessage:
-    return tr("You");
+    return event.origin == Origin::Lore ? tr("Lore") : tr("You");
   case TranscriptEvent::Type::AssistantMessage:
     return tr("Overseer");
   case TranscriptEvent::Type::ToolCall:

@@ -1,27 +1,32 @@
 #pragma once
 
+#include "NotificationService.h"
+
 #include <QWidget>
 
-class MemoryProposalToast;
+class NotificationToast;
 
 class QVBoxLayout;
 
-// A floating container anchored to the top-right of its parent. Owns a
-// small stack of MemoryProposalToast widgets, caps the concurrent count,
+// The visual host for toasts. NotificationService drives it; nothing
+// else should call into it. The stack owns a small queue of live toasts
 // and repositions itself on parent resize.
 //
-// In production this is parented to the OverseerPage, not to the
-// OverseerWidget, so the toasts sit over the whole page rather than over
-// the short input strip. The stack itself does not accept mouse events;
-// individual toasts do, so they can be clicked or dragged away.
+// In production this is parented to the top-level Lore window, not to
+// any page inside it, so toasts overlay the whole application.
 class ToastStack : public QWidget {
   Q_OBJECT
 
 public:
   explicit ToastStack(QWidget *parent);
 
-  void showProposalToast(const QString &fact, const QString &rationale,
-                         const QString &scopeLabel);
+  // Show a toast for the given notification. Called by
+  // NotificationService. Lifetime of 0 means the toast does not expire
+  // on its own and must be dismissed by the user.
+  void showNotification(const QString &id, const QString &title,
+                        const QString &body,
+                        NotificationService::Severity severity,
+                        int lifetimeMs);
 
   void dismissAll();
 
@@ -31,11 +36,11 @@ protected:
   bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
-  static constexpr int StackCap = 3;
-  static constexpr int MarginPx = 12;
-  static constexpr int SpacingPx = 8;
-  static constexpr int ToastWidthPx = 360;
+  static constexpr int StackCap = 5;
+  static constexpr int MarginPx = 16;
+  static constexpr int SpacingPx = 10;
+  static constexpr int ToastWidthPx = 400;
 
   QVBoxLayout *m_layout = nullptr;
-  QList<MemoryProposalToast *> m_toasts;
+  QList<NotificationToast *> m_toasts;
 };

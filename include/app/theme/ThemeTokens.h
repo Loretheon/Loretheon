@@ -3,87 +3,68 @@
 
 #include <QColor>
 #include <QHash>
-#include <QObject>
 #include <QString>
-#include <QStringList>
 
 struct ThemeTokens {
+  // Surfaces
   QColor base;
-  QColor mantle;
-  QColor crust;
   QColor surface0;
   QColor surface1;
   QColor surface2;
-  QColor overlay0;
-  QColor overlay1;
-  QColor overlay2;
+  QColor surfaceRaised;
+  QColor structure;
+
+  // Text
   QColor text;
-  QColor subtext0;
-  QColor subtext1;
-  QColor blue;
-  QColor lavender;
-  QColor sapphire;
-  QColor sky;
-  QColor teal;
-  QColor green;
-  QColor yellow;
-  QColor peach;
-  QColor maroon;
-  QColor red;
-  QColor mauve;
-  QColor pink;
-  QColor flamingo;
-  QColor rosewater;
+  QColor textMuted;
+  QColor textSubtle;
+  QColor textDisabled;
+
+  // Accent
+  QColor accent;
+  QColor accentHover;
+  QColor accentPressed;
+  QColor accentMuted;
+  QColor accentFg;
+
+  // Hints (pastels)
+  QColor hintCool;
+  QColor hintWarm;
+  QColor hintNeutral;
+
+  // Borders and dividers
+  QColor border;
+  QColor borderStrong;
+  QColor divider;
+
+  // States
+  QColor success;
+  QColor warning;
+  QColor error;
+  QColor info;
+
+  // ---- Helper accessors ----
+  //
+  // These exist so that widget code and renderer code do not need to
+  // know which semantic token backs a given visual role. They are not
+  // a color vocabulary of their own; each one returns an existing
+  // field. If the underlying mapping ever needs to change, change it
+  // here, not at every call site.
 
   QColor background() const { return base; }
   QColor editorBackground() const { return surface0; }
-  QColor nodeFill() const { return surface0; }
-  QColor nodeStroke() const { return blue; }
-  QColor clusterBkg() const { return mantle; }
-  QColor clusterBorder() const { return overlay0; }
-  QColor edgeStroke() const { return overlay2; }
+
+  QColor nodeFill() const { return surfaceRaised; }
+  QColor nodeStroke() const { return accentMuted; }
+  QColor clusterBkg() const { return surface0; }
+  QColor clusterBorder() const { return border; }
+  QColor edgeStroke() const { return border; }
   QColor edgeLabelBackground() const { return base; }
-  QColor markerFill() const { return overlay2; }
+  QColor markerFill() const { return border; }
   QColor textFill() const { return text; }
-  QColor titleFill() const { return subtext1; }
-};
+  QColor titleFill() const { return textMuted; }
 
-class ThemeRegistry : public QObject {
-  Q_OBJECT
-
-public:
-  static ThemeRegistry &instance();
-
-  QStringList names() const;
-  bool contains(const QString &name) const;
-  ThemeTokens tokens(const QString &name) const;
-
-  bool registerTokens(const QString &name, const ThemeTokens &tokens);
-  bool registerFromStylesheet(const QString &name, const QString &qss);
-
-  QString defaultName() const;
-
-  // Active theme for semantic role lookups. Set by MainWindow when the
-  // visible page's theme changes. Widgets that need a themed color
-  // without receiving ThemeTokens explicitly call color(role).
-  void setActiveTheme(const QString &name);
-  QString activeTheme() const { return m_active; }
-
-  // Semantic role lookup. Roles are dotted names like "event.user",
-  // "badge.promoted". Unknown roles return a neutral fallback derived
-  // from the active theme, never a hardcoded hex.
-  QColor color(const QString &role) const;
-
-signals:
-  void activeThemeChanged(const QString &name);
-
-private:
-  ThemeRegistry();
-
-  QHash<QString, ThemeTokens> m_tokens;
-  QStringList m_order;
-  QString m_default;
-  QString m_active;
+  bool isComplete() const;
 };
 
 #endif // THEMETOKENS_H

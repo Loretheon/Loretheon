@@ -24,6 +24,8 @@ struct ChatWidgetLayout {
 
   QPushButton *sendButton = nullptr;
 
+  QPushButton *attachButton = nullptr;
+
   QCheckBox *editModeCheckbox = nullptr;
 
   QComboBox *editModeCombo = nullptr;

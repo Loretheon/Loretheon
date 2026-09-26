@@ -1,5 +1,7 @@
 #include "../../../include/app/theme/ThemeManager.h"
 
+#include "ThemeRegistry.h"
+
 ThemeManager::ThemeManager(QObject *parent) : QObject(parent) {}
 
 bool ThemeManager::loadTheme(const QString &name, const QString &qss) {

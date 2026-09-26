@@ -1,7 +1,5 @@
 #include "OverseerSession.h"
 
-#include "SessionSettings.h"
-
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
@@ -11,178 +9,94 @@
 
 namespace {
 
-constexpr auto SessionMemoryFilename = "memory.md";
-constexpr auto TranscriptFilename = "transcript.md";
-constexpr auto OverviewFilename = "overview.md";
-constexpr auto SettingsFilename = "settings.json";
-constexpr auto OutputDirname = "output";
+constexpr auto SessionsDirname = "Sessions";
 
-QString sessionsRoot(const QString &rootPath) {
-  return QDir(rootPath).filePath(QStringLiteral("Sessions"));
-}
-
-bool isSafeSessionName(const QString &name) {
-  if (name.isEmpty() || name == QStringLiteral(".") ||
-      name == QStringLiteral("..")) {
+bool isValidName(const QString &name) {
+  if (name.isEmpty())
     return false;
-  }
 
-  static const QRegularExpression disallowed(
-      QStringLiteral("[\\\\/:*?\"<>|\\x00-\\x1F]"));
+  static const QRegularExpression re(QStringLiteral(R"(^[A-Za-z0-9 _\-]+$)"));
 
-  return !name.contains(disallowed);
-}
-
-QString readTextFile(const QString &path) {
-  QFile file(path);
-
-  if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
-    return {};
-  }
-
-  QTextStream stream(&file);
-  stream.setEncoding(QStringConverter::Utf8);
-
-  const QString text = stream.readAll();
-
-  if (stream.status() != QTextStream::Ok) {
-    return {};
-  }
-
-  return text;
-}
-
-bool writeTextFile(const QString &path, const QString &text) {
-  QFile file(path);
-
-  if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate |
-                 QIODevice::Text)) {
-    return false;
-  }
-
-  QTextStream stream(&file);
-  stream.setEncoding(QStringConverter::Utf8);
-  stream << text;
-
-  if (stream.status() != QTextStream::Ok) {
-    return false;
-  }
-
-  return true;
-}
-
-void assignPaths(OverseerSession *session, const QString &rootPath,
-                 const QString &name) {
-  const QString folder = QDir(sessionsRoot(rootPath)).filePath(name);
-
-  session->setProperty("folderPath", folder);
+  return re.match(name).hasMatch();
 }
 
 } // namespace
 
-OverseerSession::OverseerSession(QObject *parent) : QObject(parent) {}
+OverseerSession::OverseerSession(QObject *parent) : QObject(parent) {
+  m_valid = false;
+}
+
 
 OverseerSession::OverseerSession(const QString &rootPath, const QString &name,
                                  QObject *parent)
-    : QObject(parent), m_rootPath(rootPath), m_name(name) {}
+    : QObject(parent), m_rootPath(rootPath), m_name(name) {
+  if (!isValidName(name))
+    return;
+
+  m_folderPath =
+      QDir(QDir(rootPath).filePath(SessionsDirname)).filePath(name);
+
+  m_outputPath = QDir(m_folderPath).filePath(QStringLiteral("output"));
+  m_transcriptPath =
+      QDir(m_folderPath).filePath(QStringLiteral("transcript.md"));
+  m_overviewPath =
+      QDir(m_folderPath).filePath(QStringLiteral("overview.md"));
+  m_memoryPath = QDir(m_folderPath).filePath(QStringLiteral("memory.md"));
+  m_settingsPath = QDir(m_folderPath).filePath(QStringLiteral("settings.json"));
+  m_logsPath = QDir(m_folderPath).filePath(QStringLiteral("logs"));
+
+  m_valid = QFileInfo::exists(m_folderPath);
+}
 
 OverseerSession *OverseerSession::open(const QString &rootPath,
-                                       const QString &name, QObject *parent) {
-  if (!isSafeSessionName(name)) {
-    return nullptr;
-  }
-
+                                       const QString &name,
+                                       QObject *parent) {
   auto *session = new OverseerSession(rootPath, name, parent);
 
-  session->m_folderPath = QDir(sessionsRoot(rootPath)).filePath(name);
-  session->m_outputPath =
-      QDir(session->m_folderPath).filePath(QString::fromLatin1(OutputDirname));
-  session->m_transcriptPath = QDir(session->m_folderPath)
-                                  .filePath(QString::fromLatin1(
-                                      TranscriptFilename));
-  session->m_overviewPath = QDir(session->m_folderPath)
-                                .filePath(QString::fromLatin1(
-                                    OverviewFilename));
-  session->m_memoryPath = QDir(session->m_folderPath)
-                              .filePath(QString::fromLatin1(
-                                  SessionMemoryFilename));
-  session->m_settingsPath = QDir(session->m_folderPath)
-                                .filePath(QString::fromLatin1(
-                                    SettingsFilename));
-
-  if (!QDir(session->m_folderPath).exists() ||
-      !QFileInfo::exists(session->m_transcriptPath)) {
+  if (!session->isValid()) {
     delete session;
     return nullptr;
   }
 
-  SessionSettings::ensureFile(session->m_settingsPath);
-
-  session->m_valid = true;
   return session;
 }
 
 OverseerSession *OverseerSession::create(const QString &rootPath,
                                          const QString &name,
                                          QObject *parent) {
-  if (!isSafeSessionName(name)) {
+  if (!isValidName(name))
     return nullptr;
-  }
+
+  const QString folder =
+      QDir(QDir(rootPath).filePath(SessionsDirname)).filePath(name);
+
+  if (QFileInfo::exists(folder))
+    return nullptr;
+
+  QDir rootDir(rootPath);
+
+  if (!rootDir.mkpath(QDir(folder).filePath(QStringLiteral("output"))))
+    return nullptr;
 
   auto *session = new OverseerSession(rootPath, name, parent);
 
-  session->m_folderPath = QDir(sessionsRoot(rootPath)).filePath(name);
-  session->m_outputPath =
-      QDir(session->m_folderPath).filePath(QString::fromLatin1(OutputDirname));
-  session->m_transcriptPath = QDir(session->m_folderPath)
-                                  .filePath(QString::fromLatin1(
-                                      TranscriptFilename));
-  session->m_overviewPath = QDir(session->m_folderPath)
-                                .filePath(QString::fromLatin1(
-                                    OverviewFilename));
-  session->m_memoryPath = QDir(session->m_folderPath)
-                              .filePath(QString::fromLatin1(
-                                  SessionMemoryFilename));
-  session->m_settingsPath = QDir(session->m_folderPath)
-                                .filePath(QString::fromLatin1(
-                                    SettingsFilename));
-
-  if (QFileInfo::exists(session->m_folderPath)) {
+  if (!session->isValid()) {
     delete session;
     return nullptr;
   }
 
-  if (!session->ensureFolder()) {
-    delete session;
-    return nullptr;
-  }
+  session->ensureFolder();
 
-  session->m_valid = true;
   return session;
 }
 
 QStringList OverseerSession::list(const QString &rootPath) {
-  QDir dir(sessionsRoot(rootPath));
+  QDir dir(QDir(rootPath).filePath(SessionsDirname));
 
-  if (!dir.exists()) {
+  if (!dir.exists())
     return {};
-  }
 
-  const QStringList entries =
-      dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name);
-
-  QStringList result;
-
-  for (const QString &entry : entries) {
-    const QString transcriptPath = dir.filePath(
-        QDir(entry).filePath(QString::fromLatin1(TranscriptFilename)));
-
-    if (QFileInfo::exists(transcriptPath)) {
-      result.append(entry);
-    }
-  }
-
-  return result;
+  return dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name);
 }
 
 bool OverseerSession::ensureFolder() {
@@ -194,85 +108,86 @@ bool OverseerSession::ensureFolder() {
   if (!dir.mkpath(m_outputPath))
     return false;
 
-  if (!QFileInfo::exists(m_transcriptPath)) {
-    if (!writeTextFile(m_transcriptPath, QString()))
-      return false;
-  }
-
-  if (!QFileInfo::exists(m_overviewPath)) {
-    const QString header = QStringLiteral("# Overview\n\n");
-
-    if (!writeTextFile(m_overviewPath, header))
-      return false;
-  }
-
-  if (!QFileInfo::exists(m_memoryPath)) {
-    const QString header = QStringLiteral(
-        "# Session Memory\n\n"
-        "Facts scoped to this session only.\n\n");
-
-    if (!writeTextFile(m_memoryPath, header))
-      return false;
-  }
-
-  SessionSettings::ensureFile(m_settingsPath);
+  if (!dir.mkpath(m_logsPath))
+    return false;
 
   return true;
 }
 
 QString OverseerSession::transcript() const {
-  return readTextFile(m_transcriptPath);
+  QFile file(m_transcriptPath);
+
+  if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
+    return {};
+
+  return QString::fromUtf8(file.readAll());
 }
 
 QString OverseerSession::overview() const {
-  return readTextFile(m_overviewPath);
+  QFile file(m_overviewPath);
+
+  if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
+    return {};
+
+  return QString::fromUtf8(file.readAll());
 }
 
 QString OverseerSession::memory() const {
-  return readTextFile(m_memoryPath);
+  QFile file(m_memoryPath);
+
+  if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
+    return {};
+
+  return QString::fromUtf8(file.readAll());
 }
 
 bool OverseerSession::writeTranscript(const QString &text) {
-  if (!writeTextFile(m_transcriptPath, text))
+  QFile file(m_transcriptPath);
+
+  if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate |
+                 QIODevice::Text))
     return false;
 
-  emit changed();
+  file.write(text.toUtf8());
   return true;
 }
 
 bool OverseerSession::writeOverview(const QString &text) {
-  if (!writeTextFile(m_overviewPath, text))
+  QFile file(m_overviewPath);
+
+  if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate |
+                 QIODevice::Text))
     return false;
 
-  emit changed();
+  file.write(text.toUtf8());
   return true;
 }
 
 bool OverseerSession::writeMemory(const QString &text) {
-  if (!writeTextFile(m_memoryPath, text))
+  QFile file(m_memoryPath);
+
+  if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate |
+                 QIODevice::Text))
     return false;
 
-  emit changed();
+  file.write(text.toUtf8());
   return true;
 }
 
 bool OverseerSession::appendTranscriptMessage(const QString &role,
                                               const QString &text) {
-  QString existing = transcript();
+  QFile file(m_transcriptPath);
 
-  if (!existing.isEmpty() && !existing.endsWith(QChar('\n'))) {
-    existing += QChar('\n');
-  }
-
-  const QString timestamp =
-      QDateTime::currentDateTime().toString(Qt::ISODate);
-
-  const QString entry = QStringLiteral("## %1 — %2\n%3\n\n")
-                            .arg(role, timestamp, text);
-
-  if (!writeTextFile(m_transcriptPath, existing + entry))
+  if (!file.open(QIODevice::WriteOnly | QIODevice::Append |
+                 QIODevice::Text))
     return false;
 
-  emit changed();
+  QTextStream stream(&file);
+  stream.setEncoding(QStringConverter::Utf8);
+
+  stream << "**" << role << "** — "
+         << QDateTime::currentDateTime().toString(Qt::ISODate) << "\n\n"
+         << text << "\n\n";
+
   return true;
 }

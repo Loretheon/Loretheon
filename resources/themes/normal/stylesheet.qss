@@ -1,0 +1,32 @@
+@theme normal
+
+@base           #171624
+@surface0       #1F1D30
+@surface1       #29263E
+@surface2       #34304C
+@surface-raised #1F1D30
+@structure      #4A3A8F
+
+@text           #ECE8F5
+@text-muted     #B0A4C8
+@text-subtle    #8274A0
+@text-disabled  #60547A
+
+@accent         #8B71FF
+@accent-hover   #9F8BFF
+@accent-pressed #7B61FF
+@accent-muted   #7B61FF
+@accent-fg      #171624
+
+@hint-cool      #B0C0F0
+@hint-warm      #F0B0C8
+@hint-neutral   #C0B0E8
+
+@border         #4A3A8F
+@border-strong  #7B61FF
+@divider        #3A2E5F
+
+@success        #7BC67B
+@warning        #E8C76B
+@error          #E05C7A
+@info           #B0C0F0

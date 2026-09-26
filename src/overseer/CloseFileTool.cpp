@@ -1,4 +1,4 @@
-#include "CloseFileTool.h"
+#include "../../include/overseer/CloseFileTool.h"
 
 #include <QDir>
 #include <QFileInfo>
@@ -28,7 +28,7 @@ QJsonObject CloseFileTool::parametersSchema() const {
   return schema;
 }
 
-OverseerTool::Result
+Tool::Result
 CloseFileTool::execute(const QJsonObject &arguments,
                        const Context &context) const {
   Result result;

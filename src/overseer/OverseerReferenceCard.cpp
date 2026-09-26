@@ -1,6 +1,7 @@
 #include "../../include/overseer/OverseerReferenceCard.h"
 
 #include "../../include/app/theme/ThemeTokens.h"
+#include "ThemeRegistry.h"
 
 #include "../../include/overseer/PathUtils.h"
 

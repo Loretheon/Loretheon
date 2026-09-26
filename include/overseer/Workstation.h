@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ThemeTokens.h"
+
 #include <QFileSystemWatcher>
 #include <QHash>
 #include <QList>
@@ -53,7 +55,16 @@ public:
 
   void reloadWindowFromDisk(WorkstationWindow *window);
   void saveWindowToDisk(WorkstationWindow *window);
+  // A file that has an active scoped edit session is locked. Locking
+  // is a coordination mechanism between sessions; it does not prevent
+  // the user from typing in the editor.
+  bool isFileLocked(const QString &absolutePath) const;
+  bool lockFile(const QString &absolutePath);
+  void unlockFile(const QString &absolutePath);
 
+  QStringList lockedFiles() const;
+
+  void setThemeTokens(const ThemeTokens &tokens);
 signals:
   void windowClosed(const QString &absolutePath);
   void currentFileChanged(const QString &absolutePath);
@@ -86,6 +97,7 @@ private slots:
   void onDiskConflictOverwrite(WorkstationWindow *window);
 
 private:
+  QSet<QString> m_lockedFiles;
   void destroyWindow(WorkstationWindow *window, bool emitSignals);
 
   int nextZ();
@@ -133,4 +145,7 @@ private:
 
   static constexpr int kGap = 12;
   static constexpr int kMargin = 12;
+
+  ThemeTokens m_tokens;
+  
 };

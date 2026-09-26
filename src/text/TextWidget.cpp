@@ -258,6 +258,7 @@ void TextWidget::setContextScopes(const QStringList &scopeIds) {
 void TextWidget::setThemeTokens(const ThemeTokens &tokens) {
   m_tokens = tokens;
   applyThemeToRenderers();
+  refreshActiveRenderer();
 }
 
 void TextWidget::applyThemeToRenderers() {
@@ -266,6 +267,36 @@ void TextWidget::applyThemeToRenderers() {
   if (mermaidRenderer) mermaidRenderer->setThemeTokens(m_tokens);
 }
 
+void TextWidget::refreshActiveRenderer() {
+  if (!activeDocument)
+    return;
+
+  // The Markdown and plain-text previews are QTextDocument and inherit
+  // the widget palette through QSS. They do not need a re-render.
+
+  switch (activeDocument->type()) {
+  case DocumentMode::Dot:
+    diagramDoc->clear();
+    diagramToolbar->setActionsEnabled(false);
+    graphvizRenderer->renderToSvgAsync(activeDocument->toPlainText());
+    break;
+
+  case DocumentMode::PlantUml:
+    diagramDoc->clear();
+    diagramToolbar->setActionsEnabled(false);
+    plantUmlRenderer->renderToSvgAsync(activeDocument->toPlainText());
+    break;
+
+  case DocumentMode::Mermaid:
+    diagramDoc->clear();
+    diagramToolbar->setActionsEnabled(false);
+    mermaidRenderer->renderToSvgAsync(activeDocument->toPlainText());
+    break;
+
+  default:
+    break;
+  }
+}
 void TextWidget::onElementClicked(const QString &id, const QString &name,
                                   const QPoint &globalPos) {
   Q_UNUSED(name);

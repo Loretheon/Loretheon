@@ -8,6 +8,8 @@
 #include "../../include/ai/edit/EditSession.h"
 
 #include "TextDocument.h"
+#include "TextWidget.h"
+#include "ThemeRegistry.h"
 
 #include <QContextMenuEvent>
 #include <QCoreApplication>
@@ -29,6 +31,7 @@
 #include <algorithm>
 #include <limits>
 
+class TextWidget;
 namespace {
 
 constexpr auto LayoutFilename = "workstation.json";
@@ -53,6 +56,20 @@ Workstation::~Workstation() = default;
 void Workstation::setOutputFolder(const QString &folder) {
   m_outputFolder = folder;
 }
+void Workstation::setThemeTokens(const ThemeTokens &tokens) {
+  m_tokens = tokens;
+
+  for (WorkstationWindow *w : std::as_const(m_windows)) {
+    if (!w)
+      continue;
+
+    if (auto *textWidget = qobject_cast<TextWidget *>(w->body()))
+      textWidget->setThemeTokens(tokens);
+  }
+
+  update();
+}
+
 
 QString Workstation::sessionFolder() const {
   if (m_outputFolder.isEmpty())
@@ -141,7 +158,7 @@ void Workstation::destroyWindow(WorkstationWindow *window, bool emitSignals) {
   const QString path = window->filePath();
 
   unwatchFile(path);
-
+  unlockFile(path);
   m_windows.removeOne(window);
   m_byPath.remove(path);
 
@@ -548,7 +565,10 @@ WorkstationWindow *Workstation::openFile(const QString &absolutePath,
                            : bodyHint;
 
   QWidget *body = m_bodyFactory.createBody(hint, document, m_editSession, this);
-
+  if (auto *textWidget = qobject_cast<TextWidget *>(body)) {
+    textWidget->setThemeTokens(m_tokens);
+  }
+  
   auto *window = new WorkstationWindow(document, body, absolutePath, this);
   window->setEditSession(m_editSession);
   window->setMode(WorkstationWindow::Mode::Tiled);
@@ -726,6 +746,49 @@ void Workstation::resizeEvent(QResizeEvent *event) {
   }
 }
 
+bool Workstation::isFileLocked(const QString &absolutePath) const {
+  return m_lockedFiles.contains(absolutePath);
+}
+
+bool Workstation::lockFile(const QString &absolutePath) {
+  if (absolutePath.isEmpty())
+    return false;
+
+  if (m_lockedFiles.contains(absolutePath))
+    return false;
+
+  m_lockedFiles.insert(absolutePath);
+
+  WorkstationWindow *window = windowForPath(absolutePath);
+  if (window)
+    window->setLocked(true);
+
+  return true;
+}
+
+void Workstation::unlockFile(const QString &absolutePath) {
+  if (absolutePath.isEmpty())
+    return;
+
+  if (!m_lockedFiles.remove(absolutePath))
+    return;
+
+  WorkstationWindow *window = windowForPath(absolutePath);
+  if (window)
+    window->setLocked(false);
+}
+
+QStringList Workstation::lockedFiles() const {
+  QStringList result;
+
+  for (const QString &path : m_lockedFiles)
+    result.append(path);
+
+  result.sort();
+
+  return result;
+}
+
 void Workstation::paintEvent(QPaintEvent *event) {
   Q_UNUSED(event);
 
@@ -741,7 +804,7 @@ void Workstation::paintEvent(QPaintEvent *event) {
 
   constexpr int spacing = 40;
 
-  QColor line = tokens.overlay0;
+  QColor line = tokens.border;
   line.setAlpha(28);
 
   painter.setPen(QPen(line, 1));

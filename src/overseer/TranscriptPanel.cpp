@@ -486,3 +486,27 @@ void TranscriptPanel::updateRibbonVisibleRange() {
 
   m_ribbon->setVisibleRange(firstVisible, lastVisible);
 }
+
+void TranscriptPanel::setStore(TranscriptStore *store) {
+  if (m_store == store)
+    return;
+
+  if (m_store) {
+    disconnect(m_store, nullptr, this, nullptr);
+  }
+
+  m_store = store;
+
+  clearAllCards();
+
+  if (m_store) {
+    connect(m_store, &TranscriptStore::eventsReset, this,
+            &TranscriptPanel::onEventsReset);
+    connect(m_store, &TranscriptStore::eventAppended, this,
+            &TranscriptPanel::onEventAppended);
+    connect(m_store, &TranscriptStore::eventUpdated, this,
+            &TranscriptPanel::onEventUpdated);
+  }
+
+  onEventsReset();
+}

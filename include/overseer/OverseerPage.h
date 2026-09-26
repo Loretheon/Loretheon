@@ -2,8 +2,10 @@
 
 #include "ThemeTokens.h"
 
+#include <QToolButton>
 #include <QWidget>
 
+class OverseerSessionManager;
 class FileWidget;
 class AutoHideDock;
 class ChatWidget;
@@ -15,7 +17,7 @@ class OverseerWidget;
 class Workstation;
 class TextDocument;
 class TextEdit;
-
+class ConductorDock;
 class QSplitter;
 class QStackedWidget;
 
@@ -24,7 +26,9 @@ class OverseerPage : public QWidget {
 
 public:
   OverseerPage(InferenceService *inferenceService,
-               EditSession *editSession, QWidget *parent = nullptr);
+             EditSession *editSession,
+             OverseerSessionManager *manager,
+             QWidget *parent = nullptr);
 
   ~OverseerPage() override;
 
@@ -38,7 +42,7 @@ public:
   bool hasUnsavedChanges() const;
   bool saveAll();
   void discardAll();
-
+  FileWidget *fileWidget() const { return m_fileWidget; }
 public slots:
   void stageFileInSession(const QString &absolutePath);
 
@@ -54,15 +58,17 @@ private slots:
   void onDocumentChanged();
   void onAddToOverview(const QStringList &paths);
   void onFocusedFileChanged(const QString &absolutePath);
+  void setWorkstationOnManager();
 
 private:
   void reloadSession(const QString &name);
   void closeAllSessionDocuments();
   void migrateLegacyLayoutFiles();
-
+  ConductorDock *m_conductorDock = nullptr;
+  QToolButton *m_dockTrigger = nullptr;
   InferenceService *m_inferenceService = nullptr;
   EditSession *m_editSession = nullptr;
-
+  OverseerSessionManager *m_manager = nullptr;
   OverseerWidget *m_overseer = nullptr;
   Workstation *m_workstation = nullptr;
 

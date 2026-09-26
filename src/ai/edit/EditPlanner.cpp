@@ -122,9 +122,6 @@ QVector<SectionInfo> collectSections(const DocumentStructure &structure,
 
   collectSections(structure.root(), documentText, sections);
 
-  // If the walk produced nothing usable, fall back to the document root
-  // itself. This is the case for files with no markdown headings: .dot,
-  // .puml, .mmd, plain text.
   if (sections.isEmpty() && !structure.root().id.isEmpty()) {
     sections.append(makeDocumentRootSection(structure.root(), documentText));
   }
@@ -153,9 +150,6 @@ const SectionInfo *findSection(const QVector<SectionInfo> &sections,
   return nullptr;
 }
 
-// Returns the document-root SectionInfo: the entry whose scopeId ends
-// in ":document" or equals "document", or whose range covers the whole
-// document. Null if none.
 const SectionInfo *
 findDocumentRootSection(const QVector<SectionInfo> &sections,
                         int documentLength) {
@@ -176,26 +170,22 @@ findDocumentRootSection(const QVector<SectionInfo> &sections,
   return nullptr;
 }
 
-// Returns true if the given scope ID resolves to the document root.
-// Handles the "<language>:document" prefix scheme as well as the plain
-// "document".
 bool isDocumentRootScope(const QString &scopeId,
                          const QVector<SectionInfo> &sections,
                          int documentLength) {
-  if (scopeId.isEmpty()) {
+  if (scopeId.isEmpty())
     return false;
-  }
 
   if (scopeId == QStringLiteral("document") ||
+      scopeId == QStringLiteral("root") ||
       scopeId.endsWith(QStringLiteral(":document"))) {
     return true;
   }
 
   const SectionInfo *root = findDocumentRootSection(sections, documentLength);
 
-  if (!root) {
+  if (!root)
     return false;
-  }
 
   return root->scopeId == scopeId;
 }
@@ -203,22 +193,18 @@ bool isDocumentRootScope(const QString &scopeId,
 bool scopeIdsEquivalent(const QString &a, const QString &b,
                         const QVector<SectionInfo> &sections,
                         int documentLength) {
-  if (a == b) {
+  if (a == b)
     return true;
-  }
 
   const bool aIsRoot = isDocumentRootScope(a, sections, documentLength);
   const bool bIsRoot = isDocumentRootScope(b, sections, documentLength);
 
-  if (aIsRoot && bIsRoot) {
+  if (aIsRoot && bIsRoot)
     return true;
-  }
 
   return false;
 }
 
-// Split the request into sentence-like fragments. Splits on sentence
-// terminators and newlines. Fragments are non-overlapping and in order.
 QVector<QString> splitSentences(const QString &request) {
   QVector<QString> result;
 
@@ -227,9 +213,8 @@ QVector<QString> splitSentences(const QString &request) {
   for (int i = 0; i < request.size(); ++i) {
     const QChar ch = request.at(i);
 
-    const bool isTerminator =
-        ch == QChar('.') || ch == QChar('!') || ch == QChar('?') ||
-        ch == QChar('\n');
+    const bool isTerminator = ch == QChar('.') || ch == QChar('!') ||
+                              ch == QChar('?') || ch == QChar('\n');
 
     if (!isTerminator)
       continue;
@@ -334,18 +319,15 @@ resolveRequestedSections(const QString &request,
     int bestLength = 0;
 
     for (const QString &candidate : candidates) {
-      if (candidate.isEmpty()) {
+      if (candidate.isEmpty())
         continue;
-      }
 
-      if (request.contains(candidate, Qt::CaseInsensitive)) {
+      if (request.contains(candidate, Qt::CaseInsensitive))
         bestLength = qMax(bestLength, candidate.size());
-      }
     }
 
-    if (bestLength > 0) {
+    if (bestLength > 0)
       matches.append({&section, bestLength});
-    }
   }
 
   std::sort(matches.begin(), matches.end(),
@@ -355,26 +337,19 @@ resolveRequestedSections(const QString &request,
   QSet<QString> seen;
 
   for (const Match &match : matches) {
-    if (seen.contains(match.section->scopeId)) {
+    if (seen.contains(match.section->scopeId))
       continue;
-    }
 
     seen.insert(match.section->scopeId);
 
-    if (isCandidateNegated(request, *match.section)) {
+    if (isCandidateNegated(request, *match.section))
       continue;
-    }
 
     result.append(match.section);
   }
 
-  // If nothing matched, but the document has exactly one section and it
-  // is the document root (i.e. a file with no headings), treat that root
-  // as the target. Otherwise the LLM would receive an empty target list
-  // and would have to guess a scope.
-  if (result.isEmpty() && sections.size() == 1) {
+  if (result.isEmpty() && sections.size() == 1)
     result.append(&sections.first());
-  }
 
   return result;
 }
@@ -383,16 +358,12 @@ QString operationName(const EditCommand &command) {
   switch (command.operation) {
   case EditCommand::Operation::Insert:
     return QStringLiteral("insert");
-
   case EditCommand::Operation::Replace:
     return QStringLiteral("replace");
-
   case EditCommand::Operation::ReplaceScope:
     return QStringLiteral("replace_scope");
-
   case EditCommand::Operation::Delete:
     return QStringLiteral("delete");
-
   case EditCommand::Operation::Unknown:
     return QStringLiteral("unknown");
   }
@@ -404,10 +375,8 @@ QString positionName(const EditCommand &command) {
   switch (command.position) {
   case EditCommand::Position::Before:
     return QStringLiteral("before");
-
   case EditCommand::Position::After:
     return QStringLiteral("after");
-
   case EditCommand::Position::Inside:
     return QStringLiteral("inside");
   }
@@ -427,9 +396,8 @@ QJsonObject commandToJson(const EditCommand &command) {
 QString commandsToJson(const QVector<EditCommand> &commands) {
   QJsonArray array;
 
-  for (const EditCommand &command : commands) {
+  for (const EditCommand &command : commands)
     array.append(commandToJson(command));
-  }
 
   return QString::fromUtf8(
       QJsonDocument(array).toJson(QJsonDocument::Indented));
@@ -437,9 +405,8 @@ QString commandsToJson(const QVector<EditCommand> &commands) {
 
 bool findExistsInScope(const EditCommand &command, const SectionInfo &section,
                        const QString &documentText) {
-  if (command.findString.isEmpty()) {
+  if (command.findString.isEmpty())
     return false;
-  }
 
   const QString scopeText =
       documentText.mid(section.start, section.end - section.start);
@@ -455,20 +422,34 @@ bool explicitlyRequestsAll(const QString &request) {
   return pattern.match(request).hasMatch();
 }
 
+QString formatMessagesForLog(const QJsonArray &messages) {
+  QString out;
+
+  for (int i = 0; i < messages.size(); ++i) {
+    const QJsonObject message = messages.at(i).toObject();
+    const QString role = message.value(QStringLiteral("role")).toString();
+    const QString content = message.value(QStringLiteral("content")).toString();
+
+    out += QStringLiteral("[message %1 | role=%2]\n%3\n\n")
+               .arg(i)
+               .arg(role, content);
+  }
+
+  return out;
+}
+
 } // namespace
 
 EditPlanner::EditPlanner(InferenceService *inferenceService, QObject *parent)
     : QObject(parent), m_inferenceService(inferenceService) {
-  if (!m_inferenceService) {
+  if (!m_inferenceService)
     return;
-  }
 
   connect(m_inferenceService, &InferenceService::llmDelta, this,
           [this](const InferenceService::RequestToken &token,
                  const QString &text) {
-            if (token != m_activeToken || !m_active || text.isEmpty()) {
+            if (token != m_activeToken || !m_active || text.isEmpty())
               return;
-            }
 
             m_streamingResponse += text;
             processStream();
@@ -476,17 +457,23 @@ EditPlanner::EditPlanner(InferenceService *inferenceService, QObject *parent)
 
   connect(m_inferenceService, &InferenceService::llmFinished, this,
           [this](const InferenceService::RequestToken &token) {
-            if (token != m_activeToken) {
+            if (token != m_activeToken)
               return;
-            }
 
             m_activeToken = InferenceService::RequestToken();
 
-            if (!m_active) {
+            if (!m_active)
               return;
-            }
 
             m_active = false;
+
+            m_payloadLogger.log(
+                QStringLiteral("EDIT_PLAN_STREAM_INCOMPLETE"),
+                QStringLiteral("Received %1 bytes without a complete JSON "
+                               "value.\n\nBuffer:\n%2")
+                    .arg(m_streamingResponse.size())
+                    .arg(m_streamingResponse));
+
             m_streamingResponse.clear();
 
             emit failed(
@@ -497,15 +484,13 @@ EditPlanner::EditPlanner(InferenceService *inferenceService, QObject *parent)
   connect(m_inferenceService, &InferenceService::llmError, this,
           [this](const InferenceService::RequestToken &token,
                  const QString &error) {
-            if (token != m_activeToken) {
+            if (token != m_activeToken)
               return;
-            }
 
             m_activeToken = InferenceService::RequestToken();
 
-            if (!m_active) {
+            if (!m_active)
               return;
-            }
 
             m_active = false;
             m_streamingResponse.clear();
@@ -537,9 +522,8 @@ void EditPlanner::start(TextEdit *editor, const QString &userRequest,
     return;
   }
 
-  if (m_active) {
+  if (m_active)
     abort();
-  }
 
   m_editor = editor;
   m_userRequest = userRequest.trimmed();
@@ -654,7 +638,9 @@ void EditPlanner::start(TextEdit *editor, const QString &userRequest,
             "removing anything. find MUST be empty. position MUST be "
             "before or after. instruction is the content to insert. Write "
             "the content the user asked for directly into the instruction "
-            "field; do not describe it.\n"
+            "field; do not describe it. Do not write a preamble such as "
+            "\"Insert a new section with the following content:\". Write "
+            "only the content itself.\n"
             "\n"
             "  - delete: remove a specific substring within the scope with "
             "no replacement. Use this only when the user wants content "
@@ -698,14 +684,19 @@ void EditPlanner::start(TextEdit *editor, const QString &userRequest,
       QStringLiteral("Mode: %1\n"
                      "User Request: \"%2\"\n"
                      "Resolved Targets (%3): %4\n"
-                     "Doc Size: %5 chars | Prompt Size: %6 chars")
+                     "Doc Size: %5 chars | Prompt Size: %6 chars\n\n"
+                     "Messages:\n%7")
           .arg(m_scopeMode == ScopeMode::WholeFile ? QStringLiteral("whole")
                                                     : QStringLiteral("scoped"),
                m_userRequest, QString::number(targets.size()),
                targetLines.isEmpty() ? QStringLiteral("None")
                                      : targetLines.join(QStringLiteral(", ")),
                QString::number(documentText.size()),
-               QString::number(prompt.size())));
+               QString::number(prompt.size()),
+               formatMessagesForLog(
+                   QJsonArray{QJsonObject{
+                       {QStringLiteral("role"), QStringLiteral("system")},
+                       {QStringLiteral("content"), prompt}}})));
 
   QJsonArray messages;
 
@@ -718,13 +709,11 @@ void EditPlanner::start(TextEdit *editor, const QString &userRequest,
   QStringList contextScopeIds;
 
   if (m_scopeMode == ScopeMode::WholeFile) {
-    if (!document->structure().root().id.isEmpty()) {
+    if (!document->structure().root().id.isEmpty())
       contextScopeIds.append(document->structure().root().id);
-    }
   } else {
-    for (const SectionInfo *section : targets) {
+    for (const SectionInfo *section : targets)
       contextScopeIds.append(section->scopeId);
-    }
   }
 
   emit contextScopes(contextScopeIds);
@@ -737,9 +726,8 @@ void EditPlanner::abort() {
   m_active = false;
   m_streamingResponse.clear();
 
-  if (m_inferenceService && !m_activeToken.isNull()) {
+  if (m_inferenceService && !m_activeToken.isNull())
     m_inferenceService->abortChatRequest(m_activeToken);
-  }
 
   m_activeToken = InferenceService::RequestToken();
 }
@@ -747,24 +735,20 @@ void EditPlanner::abort() {
 bool EditPlanner::takeCompleteJsonValue(QString &buffer, QString &jsonText) {
   jsonText.clear();
 
-  while (!buffer.isEmpty() && buffer.at(0).isSpace()) {
+  while (!buffer.isEmpty() && buffer.at(0).isSpace())
     buffer.remove(0, 1);
-  }
 
-  if (buffer.isEmpty()) {
+  if (buffer.isEmpty())
     return false;
-  }
 
   int start = 0;
 
   if (buffer.at(0) != QChar('{') && buffer.at(0) != QChar('[')) {
     const int objectStart = buffer.indexOf(QChar('{'));
-
     const int arrayStart = buffer.indexOf(QChar('['));
 
-    if (objectStart < 0 && arrayStart < 0) {
+    if (objectStart < 0 && arrayStart < 0)
       return false;
-    }
 
     if (objectStart < 0) {
       start = arrayStart;
@@ -796,9 +780,8 @@ bool EditPlanner::takeCompleteJsonValue(QString &buffer, QString &jsonText) {
         continue;
       }
 
-      if (ch == QChar('"')) {
+      if (ch == QChar('"'))
         inString = false;
-      }
 
       continue;
     }
@@ -845,15 +828,13 @@ bool EditPlanner::takeCompleteJsonValue(QString &buffer, QString &jsonText) {
 }
 
 void EditPlanner::processStream() {
-  if (!m_active) {
+  if (!m_active)
     return;
-  }
 
   QString jsonText;
 
-  if (!takeCompleteJsonValue(m_streamingResponse, jsonText)) {
+  if (!takeCompleteJsonValue(m_streamingResponse, jsonText))
     return;
-  }
 
   m_active = false;
 
@@ -919,15 +900,10 @@ void EditPlanner::processStream() {
     }
 
     const QJsonValue operationValue = object.value(QStringLiteral("operation"));
-
     const QJsonValue scopeValue = object.value(QStringLiteral("scope"));
-
     const QJsonValue positionValue = object.value(QStringLiteral("position"));
-
     const QJsonValue findValue = object.value(QStringLiteral("find"));
-
     const QJsonValue allValue = object.value(QStringLiteral("all"));
-
     const QJsonValue instructionValue =
         object.value(QStringLiteral("instruction"));
 
@@ -940,11 +916,21 @@ void EditPlanner::processStream() {
       return;
     }
 
-    const QString operation = operationValue.toString();
-
+    const QString operation = operationValue.toString().trimmed().toLower();
+    const QString position = positionValue.toString().trimmed().toLower();
     const QString scopeId = scopeValue.toString().trimmed();
 
-    const QString position = positionValue.toString();
+    if (operation.isEmpty()) {
+      emit failed(QStringLiteral(
+          "Edit plan item %1 has an empty operation.").arg(i + 1));
+      return;
+    }
+
+    if (position.isEmpty()) {
+      emit failed(QStringLiteral(
+          "Edit plan item %1 has an empty position.").arg(i + 1));
+      return;
+    }
 
     EditCommand command;
 
@@ -975,11 +961,8 @@ void EditPlanner::processStream() {
     }
 
     command.scopeId = scopeId;
-
     command.findString = findValue.toString();
-
     command.replaceAll = allValue.toBool();
-
     command.instruction = instructionValue.toString().trimmed();
 
     if (m_scopeMode == ScopeMode::WholeFile) {
@@ -988,25 +971,21 @@ void EditPlanner::processStream() {
             "Whole-file mode requires operation 'replace_scope'."));
         return;
       }
-
       if (command.scopeId != QStringLiteral("document")) {
         emit failed(QStringLiteral(
             "Whole-file mode requires scope 'document'."));
         return;
       }
-
       if (command.position != EditCommand::Position::Inside) {
         emit failed(QStringLiteral(
             "Whole-file mode requires position 'inside'."));
         return;
       }
-
       if (!command.findString.isEmpty()) {
         emit failed(QStringLiteral(
             "Whole-file mode requires an empty find string."));
         return;
       }
-
       if (command.replaceAll) {
         emit failed(QStringLiteral(
             "Whole-file mode requires all=false."));
@@ -1017,8 +996,7 @@ void EditPlanner::processStream() {
     const bool isDocumentRoot =
         isDocumentRootScope(command.scopeId, sections, documentLength);
 
-    const SectionInfo *section =
-        findSection(sections, command.scopeId);
+    const SectionInfo *section = findSection(sections, command.scopeId);
 
     if (!isDocumentRoot && !section && command.scopeId.isEmpty()) {
       if (command.operation != EditCommand::Operation::Insert) {
@@ -1147,12 +1125,8 @@ void EditPlanner::processStream() {
       return;
     }
   } else if (!targets.isEmpty()) {
-    if (edits.size() != targets.size()) {
-      emit failed(
-          QStringLiteral(
-              "The planner produced %1 edit(s) for %2 requested target(s).")
-              .arg(static_cast<int>(edits.size()))
-              .arg(static_cast<int>(targets.size())));
+    if (edits.isEmpty()) {
+      emit failed(QStringLiteral("No edits required."));
       return;
     }
 
@@ -1179,20 +1153,20 @@ void EditPlanner::processStream() {
       seenScopes.insert(key);
     }
 
-    for (const SectionInfo *target : targets) {
-      bool covered = false;
+    for (const QString &seen : seenScopes) {
+      bool coversTarget = false;
 
-      for (const QString &seen : seenScopes) {
+      for (const SectionInfo *target : targets) {
         if (scopeIdsEquivalent(target->scopeId, seen, sections,
                                documentLength)) {
-          covered = true;
+          coversTarget = true;
           break;
         }
       }
 
-      if (!covered) {
+      if (!coversTarget) {
         emit failed(QStringLiteral(
-            "The planner did not produce an edit for a requested section."));
+            "The planner targeted a section the user did not name."));
         return;
       }
     }
@@ -1212,13 +1186,11 @@ void EditPlanner::processStream() {
   QSet<QString> seenReferenced;
 
   for (const EditCommand &edit : edits) {
-    if (edit.scopeId.isEmpty()) {
+    if (edit.scopeId.isEmpty())
       continue;
-    }
 
-    if (seenReferenced.contains(edit.scopeId)) {
+    if (seenReferenced.contains(edit.scopeId))
       continue;
-    }
 
     seenReferenced.insert(edit.scopeId);
     referencedScopes.append(edit.scopeId);

@@ -1,0 +1,42 @@
+@theme overseer
+
+@base           #100E18
+@surface0       #171422
+@surface1       #1F1B2E
+@surface2       #292440
+@surface-raised #171422
+@structure      #2E2560
+
+@text           #E0DCF0
+@text-muted     #9C90B8
+@text-subtle    #7064A0
+@text-disabled  #4A4060
+
+@accent         #6B4BA8
+@accent-hover   #7B5BB8
+@accent-pressed #5A3B98
+@accent-muted   #5A4A8A
+@accent-fg      #F0E8FF
+
+@hint-cool      #98A8E0
+@hint-warm      #E0A0B8
+@hint-neutral   #A898D8
+
+@border         #2E2560
+@border-strong  #6B4BA8
+@divider        #241F40
+
+@success        #6BB66B
+@warning        #D8B85B
+@error          #D85C7A
+@info           #98A8E0
+
+QLabel#overseerTag {
+    background-color: @surface1;
+    border: 2px solid @accent;
+    color: @accent;
+    padding: 6px 10px;
+    border-radius: 4px;
+    font-weight: 700;
+    font-size: 11pt;
+}
