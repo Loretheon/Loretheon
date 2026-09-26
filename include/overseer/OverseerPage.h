@@ -64,6 +64,12 @@ private:
   void reloadSession(const QString &name);
   void closeAllSessionDocuments();
   void migrateLegacyLayoutFiles();
+
+  // Show or hide the session-scoped file tree, and collapse or restore
+  // its pane in the left splitter accordingly.  The tree has no
+  // meaningful root before a session is chosen, so it stays hidden.
+  void updateFileTreeVisibility();
+
   ConductorDock *m_conductorDock = nullptr;
   QToolButton *m_dockTrigger = nullptr;
   InferenceService *m_inferenceService = nullptr;
@@ -80,6 +86,11 @@ private:
   AutoHideDock *m_rightDock = nullptr;
 
   QSplitter *m_mainSplitter = nullptr;
+
+  // The vertical splitter that holds the session list above the file
+  // tree in the left dock.  We keep a pointer so updateFileTreeVisibility
+  // can collapse the tree's pane when the tree is hidden.
+  QSplitter *m_leftSplitter = nullptr;
 
   QString m_currentSessionName;
   QString m_currentOutputFolder;

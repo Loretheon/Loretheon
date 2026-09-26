@@ -9,17 +9,6 @@
 class AvatarController;
 class AvatarSurface;
 
-// A QQuickWidget that hosts the 3D avatar scene.
-//
-// Grip drags are handled here, in the widget's own mouse events, not
-// in QML. The QML grips draw the affordance and set the cursor; they
-// do not drive the drag. Driving a drag from QML fails because the
-// grip item moves while the widget resizes, which moves the local
-// mouse coordinate out from under the handler and produces a runaway
-// resize. QMouseEvent::globalPosition is stable across a resize.
-//
-// Presses in the interior are forwarded to the QML scene, which
-// orbits, pans, and zooms.
 class AvatarWidget : public QQuickWidget {
   Q_OBJECT
 
@@ -44,8 +33,8 @@ public:
   void placeByBottomRightOffset(const QPoint &offset);
   QPoint bottomRightOffset() const;
 
-signals:
-  void geometryChanged();
+  signals:
+    void geometryChanged();
 
   void modelLoaded();
   void modelFailed(const QString &error);
@@ -72,10 +61,7 @@ private:
 
   void pushFacingToQml();
 
-  // Which band the widget-local point is in.
   DragKind bandFor(const QPoint &localPos) const;
-
-  // Apply a resize given the accumulated global delta from press.
   void applyResize(const QPoint &globalDelta);
 
   QString m_modelSource;
@@ -84,7 +70,6 @@ private:
 
   bool m_resizable = false;
 
-  // Active drag state. All positions are global (screen) coordinates.
   DragKind m_drag = DragKind::None;
   QPoint m_dragOriginGlobal;
   QPoint m_originTopLeft;

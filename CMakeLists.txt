@@ -590,6 +590,8 @@ add_executable(Lore
         include/assistant/ChatNodeWidget.h
         src/assistant/NoteEditJob.cpp
         include/assistant/NoteEditJob.h
+        src/app/CustomTitleBar.cpp
+        include/app/CustomTitleBar.h
 )
 
 add_dependencies(Lore

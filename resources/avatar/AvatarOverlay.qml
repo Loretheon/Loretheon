@@ -39,12 +39,6 @@ Item {
         modelRoll: 0.0
     }
 
-    // The interior input is inset by the edge band. A press on an
-    // edge or a corner falls outside this item entirely, so the
-    // QQuickWidget receives it and AvatarWidget::mousePressEvent
-    // starts the move or resize. Anchoring to fill without the inset
-    // means the MouseArea covers the edge band and the grips never
-    // see a press.
     MouseArea {
         id: interiorInput
         anchors.fill: parent

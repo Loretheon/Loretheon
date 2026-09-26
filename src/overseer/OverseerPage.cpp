@@ -72,6 +72,11 @@ OverseerPage::OverseerPage(InferenceService *inferenceService,
 
   m_fileWidget = new FileWidget(this);
 
+  // The tree is session-scoped.  Until a session is chosen it has no
+  // meaningful root, so we hide it and only reveal it once
+  // reloadSession() has set a valid output folder.
+  m_fileWidget->setVisible(false);
+
   // The conductor dock. It lives on top of the page, not inside any
   // layout, and slides down from the top when triggered.
   m_conductorDock = new ConductorDock(this);
@@ -79,9 +84,6 @@ OverseerPage::OverseerPage(InferenceService *inferenceService,
   m_conductorDock->setRoster(m_overseer->roster());
   m_conductorDock->setDependencies(m_overseer->dependencies());
 
-  // The board's Remove button on failed cards routes back into the
-  // conductor, which prompts the user about dependents and then
-  // updates both the queue and the dependency graph.
   connect(m_conductorDock->board(), &ConductorBoard::removeRequested,
           m_overseer, &OverseerWidget::removeFailedRequest);
 
@@ -326,6 +328,11 @@ OverseerPage::OverseerPage(InferenceService *inferenceService,
   leftSplitter->addWidget(m_overseer->sessionListPanel());
   leftSplitter->addWidget(m_fileWidget);
 
+  // Remember the splitter so we can collapse the tree's row when the
+  // tree is hidden, so the session list takes the full column height
+  // instead of leaving a gap.
+  m_leftSplitter = leftSplitter;
+
   leftLayout->addWidget(leftSplitter);
 
   m_leftDock = new AutoHideDock(AutoHideDock::Edge::Left, this);
@@ -364,8 +371,6 @@ OverseerPage::OverseerPage(InferenceService *inferenceService,
   centerColumn->setStretchFactor(0, 3);
   centerColumn->setStretchFactor(1, 1);
 
-  // The trigger sits above the center column, in its own fixed-height
-  // row. The conductor dock overlays the whole page from the top.
   auto *centerHost = new QWidget(this);
   auto *centerHostLayout = new QVBoxLayout(centerHost);
   centerHostLayout->setContentsMargins(0, 0, 0, 0);
@@ -499,6 +504,9 @@ void OverseerPage::onSessionCleared() {
 
   closeAllSessionDocuments();
 
+  // The tree has no meaningful root without a session.
+  updateFileTreeVisibility();
+
   emit dirtyChanged(false);
 }
 
@@ -524,8 +532,6 @@ void OverseerPage::reloadSession(const QString &name) {
   m_currentSessionName = name;
   m_currentOutputFolder = session->outputPath();
 
-  // Pass the session folder to the conductor board so it can persist
-  // the splitter geometry between the dependency graph and the kanban.
   if (m_conductorDock)
     m_conductorDock->setSessionFolder(session->folderPath());
 
@@ -538,10 +544,41 @@ void OverseerPage::reloadSession(const QString &name) {
     m_fileWidget->setRootPath(m_currentOutputFolder);
   }
 
+  // The tree has a valid root now, so it is safe to reveal.
+  updateFileTreeVisibility();
+
   session->deleteLater();
 
   emit statusMessage(tr("Session: %1").arg(name), 3000);
   emit dirtyChanged(hasUnsavedChanges());
+}
+
+void OverseerPage::updateFileTreeVisibility() {
+  const bool hasSession = !m_currentOutputFolder.isEmpty();
+
+  if (m_fileWidget)
+    m_fileWidget->setVisible(hasSession);
+
+  // Collapse the tree's pane in the vertical splitter when hidden, so
+  // the session list occupies the full height of the left column
+  // instead of leaving an empty gap below it.
+  if (m_leftSplitter && m_leftSplitter->count() == 2) {
+    QList<int> sizes = m_leftSplitter->sizes();
+
+    if (hasSession) {
+      // Restore a sensible split: roughly 40% list, 60% tree.
+      const int total = sizes.value(0, 0) + sizes.value(1, 0);
+      const int basis = total > 0 ? total
+                                  : m_leftSplitter->height();
+      sizes[0] = basis * 2 / 5;
+      sizes[1] = basis - sizes[0];
+    } else {
+      sizes[0] = m_leftSplitter->height();
+      sizes[1] = 0;
+    }
+
+    m_leftSplitter->setSizes(sizes);
+  }
 }
 
 void OverseerPage::closeAllSessionDocuments() {

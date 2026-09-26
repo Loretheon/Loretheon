@@ -1,3 +1,4 @@
+// FileWidget.cpp
 #include "../../include/file/FileWidget.h"
 
 #include "../../include/file/DirectoryExplorerSettings.h"
@@ -8,7 +9,6 @@
 #include <QHeaderView>
 #include <QItemSelectionModel>
 #include <QMenu>
-#include <QResizeEvent>
 #include <QScrollBar>
 #include <QTimer>
 #include <QVBoxLayout>
@@ -59,9 +59,10 @@ FileWidget::FileWidget(QWidget *parent) : QWidget(parent) {
   fileSystemView->setSortingEnabled(true);
   fileSystemView->sortByColumn(settings.sortColumn(), settings.sortOrder());
 
+  // Scrollbar policy and section resize mode are handled inside
+  // FileSystemView (applyColumnSizing).  Here we only restore the
+  // persisted column order and visibility.
   fileSystemView->header()->setSectionsMovable(true);
-  fileSystemView->header()->setStretchLastSection(false);
-  fileSystemView->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
 
   const QList<bool> visibility = settings.columnVisibility();
   for (int col = 0; col < 6 && col < visibility.size(); ++col) {
@@ -150,12 +151,6 @@ FileWidget::FileWidget(QWidget *parent) : QWidget(parent) {
   connect(fileSystemView, &QTreeView::collapsed, this,
           [saveExpanded](const QModelIndex &) { saveExpanded(); });
 
-  connect(fileSystemView->header(), &QHeaderView::sectionResized, this,
-          [this](int, int, int) {
-            DirectoryExplorerSettings::instance().setHeaderState(
-                fileSystemView->header()->saveState());
-          });
-
   connect(fileSystemView->header(), &QHeaderView::sortIndicatorChanged, this,
           [this](int column, Qt::SortOrder order) {
             auto &s = DirectoryExplorerSettings::instance();
@@ -206,7 +201,6 @@ FileWidget::FileWidget(QWidget *parent) : QWidget(parent) {
                           vis << !fileSystemView->isColumnHidden(i);
                         DirectoryExplorerSettings::instance()
                             .setColumnVisibility(vis);
-                        distributeColumnWidths();
                         DirectoryExplorerSettings::instance().setHeaderState(
                             fileSystemView->header()->saveState());
                       });
@@ -260,49 +254,12 @@ FileWidget::FileWidget(QWidget *parent) : QWidget(parent) {
   auto *layout = new QVBoxLayout(this);
   layout->setContentsMargins(0, 0, 0, 0);
   layout->addWidget(fileSystemView);
-
-  QTimer::singleShot(0, this, [this]() { distributeColumnWidths(); });
 }
+
 void FileWidget::setImportableExtensions(const QStringList &extensions) {
   if (fileSystemView) {
     fileSystemView->setImportableExtensions(extensions);
   }
-}
-
-void FileWidget::resizeEvent(QResizeEvent *event) {
-  QWidget::resizeEvent(event);
-  distributeColumnWidths();
-}
-
-void FileWidget::distributeColumnWidths() {
-  QHeaderView *header = fileSystemView->header();
-
-  int visibleCount = 0;
-  for (int col = 0; col < 6; ++col) {
-    if (!fileSystemView->isColumnHidden(col))
-      ++visibleCount;
-  }
-  if (visibleCount == 0)
-    return;
-
-  const int totalWidth =
-      fileSystemView->viewport()->width() -
-      (fileSystemView->verticalScrollBar()->isVisible()
-           ? fileSystemView->verticalScrollBar()->width()
-           : 0);
-  if (totalWidth <= 0)
-    return;
-
-  const int sectionWidth = totalWidth / visibleCount;
-
-  header->blockSignals(true);
-  for (int col = 0; col < 6; ++col) {
-    if (!fileSystemView->isColumnHidden(col))
-      header->resizeSection(col, sectionWidth);
-  }
-  header->blockSignals(false);
-
-  DirectoryExplorerSettings::instance().setHeaderState(header->saveState());
 }
 
 void FileWidget::beginEditingPath(const QString &path) {

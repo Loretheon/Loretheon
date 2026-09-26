@@ -1,7 +1,6 @@
 #ifndef MAINWINDOW_H
 #define MAINWINDOW_H
 
-
 #include <QHash>
 #include <QMainWindow>
 #include <QSet>
@@ -31,6 +30,7 @@ class OverseerPage;
 class ToastStack;
 class AvatarWidget;
 class LoreAssistant;
+class CustomTitleBar;
 
 class IngestRegistry;
 class IngestService;
@@ -51,10 +51,12 @@ class QEvent;
 class QMenu;
 class QProgressDialog;
 class QResizeEvent;
+class QSplitter;
 class QStackedWidget;
 class QTimer;
 class QToolBar;
 class QToolButton;
+class QVBoxLayout;
 
 class MainWindow : public QMainWindow {
   Q_OBJECT
@@ -69,6 +71,9 @@ protected:
   void resizeEvent(QResizeEvent *event) override;
   void showEvent(QShowEvent *event) override;
   void moveEvent(QMoveEvent *event) override;
+  void mousePressEvent(QMouseEvent *event) override;
+  void mouseMoveEvent(QMouseEvent *event) override;
+
 private slots:
   void about();
   void aboutQt();
@@ -97,12 +102,20 @@ private slots:
   void onTalkToLoreClicked();
   void onDocumentSaved(TextDocument *document);
 
+  // Clamp the left pane of the main splitter to the file tree's
+  // preferred content width, so the handle cannot be dragged into dead
+  // space and extra space always goes to the editor.
+  void clampFileTreeWidth();
+
 private:
   enum class Mode { Normal = 0, Overseer = 1, Search = 2 };
   bool m_avatarPlaced = false;
+  bool m_draggingTitleBar = false;
+  QPoint m_lastMousePos;
   void createActions();
   void createMenus();
   void createToolbar();
+  void createCustomTitleBar();
 
   void buildNormalPage();
   void buildOverseerPage();
@@ -155,7 +168,6 @@ private:
 
   void buildSpeechLayer();
 
-
   QWidget *m_normalPage = nullptr;
   DocumentArea *m_documentArea = nullptr;
   FileWidget *m_fileWidget = nullptr;
@@ -167,8 +179,16 @@ private:
   SearchPage *m_searchPage = nullptr;
 
   QStackedWidget *m_centralStack = nullptr;
-  QToolBar *m_topToolBar = nullptr;
+  QToolBar *m_mainToolBar = nullptr;
   QToolButton *m_modeButton = nullptr;
+
+  // The outer horizontal splitter hosting the file tree on the left and
+  // everything else on the right.  Clamped so the file tree cannot be
+  // dragged wider than its content.
+  QSplitter *m_mainSplitter = nullptr;
+
+  CustomTitleBar *m_titleBar = nullptr;
+  QVBoxLayout *m_mainLayout = nullptr;
 
   ToastStack *m_toastStack = nullptr;
   AvatarWidget *m_avatar = nullptr;
@@ -186,7 +206,6 @@ private:
 
   QString m_currentNormalTheme;
   QString m_currentOverseerTheme;
-
 
   QMenu *m_fileMenu = nullptr;
   QMenu *m_newMenu = nullptr;

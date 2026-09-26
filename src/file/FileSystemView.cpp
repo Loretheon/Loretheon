@@ -1,23 +1,42 @@
+// FileSystemView.cpp
 #include "../../include/file/FileSystemView.h"
 
 #include "../../include/file/DirectoryExplorerSettings.h"
 #include "../../include/file/model/FileSystemModel.h"
 
+#include <QAbstractItemModel>
 #include <QApplication>
 #include <QClipboard>
 #include <QContextMenuEvent>
 #include <QDesktopServices>
 #include <QDrag>
 #include <QFileInfo>
+#include <QFontMetrics>
+#include <QHeaderView>
 #include <QLineEdit>
 #include <QMenu>
 #include <QMimeData>
+#include <QTimer>
 #include <QUrl>
 
 namespace {
 
 constexpr const char *kNotesPathMimeType =
     "application/x-lore-notes-path";
+
+// Padding added to the widest content cell so text does not touch the
+// next column's edge.
+constexpr int kCellPadding = 8;
+
+// Width reserved for the tree indentation column and the expand/collapse
+// arrows at the left of the view.  This is not part of any section but
+// it does consume horizontal space.
+constexpr int kIndentationAllowance = 40;
+
+// Minimal sensible width for the whole view, so the splitter cannot
+// collapse us into nothing.  Also used as the floor when the user has
+// hidden most columns.
+constexpr int kMinimumViewWidth = 120;
 
 const QStringList &defaultImportableExtensions() {
   static const QStringList kExtensions = {
@@ -46,6 +65,160 @@ FileSystemView::FileSystemView(QWidget *parent) : QTreeView(parent) {
   setDefaultDropAction(Qt::CopyAction);
 
   m_importableExtensions = defaultImportableExtensions();
+
+  setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+  setUniformRowHeights(true);
+  setSizeAdjustPolicy(QAbstractScrollArea::AdjustToContents);
+}
+
+void FileSystemView::setModel(QAbstractItemModel *model) {
+  if (QAbstractItemModel *old = QTreeView::model()) {
+    disconnect(old, nullptr, this, nullptr);
+  }
+
+  QTreeView::setModel(model);
+  applyColumnSizing();
+
+  if (!model)
+    return;
+
+  connect(model, &QAbstractItemModel::rowsInserted, this,
+          [this]() { scheduleColumnWidthRecalculation(); });
+  connect(model, &QAbstractItemModel::rowsRemoved, this,
+          [this]() { scheduleColumnWidthRecalculation(); });
+  connect(model, &QAbstractItemModel::dataChanged, this,
+          [this]() { scheduleColumnWidthRecalculation(); });
+  connect(model, &QAbstractItemModel::modelReset, this,
+          [this]() { scheduleColumnWidthRecalculation(); });
+  connect(model, &QAbstractItemModel::layoutChanged, this,
+          [this]() { scheduleColumnWidthRecalculation(); });
+
+  connect(this, &QTreeView::expanded, this,
+          [this]() { scheduleColumnWidthRecalculation(); });
+  connect(this, &QTreeView::collapsed, this,
+          [this]() { scheduleColumnWidthRecalculation(); });
+
+  scheduleColumnWidthRecalculation();
+}
+
+void FileSystemView::applyColumnSizing() {
+  if (!model())
+    return;
+
+  QHeaderView *h = header();
+  if (!h)
+    return;
+
+  if (m_columnsConfigured)
+    return;
+
+  h->setStretchLastSection(false);
+  h->setMinimumSectionSize(40);
+  h->setSectionsClickable(true);
+  h->setSectionsMovable(true);
+  h->setSectionResizeMode(QHeaderView::Fixed);
+
+  m_columnsConfigured = true;
+}
+
+void FileSystemView::scheduleColumnWidthRecalculation() {
+  if (m_recalcScheduled)
+    return;
+
+  m_recalcScheduled = true;
+  QTimer::singleShot(0, this, [this]() {
+    m_recalcScheduled = false;
+    recalculateColumnWidths();
+  });
+}
+
+int FileSystemView::headerWidth(int column) const {
+  const QHeaderView *h = header();
+  if (!h)
+    return 0;
+  return h->sectionSizeHint(column);
+}
+
+int FileSystemView::contentWidthRecursive(int column,
+                                          const QModelIndex &parent) const {
+  const QAbstractItemModel *m = model();
+  if (!m)
+    return 0;
+
+  QFontMetrics fm(fontMetrics());
+  int widest = 0;
+
+  const int rows = m->rowCount(parent);
+  for (int row = 0; row < rows; ++row) {
+    const QModelIndex index = m->index(row, column, parent);
+    if (!index.isValid())
+      continue;
+
+    const QString text = m->data(index, Qt::DisplayRole).toString();
+    if (!text.isEmpty())
+      widest = std::max(widest, fm.horizontalAdvance(text));
+
+    if (m->hasChildren(index) && isExpanded(index))
+      widest = std::max(widest, contentWidthRecursive(column, index));
+  }
+
+  return widest;
+}
+
+int FileSystemView::contentWidth(int column) const {
+  return contentWidthRecursive(column, rootIndex());
+}
+
+void FileSystemView::recalculateColumnWidths() {
+  if (!model())
+    return;
+
+  QHeaderView *h = header();
+  if (!h)
+    return;
+
+  const int iconPadding =
+      (iconSize().width() > 0) ? iconSize().width() + 4 : 0;
+
+  int total = 0;
+
+  h->blockSignals(true);
+
+  for (int col = 0; col < h->count(); ++col) {
+    if (isColumnHidden(col))
+      continue;
+
+    const int headerW = headerWidth(col);
+    const int contentW = contentWidth(col);
+    const int extra = (col == 0) ? iconPadding : 0;
+    const int target = std::max(headerW, contentW + extra) + kCellPadding;
+
+    h->resizeSection(col, target);
+    total += target;
+  }
+
+  h->blockSignals(false);
+
+  total += kIndentationAllowance;
+
+  if (total != m_totalContentWidth) {
+    m_totalContentWidth = total;
+    emit preferredContentWidthChanged(m_totalContentWidth);
+    updateGeometry();
+  }
+}
+
+int FileSystemView::preferredContentWidth() const {
+  return m_totalContentWidth;
+}
+
+QSize FileSystemView::sizeHint() const {
+  const int w = std::max(m_totalContentWidth, kMinimumViewWidth);
+  return QSize(w, QTreeView::sizeHint().height());
+}
+
+QSize FileSystemView::minimumSizeHint() const {
+  return QSize(kMinimumViewWidth, QTreeView::minimumSizeHint().height());
 }
 
 void FileSystemView::setImportableExtensions(const QStringList &extensions) {
@@ -104,11 +277,13 @@ void FileSystemView::closeEditor(QWidget *editor,
 void FileSystemView::hideColumn(int column) {
   QTreeView::hideColumn(column);
   saveColumnVisibility();
+  scheduleColumnWidthRecalculation();
 }
 
 void FileSystemView::showColumn(int column) {
   QTreeView::showColumn(column);
   saveColumnVisibility();
+  scheduleColumnWidthRecalculation();
 }
 
 void FileSystemView::saveColumnVisibility() {

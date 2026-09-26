@@ -3,6 +3,7 @@
 #include "../../include/assistant/LoreAssistant.h"
 #include "../../include/avatar/AvatarConfig.h"
 #include "../../include/avatar/AvatarWidget.h"
+#include "../../include/file/FileSystemView.h"
 #include "../../include/ingest/Extractors.h"
 #include "../../include/ingest/IngestRegistry.h"
 #include "../../include/ingest/IngestService.h"
@@ -23,6 +24,7 @@
 #include "AssistantIcon.h"
 #include "AssistantWidget.h"
 #include "ChatWidget.h"
+#include "CustomTitleBar.h"
 #include "DocumentArea.h"
 #include "EditSession.h"
 #include "FileWidget.h"
@@ -55,6 +57,7 @@
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QMouseEvent>
 #include <QPalette>
 #include <QProgressDialog>
 #include <QRegularExpression>
@@ -72,6 +75,8 @@
 #include <QUrl>
 #include <QVBoxLayout>
 #include <QWidget>
+
+#include <algorithm>
 
 namespace {
 
@@ -224,6 +229,9 @@ MainWindow::~MainWindow() {
 }
 
 MainWindow::MainWindow() {
+  setWindowFlags(Qt::FramelessWindowHint | Qt::WindowMinimizeButtonHint);
+  setAttribute(Qt::WA_TranslucentBackground, false);
+
   setCorner(Qt::TopLeftCorner, Qt::LeftDockWidgetArea);
   setCorner(Qt::BottomLeftCorner, Qt::LeftDockWidgetArea);
   setCorner(Qt::TopRightCorner, Qt::RightDockWidgetArea);
@@ -261,14 +269,24 @@ MainWindow::MainWindow() {
   m_centralStack->addWidget(m_overseerPage);
   m_centralStack->addWidget(m_searchPage);
 
-  setCentralWidget(m_centralStack);
+  auto *centralWidget = new QWidget(this);
+  m_mainLayout = new QVBoxLayout(centralWidget);
+  m_mainLayout->setContentsMargins(0, 0, 0, 0);
+  m_mainLayout->setSpacing(0);
+
+  createCustomTitleBar();
+  m_mainLayout->addWidget(m_titleBar);
+
+  m_mainLayout->addWidget(m_centralStack);
+
+  setCentralWidget(centralWidget);
 
   m_toastStack = new ToastStack(this);
   NotificationService::instance().setToastHost(m_toastStack);
 
   createActions();
-  createToolbar();
   createMenus();
+  createToolbar();
 
   createAvatarOverlay();
 
@@ -372,9 +390,6 @@ MainWindow::MainWindow() {
                 m_assistantWidget->setBusy(false);
               }
             });
-
-    // The icon is deliberately not shown here. It is shown by
-    // changeEvent when the main window is minimised.
   }
 
   connect(m_inferenceService, &InferenceService::ttsReady, this,
@@ -442,14 +457,28 @@ MainWindow::MainWindow() {
   positionAvatarOverlay();
 }
 
+void MainWindow::createCustomTitleBar() {
+  m_titleBar = new CustomTitleBar(this);
+  m_titleBar->setStyleSheet(
+      "background-color: #2a2a2a; border-bottom: 1px solid #444;");
+
+  connect(m_titleBar, &CustomTitleBar::minimizeRequested, this,
+          &QWidget::showMinimized);
+
+  connect(m_titleBar, &CustomTitleBar::maximizeRequested, this, [this]() {
+    if (isMaximized()) {
+      showNormal();
+    } else {
+      showMaximized();
+    }
+  });
+
+  connect(m_titleBar, &CustomTitleBar::closeRequested, this,
+          &QWidget::close);
+}
+
 void MainWindow::createAvatarOverlay() {
   m_avatar = new AvatarWidget(nullptr);
-
-  m_avatar->setWindowFlags(Qt::Tool |
-                           Qt::FramelessWindowHint |
-                           Qt::NoDropShadowWindowHint |
-                           Qt::WindowStaysOnTopHint |
-                           Qt::WindowDoesNotAcceptFocus);
 
   m_avatar->setAttribute(Qt::WA_TranslucentBackground, true);
 
@@ -823,19 +852,78 @@ void MainWindow::buildNormalPage() {
               m_chatWidget->setActiveEditor(editor);
           });
 
-  auto *mainSplitter = new QSplitter(Qt::Horizontal, m_normalPage);
-  mainSplitter->addWidget(m_fileWidget);
+  // JetBrains-style layout: tool window on left, editor in center,
+  // assistant tool window on right.
+  m_mainSplitter = new QSplitter(Qt::Horizontal, m_normalPage);
+  m_mainSplitter->setChildrenCollapsible(false);
+  m_mainSplitter->addWidget(m_fileWidget);
 
-  auto *rightSplitter = new QSplitter(Qt::Vertical, mainSplitter);
-  rightSplitter->addWidget(m_documentArea);
-  rightSplitter->addWidget(m_chatWidget);
-  rightSplitter->setSizes({650, 300});
+  auto *centerSplitter = new QSplitter(Qt::Horizontal, m_mainSplitter);
+  centerSplitter->setChildrenCollapsible(false);
+  centerSplitter->addWidget(m_documentArea);
+  centerSplitter->addWidget(m_chatWidget);
 
-  mainSplitter->setSizes({240, 960});
+  m_mainSplitter->addWidget(centerSplitter);
+  m_mainSplitter->setStretchFactor(0, 0);
+  m_mainSplitter->setStretchFactor(1, 1);
+  m_mainSplitter->setSizes({260, 940});
+
+  centerSplitter->setStretchFactor(0, 1);
+  centerSplitter->setStretchFactor(1, 0);
+  centerSplitter->setSizes({700, 340});
+
+  // Keep the left pane clamped to what the file tree actually needs.
+  // The view tells us its preferred width whenever columns are
+  // recomputed; on every change we cap the left widget and, if the
+  // splitter is currently wider than that, shrink it and hand the
+  // slack to the right pane.
+  if (auto *view = m_fileWidget->view()) {
+    connect(view, &FileSystemView::preferredContentWidthChanged, this,
+            [this](int) { clampFileTreeWidth(); }, Qt::UniqueConnection);
+
+    // Re-clamp after the user drags the handle, in case the style
+    // allows a transient overshoot mid-drag.
+    connect(m_mainSplitter, &QSplitter::splitterMoved, this,
+            [this](int, int) { clampFileTreeWidth(); });
+
+    // And once after the initial event-loop turn, so the first pass of
+    // column measurement has completed with the model populated.
+    QTimer::singleShot(0, this, [this]() { clampFileTreeWidth(); });
+  }
 
   auto *layout = new QVBoxLayout(m_normalPage);
-  layout->setContentsMargins(5, 5, 5, 5);
-  layout->addWidget(mainSplitter);
+  layout->setContentsMargins(0, 0, 0, 0);
+  layout->addWidget(m_mainSplitter);
+}
+
+void MainWindow::clampFileTreeWidth() {
+  if (!m_fileWidget || !m_mainSplitter)
+    return;
+
+  auto *view = m_fileWidget->view();
+  if (!view)
+    return;
+
+  const int preferred = view->preferredContentWidth();
+  const int minimum = view->minimumSizeHint().width();
+  const int cap = std::max(preferred, minimum);
+
+  // Cap the left widget so the handle cannot be dragged past the
+  // width the tree actually needs.
+  m_fileWidget->setMaximumWidth(cap);
+
+  // If the splitter is currently wider than the cap, shrink it and
+  // give the slack to the right pane.
+  QList<int> sizes = m_mainSplitter->sizes();
+  if (sizes.size() < 2)
+    return;
+
+  if (sizes.at(0) > cap) {
+    const int slack = sizes.at(0) - cap;
+    sizes[0] = cap;
+    sizes[1] += slack;
+    m_mainSplitter->setSizes(sizes);
+  }
 }
 
 void MainWindow::buildOverseerPage() {
@@ -1539,6 +1627,62 @@ void MainWindow::changeEvent(QEvent *event) {
     }
   }
 }
+void MainWindow::mousePressEvent(QMouseEvent *event) {
+  if (!m_titleBar) {
+    QMainWindow::mousePressEvent(event);
+    return;
+  }
+
+  if (event->position().y() < m_titleBar->height()) {
+    if (event->button() == Qt::LeftButton) {
+      if (event->type() == QEvent::MouseButtonDblClick) {
+        if (isMaximized()) {
+          showNormal();
+        } else {
+          showMaximized();
+        }
+        event->accept();
+        return;
+      }
+
+      m_draggingTitleBar = true;
+      m_lastMousePos = event->globalPosition().toPoint();
+      event->accept();
+      return;
+    }
+  }
+
+  QMainWindow::mousePressEvent(event);
+}
+
+void MainWindow::mouseMoveEvent(QMouseEvent *event) {
+  if (m_draggingTitleBar) {
+    QScreen *screen = QGuiApplication::screenAt(event->globalPosition().toPoint());
+    if (!screen) {
+      screen = QGuiApplication::primaryScreen();
+    }
+
+    QRect screenGeom = screen->availableGeometry();
+    int snapThreshold = 5;
+
+    // If dragging to top, maximize
+    if (event->globalPosition().y() - screenGeom.top() < snapThreshold && !isMaximized()) {
+      showMaximized();
+      m_draggingTitleBar = false;
+      event->accept();
+      return;
+    }
+
+    // Otherwise start system move (handles side snapping)
+    if (windowHandle()->startSystemMove()) {
+      m_draggingTitleBar = false;
+      event->accept();
+      return;
+    }
+  }
+
+  QMainWindow::mouseMoveEvent(event);
+}
 
 void MainWindow::buildIngestLayer() {
   QThreadPool::globalInstance()->setMaxThreadCount(ImportConcurrency);
@@ -1650,6 +1794,7 @@ QList<MainWindow::ImportCandidate> MainWindow::collectImportableFilesIn(
 
   return result;
 }
+
 void MainWindow::onImportFilesDialog() {
   if (!m_ingestService) {
     return;
@@ -1831,6 +1976,7 @@ void MainWindow::startNextImport() {
     m_bulkImportTokens.append(token);
   }
 }
+
 void MainWindow::onBulkImportCompleted(quint64, bool ok) {
   if (ok) {
     ++m_bulkImportSucceeded;
@@ -1844,6 +1990,7 @@ void MainWindow::onBulkImportCompleted(quint64, bool ok) {
     m_importProgress->setValue(m_bulkImportCompleted);
   }
 }
+
 void MainWindow::onBulkImportCancelled() {
   if (m_bulkImportCancelled) {
     return;
@@ -2145,14 +2292,17 @@ void MainWindow::onDocumentSaved(TextDocument *document) {
 }
 
 void MainWindow::createToolbar() {
-  m_topToolBar = addToolBar(tr("Main"));
-  m_topToolBar->setObjectName(QStringLiteral("mainToolBar"));
-  m_topToolBar->setMovable(false);
-  m_topToolBar->setFloatable(false);
-  m_topToolBar->setIconSize(QSize(18, 18));
-  m_topToolBar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+  m_mainToolBar = new QToolBar(this);
+  m_mainToolBar->setObjectName(QStringLiteral("mainToolBar"));
+  m_mainToolBar->setMovable(false);
+  m_mainToolBar->setFloatable(false);
+  m_mainToolBar->setIconSize(QSize(18, 18));
+  m_mainToolBar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+  m_mainToolBar->setContextMenuPolicy(Qt::PreventContextMenu);
 
-  m_modeButton = new QToolButton(m_topToolBar);
+  addToolBar(Qt::TopToolBarArea, m_mainToolBar);
+
+  m_modeButton = new QToolButton(m_mainToolBar);
   m_modeButton->setObjectName(QStringLiteral("modeButton"));
   m_modeButton->setPopupMode(QToolButton::InstantPopup);
   m_modeButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
@@ -2165,16 +2315,16 @@ void MainWindow::createToolbar() {
 
   m_modeButton->setMenu(m_modeMenu);
 
-  m_topToolBar->addWidget(m_modeButton);
+  m_mainToolBar->addWidget(m_modeButton);
 
-  auto *spacer = new QWidget(m_topToolBar);
+  auto *spacer = new QWidget(m_mainToolBar);
   spacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
-  m_topToolBar->addWidget(spacer);
+  m_mainToolBar->addWidget(spacer);
 
   m_talkToLoreAct = new QAction(tr("Talk to Lore"), this);
   m_talkToLoreAct->setToolTip(tr("Talk to Lore"));
 
-  auto *loreButton = new QToolButton(m_topToolBar);
+  auto *loreButton = new QToolButton(m_mainToolBar);
   loreButton->setObjectName(QStringLiteral("talkToLoreButton"));
   loreButton->setDefaultAction(m_talkToLoreAct);
   loreButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
@@ -2184,5 +2334,5 @@ void MainWindow::createToolbar() {
   connect(m_talkToLoreAct, &QAction::triggered, this,
           &MainWindow::onTalkToLoreClicked);
 
-  m_topToolBar->addWidget(loreButton);
+  m_mainToolBar->addWidget(loreButton);
 }

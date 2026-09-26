@@ -1,3 +1,4 @@
+// FileWidget.h
 #ifndef EPISTEME_FILEWIDGET_H
 #define EPISTEME_FILEWIDGET_H
 
@@ -9,13 +10,15 @@
 #include "FileSystemModel.h"
 #include "FileSystemView.h"
 
-class QResizeEvent;
-
 class FileWidget : public QWidget {
   Q_OBJECT
 
 public:
   explicit FileWidget(QWidget *parent = nullptr);
+
+  // The embedded tree view.  Exposed so the hosting splitter can clamp
+  // this widget's maximum width to the view's preferred content width.
+  FileSystemView *view() const { return fileSystemView; }
 
   // Forwarded to the view. Lower-case extensions, without the dot, that
   // the ingest layer can convert. Controls the context menu's "Import…"
@@ -50,17 +53,13 @@ signals:
   // Emitted when the user picks "Import All…" from the tree's context
   // menu. Carries every selected source file an extractor can handle.
   void importAllRequested(const QStringList &paths);
+
   // Emitted when the user picks "Promote to notes" from the tree's
   // context menu. Contains the absolute paths of every selected file
   // or folder.
   void promoteToNotesRequested(const QStringList &paths);
 
-protected:
-  void resizeEvent(QResizeEvent *event) override;
-
 private:
-  void distributeColumnWidths();
-
   FileSystemModel *fileSystemModel = nullptr;
   FileSystemView *fileSystemView = nullptr;
 

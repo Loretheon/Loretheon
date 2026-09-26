@@ -13,6 +13,7 @@
 #include <QResizeEvent>
 #include <QTimer>
 #include <QUrl>
+#include <QSurfaceFormat>
 
 namespace {
 
@@ -28,11 +29,7 @@ constexpr bool kInteractionEnabled = true;
 } // namespace
 
 AvatarWidget::AvatarWidget(QWidget *parent) : QQuickWidget(parent) {
-  // The widget must be translucent so the QML scene's transparent
-  // background reaches the screen instead of being composited over
-  // black. WA_AlwaysStackOnTop forces the QQuickWidget to composite
-  // its FBO with alpha rather than as an opaque blit.
-  setAttribute(Qt::WA_AlwaysStackOnTop, true);
+  // setAttribute(Qt::WA_AlwaysStackOnTop, true);
   setAttribute(Qt::WA_TranslucentBackground, true);
   setAttribute(Qt::WA_NoSystemBackground, true);
 
@@ -47,9 +44,14 @@ AvatarWidget::AvatarWidget(QWidget *parent) : QQuickWidget(parent) {
   setClearColor(Qt::transparent);
 
   setResizeMode(QQuickWidget::SizeRootObjectToView);
-
   setMouseTracking(true);
 
+  // X11-specific: Configure surface format for transparency
+  QSurfaceFormat format;
+  format.setAlphaBufferSize(8);
+  format.setDepthBufferSize(24);
+  format.setStencilBufferSize(8);
+  setFormat(format);
 
   m_controller = new AvatarController(this);
 
@@ -144,11 +146,13 @@ void AvatarWidget::onSurfaceReady() {
 
   emit modelLoaded();
 }
+
 void AvatarWidget::setSpeaking(bool speaking) {
   if (m_controller) {
     m_controller->setSpeaking(speaking);
   }
 }
+
 void AvatarWidget::applyConfig(const AvatarConfig &config) {
   m_config = config;
 }
