@@ -49,6 +49,11 @@ void ConductorQueue::setState(const QString &id, const QString &state) {
       continue;
 
     req.state = state;
+
+    // A request that leaves the inbox is no longer deferred.
+    if (state != QStringLiteral("inbox"))
+      req.deferred = false;
+
     save();
     emit requestChanged(id);
     return;
@@ -94,6 +99,38 @@ void ConductorQueue::setRejectReason(const QString &id,
   }
 }
 
+void ConductorQueue::setDeferred(const QString &id, bool deferred) {
+  for (ConductorRequest &req : m_requests) {
+    if (req.id != id)
+      continue;
+
+    if (req.deferred == deferred)
+      return;
+
+    req.deferred = deferred;
+    save();
+    emit requestChanged(id);
+    return;
+  }
+}
+
+void ConductorQueue::clearAllDeferred() {
+  bool any = false;
+
+  for (ConductorRequest &req : m_requests) {
+    if (!req.deferred)
+      continue;
+
+    req.deferred = false;
+    any = true;
+  }
+
+  if (!any)
+    return;
+
+  save();
+}
+
 void ConductorQueue::retry(const QString &id) {
   for (ConductorRequest &req : m_requests) {
     if (req.id != id)
@@ -101,6 +138,7 @@ void ConductorQueue::retry(const QString &id) {
 
     req.retryCount += 1;
     req.state = QStringLiteral("inbox");
+    req.deferred = false;
     req.rejectReason.clear();
     save();
     emit requestChanged(id);
@@ -112,6 +150,20 @@ ConductorRequest ConductorQueue::nextInbox() const {
   for (const ConductorRequest &req : m_requests) {
     if (req.state == QStringLiteral("inbox"))
       return req;
+  }
+
+  return {};
+}
+
+ConductorRequest ConductorQueue::nextReadyInbox() const {
+  for (const ConductorRequest &req : m_requests) {
+    if (req.state != QStringLiteral("inbox"))
+      continue;
+
+    if (req.deferred)
+      continue;
+
+    return req;
   }
 
   return {};
@@ -160,6 +212,7 @@ void ConductorQueue::load() {
     req.answer = obj.value(QStringLiteral("answer")).toString();
     req.rejectReason = obj.value(QStringLiteral("rejectReason")).toString();
     req.retryCount = obj.value(QStringLiteral("retryCount")).toInt(0);
+    req.deferred = obj.value(QStringLiteral("deferred")).toBool(false);
 
     if (req.id.isEmpty())
       continue;
@@ -186,6 +239,7 @@ void ConductorQueue::save() {
     obj.insert(QStringLiteral("answer"), req.answer);
     obj.insert(QStringLiteral("rejectReason"), req.rejectReason);
     obj.insert(QStringLiteral("retryCount"), req.retryCount);
+    obj.insert(QStringLiteral("deferred"), req.deferred);
     arr.append(obj);
   }
 

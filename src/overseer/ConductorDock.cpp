@@ -139,15 +139,13 @@ void ConductorDock::reposition() {
 
   const QWidget *parent = parentWidget();
 
+  const int targetHeight =
+      qMax(kMinimumHeight, int(parent->height() * m_heightFraction));
+
   if (m_open) {
-    const int height =
-        qMax(kMinimumHeight, int(parent->height() * m_heightFraction));
-
-    setGeometry(0, 0, parent->width(), height);
+    setGeometry(0, 0, parent->width(), targetHeight);
   } else {
-    const int height = qMax(kMinimumHeight, height);
-
-    setGeometry(0, -height, parent->width(), height);
+    setGeometry(0, -targetHeight, parent->width(), targetHeight);
   }
 
   raise();

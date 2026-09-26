@@ -4,12 +4,15 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QStandardPaths>
+#include <QStringList>
 #include <QTextStream>
 
 namespace {
 
 constexpr auto MemoryFilename = "memory.md";
 constexpr auto SessionsDirname = "Sessions";
+
+const QString kProseEndMarker = QStringLiteral("## Accepted proposals");
 
 QString readTextFile(const QString &path) {
   QFile file(path);
@@ -49,6 +52,82 @@ bool writeTextFile(const QString &path, const QString &text) {
   return true;
 }
 
+// Splits a memory file into (prose, facts). The prose is everything
+// before "## Accepted proposals". The facts list is the trimmed text
+// after "- " for each bullet line in the section. Lines that are not
+// bullets and blank lines inside the section are preserved verbatim
+// in `rawFacts` so a round-trip does not destroy formatting; `facts`
+// holds only the bullet payloads, in order, for key computation.
+struct ParsedMemory {
+  QString prose;
+  QStringList facts;
+  QStringList rawFacts;
+  bool hadSection = false;
+};
+
+ParsedMemory parseMemory(const QString &text) {
+  ParsedMemory parsed;
+
+  const QStringList lines = text.split(QChar('\n'));
+
+  int sectionStart = -1;
+
+  for (int i = 0; i < lines.size(); ++i) {
+    if (lines.at(i).trimmed().startsWith(kProseEndMarker)) {
+      sectionStart = i;
+      break;
+    }
+  }
+
+  QStringList proseLines;
+  QStringList factLines;
+
+  if (sectionStart < 0) {
+    proseLines = lines;
+  } else {
+    for (int i = 0; i < sectionStart; ++i)
+      proseLines.append(lines.at(i));
+
+    for (int i = sectionStart + 1; i < lines.size(); ++i)
+      factLines.append(lines.at(i));
+
+    parsed.hadSection = true;
+  }
+
+  parsed.prose = proseLines.join(QChar('\n'));
+
+  for (const QString &line : factLines) {
+    parsed.rawFacts.append(line);
+
+    const QString trimmed = line.trimmed();
+
+    if (trimmed.startsWith(QStringLiteral("- ")))
+      parsed.facts.append(trimmed.mid(2).trimmed());
+  }
+
+  return parsed;
+}
+
+QString serializeMemory(const ParsedMemory &parsed) {
+  QString out = parsed.prose;
+
+  while (out.endsWith(QChar('\n')))
+    out.chop(1);
+
+  if (!out.isEmpty())
+    out += QChar('\n');
+
+  out += kProseEndMarker;
+  out += QChar('\n');
+
+  for (const QString &line : parsed.rawFacts) {
+    out += line;
+    out += QChar('\n');
+  }
+
+  return out;
+}
+
 } // namespace
 
 namespace OverseerStorage {
@@ -81,25 +160,102 @@ bool appendFactToMemoryFile(const QString &path, const QString &fact) {
     return false;
   }
 
-  QString memory = readTextFile(path);
+  const QString existing = readTextFile(path);
 
-  if (memory.isEmpty())
-    memory = QStringLiteral("# Memory\n\n");
+  ParsedMemory parsed = parseMemory(existing);
 
-  if (!memory.endsWith(QChar('\n')))
-    memory += QChar('\n');
-
-  const QString sectionHeader = QStringLiteral("## Accepted proposals\n");
-
-  if (!memory.contains(sectionHeader)) {
-    memory += QChar('\n');
-    memory += sectionHeader;
-    memory += QChar('\n');
+  if (!parsed.hadSection && parsed.prose.trimmed().isEmpty()) {
+    parsed.prose =
+        QStringLiteral("# Memory\n\n"
+                       "Standing facts the assistant should know.\n");
   }
 
-  memory += QStringLiteral("- %1\n").arg(trimmed);
+  parsed.rawFacts.append(QStringLiteral("- %1").arg(trimmed));
+  parsed.facts.append(trimmed);
 
-  return writeTextFile(path, memory);
+  return writeTextFile(path, serializeMemory(parsed));
+}
+
+bool removeFactFromMemoryFile(const QString &path, const QString &fact) {
+  const QString trimmed = fact.trimmed();
+
+  if (path.isEmpty() || trimmed.isEmpty()) {
+    return false;
+  }
+
+  const QString existing = readTextFile(path);
+
+  if (existing.isEmpty())
+    return false;
+
+  ParsedMemory parsed = parseMemory(existing);
+
+  int removed = -1;
+
+  for (int i = 0; i < parsed.rawFacts.size(); ++i) {
+    const QString line = parsed.rawFacts.at(i).trimmed();
+
+    if (!line.startsWith(QStringLiteral("- ")))
+      continue;
+
+    if (line.mid(2).trimmed() == trimmed) {
+      removed = i;
+      break;
+    }
+  }
+
+  if (removed < 0)
+    return false;
+
+  parsed.rawFacts.removeAt(removed);
+
+  return writeTextFile(path, serializeMemory(parsed));
+}
+
+bool replaceFactInMemoryFile(const QString &path, const QString &oldFact,
+                             const QString &newFact) {
+  const QString oldTrimmed = oldFact.trimmed();
+  const QString newTrimmed = newFact.trimmed();
+
+  if (path.isEmpty())
+    return false;
+
+  if (oldTrimmed.isEmpty() && newTrimmed.isEmpty())
+    return false;
+
+  if (oldTrimmed.isEmpty())
+    return appendFactToMemoryFile(path, newTrimmed);
+
+  if (newTrimmed.isEmpty())
+    return removeFactFromMemoryFile(path, oldTrimmed);
+
+  const QString existing = readTextFile(path);
+
+  if (existing.isEmpty())
+    return appendFactToMemoryFile(path, newTrimmed);
+
+  ParsedMemory parsed = parseMemory(existing);
+
+  int target = -1;
+
+  for (int i = 0; i < parsed.rawFacts.size(); ++i) {
+    const QString line = parsed.rawFacts.at(i).trimmed();
+
+    if (!line.startsWith(QStringLiteral("- ")))
+      continue;
+
+    if (line.mid(2).trimmed() == oldTrimmed) {
+      target = i;
+      break;
+    }
+  }
+
+  if (target < 0)
+    return appendFactToMemoryFile(path, newTrimmed);
+
+  parsed.rawFacts[target] = QStringLiteral("- %1").arg(newTrimmed);
+
+  return writeTextFile(path, serializeMemory(parsed));
 }
 
 bool ensureRoot() {

@@ -41,6 +41,10 @@ NotificationService &NotificationService::instance() {
   return service;
 }
 
+bool NotificationService::applicationHasFocus() {
+  return qApp && qApp->activeWindow() != nullptr;
+}
+
 NotificationService::NotificationService(QObject *parent) : QObject(parent) {
   loadSettings();
 }
@@ -54,7 +58,8 @@ void NotificationService::setToastHost(ToastStack *stack) {
 QString NotificationService::notify(Severity severity, const QString &title,
                                     const QString &body,
                                     const QString &targetFilePath,
-                                    const QString &targetCardId) {
+                                    const QString &targetCardId,
+                                    const QString &targetSessionName) {
   Notification notification;
   notification.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
   notification.severity = severity;
@@ -62,6 +67,7 @@ QString NotificationService::notify(Severity severity, const QString &title,
   notification.body = body;
   notification.targetFilePath = targetFilePath;
   notification.targetCardId = targetCardId;
+  notification.targetSessionName = targetSessionName;
   notification.createdAt = QDateTime::currentDateTime();
 
   if (severity != Severity::Info) {
@@ -71,14 +77,21 @@ QString NotificationService::notify(Severity severity, const QString &title,
       m_recent.removeLast();
   }
 
-  if (severity == Severity::Critical)
+  if (severity == Severity::NeedsUserInput)
     m_pending.prepend(notification);
 
+  // The in-app toast fires for every severity that is enabled. The OS
+  // notification is reserved for NeedsUserInput, and only when the
+  // application is not focused. An OS alert on top of a visible window
+  // is noise.
   if (m_toastsEnabled)
     dispatchToast(notification);
 
-  if (severity == Severity::Critical && m_osNotificationsEnabled)
+  if (severity == Severity::NeedsUserInput &&
+      m_osNotificationsEnabled &&
+      !applicationHasFocus()) {
     dispatchOsNotification(notification);
+  }
 
   emit notified(notification);
   emit changed();
@@ -101,11 +114,13 @@ QString NotificationService::error(const QString &title, const QString &body,
   return notify(Severity::Error, title, body, targetFilePath);
 }
 
-QString NotificationService::critical(const QString &title, const QString &body,
-                                      const QString &targetFilePath,
-                                      const QString &targetCardId) {
-  return notify(Severity::Critical, title, body, targetFilePath,
-                targetCardId);
+QString NotificationService::needsUserInput(const QString &title,
+                                            const QString &body,
+                                            const QString &targetFilePath,
+                                            const QString &targetCardId,
+                                            const QString &targetSessionName) {
+  return notify(Severity::NeedsUserInput, title, body, targetFilePath,
+                targetCardId, targetSessionName);
 }
 
 void NotificationService::acknowledge(const QString &id) {
@@ -222,8 +237,8 @@ void NotificationService::setWarningLifetimeMs(int ms) {
 }
 
 void NotificationService::onToastDismissed(const QString &id) {
-  // Dismissal of a toast does not acknowledge a critical notification.
-  // Critical notifications are only acknowledged by explicit action.
+  // Dismissal of a toast does not acknowledge a NeedsUserInput
+  // notification. Those are only acknowledged by explicit action.
   Q_UNUSED(id);
 }
 
@@ -262,7 +277,7 @@ void NotificationService::dispatchToast(const Notification &notification) {
     break;
   case Severity::Warning:
   case Severity::Error:
-  case Severity::Critical:
+  case Severity::NeedsUserInput:
     lifetimeMs = m_warningLifetimeMs;
     break;
   }
@@ -285,7 +300,7 @@ void NotificationService::dispatchOsNotification(
                                         notification.body;
 
   tray->showMessage(QStringLiteral("Lore"), text,
-                    QSystemTrayIcon::Critical, 10000);
+                    QSystemTrayIcon::Information, 10000);
 }
 
 QString NotificationService::severityName(Severity severity) const {
@@ -296,8 +311,8 @@ QString NotificationService::severityName(Severity severity) const {
     return QStringLiteral("warning");
   case Severity::Error:
     return QStringLiteral("error");
-  case Severity::Critical:
-    return QStringLiteral("critical");
+  case Severity::NeedsUserInput:
+    return QStringLiteral("needsUserInput");
   }
 
   return QStringLiteral("info");

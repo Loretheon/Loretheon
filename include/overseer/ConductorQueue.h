@@ -33,6 +33,15 @@ public:
 
   void setRejectReason(const QString &id, const QString &reason);
 
+  // Mark a request as deferred because its dependencies are unmet.
+  // A deferred request is skipped by the runner's drain loop.
+  void setDeferred(const QString &id, bool deferred);
+
+  // Clear the deferred flag on every request. Called by the runner
+  // when a request reaches a terminal state, so its dependents can
+  // be reconsidered.
+  void clearAllDeferred();
+
   // Increment the retry count for a request and put it back in the
   // inbox so it is picked up again. Used for the single automatic
   // retry after a failure.
@@ -41,12 +50,16 @@ public:
   // The first request whose state is "inbox", or an empty request.
   ConductorRequest nextInbox() const;
 
+  // The first request whose state is "inbox" and which is not
+  // deferred, or an empty request.
+  ConductorRequest nextReadyInbox() const;
+
   QVector<ConductorRequest> all() const { return m_requests; }
 
   ConductorRequest byId(const QString &id) const;
 
-  signals:
-    void requestAdded(const QString &id);
+signals:
+  void requestAdded(const QString &id);
   void requestChanged(const QString &id);
   void requestRemoved(const QString &id);
 

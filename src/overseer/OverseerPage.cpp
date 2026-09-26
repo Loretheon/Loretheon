@@ -21,6 +21,7 @@
 #include "DocumentArea.h"
 #include "DocumentManager.h"
 #include "FileWidget.h"
+#include "OverseerRunner.h"
 #include "OverseerSessionManager.h"
 #include "Settings.h"
 #include "TextDocument.h"
@@ -79,10 +80,13 @@ OverseerPage::OverseerPage(InferenceService *inferenceService,
 
   // The conductor dock. It lives on top of the page, not inside any
   // layout, and slides down from the top when triggered.
+  //
+  // The dock's queue, roster, and dependency graph are bound below,
+  // in onRunnerBound(). At construction time no runner is bound yet,
+  // so we deliberately do NOT push m_overseer->queue() here — that
+  // returns nullptr and would leave the board permanently wired to a
+  // null queue.
   m_conductorDock = new ConductorDock(this);
-  m_conductorDock->setQueue(m_overseer->queue());
-  m_conductorDock->setRoster(m_overseer->roster());
-  m_conductorDock->setDependencies(m_overseer->dependencies());
 
   connect(m_conductorDock->board(), &ConductorBoard::removeRequested,
           m_overseer, &OverseerWidget::removeFailedRequest);
@@ -105,6 +109,27 @@ OverseerPage::OverseerPage(InferenceService *inferenceService,
     if (m_dockTrigger)
       m_dockTrigger->setText(tr("Conductor"));
   });
+
+  // Re-bind the dock to the runner's queue, roster, and dependency
+  // graph every time the bound runner changes. Without this the board
+  // would keep whatever pointer it was given at construction time,
+  // which is always null.
+  connect(m_overseer, &OverseerWidget::runnerBound, this,
+          [this](OverseerRunner *runner) {
+            if (!m_conductorDock)
+              return;
+
+            if (!runner) {
+              m_conductorDock->setQueue(nullptr);
+              m_conductorDock->setRoster(nullptr);
+              m_conductorDock->setDependencies(nullptr);
+              return;
+            }
+
+            m_conductorDock->setQueue(runner->queue());
+            m_conductorDock->setRoster(runner->roster());
+            m_conductorDock->setDependencies(runner->dependencies());
+          });
 
   connect(m_overseer->sessionListPanel(),
           &OverseerSessionList::sessionSelected, this,

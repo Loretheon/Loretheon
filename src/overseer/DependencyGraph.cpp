@@ -5,6 +5,8 @@
 #include <QSet>
 #include <QTextStream>
 
+#include <functional>
+
 void DependencyGraph::setPath(const QString &path) {
   m_path = path;
   load();

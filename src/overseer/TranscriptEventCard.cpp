@@ -142,8 +142,17 @@ QString TranscriptEventCard::headerTitleFor(const TranscriptEvent &event) const 
     return tr("Tool");
   case TranscriptEvent::Type::MemoryProposal: {
     const QString scope = scopeLabelFor(event.proposalScope);
-    return scope.isEmpty() ? tr("Memory proposal")
-                           : tr("Memory proposal · %1").arg(scope);
+
+    QString title;
+
+    if (event.proposalFact.isEmpty() && !event.proposalContext.isEmpty())
+      title = tr("Memory deletion");
+    else if (!event.proposalContext.isEmpty())
+      title = tr("Memory edit");
+    else
+      title = tr("Memory proposal");
+
+    return scope.isEmpty() ? title : tr("%1 · %2").arg(title, scope);
   }
   case TranscriptEvent::Type::Stage:
     return tr("Staged file");
@@ -256,17 +265,34 @@ void TranscriptEventCard::buildToolResult(QVBoxLayout *bodyLayout) {
 }
 
 void TranscriptEventCard::buildProposal(QVBoxLayout *bodyLayout) {
+  // "replaces" line, above the fact. Shown for edits and deletions.
   if (!m_event.proposalContext.isEmpty()) {
-    auto *context = new MarkdownView(this);
-    context->setObjectName(QStringLiteral("transcriptProposalContext"));
-    context->setMarkdownText(m_event.proposalContext);
-    bodyLayout->addWidget(context);
+    const QString prefix =
+        m_event.proposalFact.isEmpty()
+            ? tr("Deletes: %1").arg(m_event.proposalContext)
+            : tr("Replaces: %1").arg(m_event.proposalContext);
+
+    auto *replaced = new QLabel(prefix, this);
+    replaced->setWordWrap(true);
+    replaced->setObjectName(QStringLiteral("transcriptProposalReplaced"));
+    replaced->setTextInteractionFlags(Qt::TextSelectableByMouse);
+
+    {
+      QFont small = replaced->font();
+      small.setPointSizeF(qMax(7.0, small.pointSizeF() - 1.0));
+      small.setItalic(true);
+      replaced->setFont(small);
+    }
+
+    bodyLayout->addWidget(replaced);
   }
 
-  auto *fact = new QLabel(m_event.proposalFact, this);
-  fact->setWordWrap(true);
-  fact->setObjectName(QStringLiteral("transcriptProposalFact"));
-  bodyLayout->addWidget(fact);
+  if (!m_event.proposalFact.isEmpty()) {
+    auto *fact = new QLabel(m_event.proposalFact, this);
+    fact->setWordWrap(true);
+    fact->setObjectName(QStringLiteral("transcriptProposalFact"));
+    bodyLayout->addWidget(fact);
+  }
 
   if (!m_event.proposalRationale.isEmpty()) {
     auto *rationale = new QLabel(m_event.proposalRationale, this);
@@ -335,8 +361,12 @@ void TranscriptEventCard::refreshProposalControls() {
   const bool pending = m_event.proposalStatus.isEmpty() ||
                        m_event.proposalStatus == QStringLiteral("pending");
 
+  const bool isDelete =
+      m_event.proposalFact.isEmpty() && !m_event.proposalContext.isEmpty();
+
+  // A deletion has a fixed scope. The combo is not shown.
   if (m_proposalScopeCombo)
-    m_proposalScopeCombo->setVisible(pending);
+    m_proposalScopeCombo->setVisible(pending && !isDelete);
 
   if (m_proposalAccept)
     m_proposalAccept->setVisible(pending);
@@ -355,9 +385,18 @@ void TranscriptEventCard::refreshProposalControls() {
   const QString scope = scopeLabelFor(m_event.proposalAcceptedScope);
 
   if (m_event.proposalStatus == QStringLiteral("accepted")) {
-    m_proposalStatusLabel->setText(
-        scope.isEmpty() ? tr("\u2713 Accepted")
-                        : tr("\u2713 Accepted into %1").arg(scope));
+    QString text;
+
+    if (isDelete)
+      text = tr("\u2713 Deleted");
+    else if (!m_event.proposalContext.isEmpty())
+      text = scope.isEmpty() ? tr("\u2713 Replaced")
+                             : tr("\u2713 Replaced in %1").arg(scope);
+    else
+      text = scope.isEmpty() ? tr("\u2713 Accepted")
+                             : tr("\u2713 Accepted into %1").arg(scope);
+
+    m_proposalStatusLabel->setText(text);
   } else {
     m_proposalStatusLabel->setText(tr("\u2717 Rejected"));
   }

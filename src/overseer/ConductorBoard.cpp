@@ -367,14 +367,20 @@ void ConductorBoard::rebuild() {
     if (!columnLayout)
       continue;
 
+    // Remove every card. Layout is [header, card..., stretch]. Take
+    // everything between the header and the trailing stretch, detach
+    // the widget from its parent immediately so the layout item does
+    // not linger, then let deleteLater reap it.
     while (columnLayout->count() > 2) {
       QLayoutItem *item = columnLayout->takeAt(1);
 
       if (!item)
         break;
 
-      if (QWidget *w = item->widget())
+      if (QWidget *w = item->widget()) {
+        w->setParent(nullptr);
         w->deleteLater();
+      }
 
       delete item;
     }

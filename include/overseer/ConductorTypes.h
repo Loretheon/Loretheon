@@ -38,6 +38,13 @@ struct ConductorRequest {
   // a failure. A value of 1 means the first failure has already been
   // retried once; a second failure is terminal.
   int retryCount = 0;
+
+  // Set when the conductor has deferred this request because its
+  // dependencies are not yet complete. A deferred request is skipped
+  // by drainQueue() until the flag is cleared, which happens when a
+  // dependency reaches a terminal state. Persisted so a restart does
+  // not lose the deferral.
+  bool deferred = false;
 };
 
 // A worker on the conductor's roster. File agents are persistent;

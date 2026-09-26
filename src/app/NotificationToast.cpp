@@ -99,8 +99,8 @@ QString NotificationToast::severityColorRole() const {
     return QStringLiteral("warning");
   case NotificationService::Severity::Error:
     return QStringLiteral("error");
-  case NotificationService::Severity::Critical:
-    return QStringLiteral("critical");
+  case NotificationService::Severity::NeedsUserInput:
+    return QStringLiteral("needsUserInput");
   }
 
   return QStringLiteral("info");

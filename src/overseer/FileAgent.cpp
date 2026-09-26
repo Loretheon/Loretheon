@@ -47,6 +47,10 @@ void FileAgent::logAgent(const QString &tag, const QString &content) {
                 QStringLiteral("%1/%2").arg(m_id, tag), content);
 }
 
+void FileAgent::setToolCallDepthLimit(int limit) {
+  m_toolCallDepthLimit = qBound(1, limit, 100000);
+}
+
 void FileAgent::enqueue(const Task &task) {
   m_queue.append(task);
 
@@ -219,6 +223,30 @@ void FileAgent::dispatchTurn() {
   if (!m_inferenceService)
     return;
 
+  // Per-agent turn ceiling. The count is a lifetime total, not a
+  // per-task one. A healthy agent uses a handful of turns per task
+  // and never approaches the limit; a cyclic one does.
+  if (m_toolCallCount >= m_toolCallDepthLimit) {
+    const QString reason =
+        QStringLiteral("Agent %1 exceeded its tool call depth limit "
+                       "(%2 turns). Stopping.")
+            .arg(m_id)
+            .arg(m_toolCallDepthLimit);
+
+    logAgent(QStringLiteral("DEPTH_LIMIT"),
+             QStringLiteral("Task: %1\nTurns: %2\nLimit: %3")
+                 .arg(m_current.id)
+                 .arg(m_toolCallCount)
+                 .arg(m_toolCallDepthLimit));
+
+    emit depthLimitReached(m_id, m_toolCallDepthLimit);
+
+    finishCurrent(false, reason);
+    return;
+  }
+
+  ++m_toolCallCount;
+
   m_activeToken = InferenceService::RequestToken();
   m_hasActiveToken = false;
   m_pendingDispatch = true;
@@ -233,8 +261,10 @@ void FileAgent::dispatchTurn() {
       {QStringLiteral("content"), prompt}});
 
   logAgent(QStringLiteral("REQUEST"),
-           QStringLiteral("Task: %1\nTurn tool calls: %2\n\nPrompt:\n%3")
+           QStringLiteral("Task: %1\nTurn count: %2\nTurn tool calls: %3\n\n"
+                          "Prompt:\n%4")
                .arg(m_current.id)
+               .arg(m_toolCallCount)
                .arg(m_taskToolCalls.size())
                .arg(prompt));
 

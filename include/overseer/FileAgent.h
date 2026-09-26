@@ -53,6 +53,16 @@ public:
 
   void setOutputFolder(const QString &folder) { m_outputFolder = folder; }
 
+  // Per-agent ceiling on the number of inference turns this agent will
+  // ever dispatch in its lifetime. Guards against a cyclic agent that
+  // never reaches a terminal action. Normal tasks use a handful of
+  // turns; the default is high enough that only a runaway agent hits
+  // it. Raising the limit from the UI does not clear the counter; the
+  // agent resumes dispatching as soon as the limit is above the count.
+  void setToolCallDepthLimit(int limit);
+  int toolCallDepthLimit() const { return m_toolCallDepthLimit; }
+  int toolCallCount() const { return m_toolCallCount; }
+
   void enqueue(const Task &task);
 
   bool cancel(const QString &taskId);
@@ -86,6 +96,11 @@ signals:
   // released when the task finishes.
   void fileWriteClaimed(const QString &taskId, const QString &relativePath);
   void fileWriteReleased(const QString &taskId, const QString &relativePath);
+
+  // Emitted when the per-agent turn ceiling is hit. The agent stops
+  // dispatching and fails the current task. The runner listens and
+  // surfaces this to the user.
+  void depthLimitReached(const QString &agentId, int limit);
 
 private slots:
   void onResponseFinished(const InferenceService::RequestToken &token);
@@ -148,6 +163,11 @@ private:
 
   QStringList m_history;
   QStringList m_filesSeen;
+
+  // Per-agent turn ceiling and the running count. The count is never
+  // reset per task; it is a lifetime total for this agent.
+  int m_toolCallDepthLimit = 64;
+  int m_toolCallCount = 0;
 
   static constexpr int kMaxHistory = 20;
   static constexpr int kMaxParseRetries = 1;

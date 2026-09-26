@@ -10,7 +10,6 @@
 class TextEdit;
 class TextDocument;
 class AutomationStrip;
-class ConductorDock;
 class ConductorQueue;
 class ConductorRoster;
 class DependencyGraph;
@@ -58,6 +57,8 @@ public:
   ConductorRoster *roster() const;
   DependencyGraph *dependencies();
 
+  OverseerRunner *boundRunner() const { return m_boundRunner; }
+
   QString activeSessionName() const { return m_activeSessionName; }
   OverseerRunner *m_boundRunner = nullptr;
 
@@ -88,6 +89,14 @@ signals:
 
   void saveWorkstationFileRequested(const QString &absolutePath);
 
+  // Emitted whenever the bound runner changes, so that views that hold
+  // a queue, roster, or dependency graph pointer can re-bind. The page
+  // uses this to re-push the runner's queue into the conductor dock.
+  void runnerBound(OverseerRunner *runner);
+
+  // A short status line for the page to show in its status area.
+  void statusMessage(const QString &text, int timeoutMs);
+
 private slots:
   void onSessionSelected(const QString &name);
   void onSessionCleared();
@@ -111,6 +120,15 @@ private slots:
                                const QString &requestId, bool ok,
                                const QString &summary,
                                const QString &filePath);
+  void onAgentDepthLimitReached(const QString &agentId, int limit);
+
+  // Rebuild the side panel's "User actions" tab from the bound
+  // runner's current pending actions.
+  void refreshUserActions();
+
+  // Focus the transcript on a given plan so a side panel click can
+  // jump the user to the right card.
+  void focusPlanInTranscript(const QString &planId);
 
 private:
   void rebuildSessionList();
@@ -124,8 +142,6 @@ private:
   TranscriptPanel *m_transcriptPanel = nullptr;
 
   AutomationStrip *m_automationStrip = nullptr;
-  ConductorDock *m_conductorDock = nullptr;
-  QToolButton *m_dockTrigger = nullptr;
 
   QLabel *m_sessionHeader = nullptr;
   QLineEdit *m_input = nullptr;
@@ -137,5 +153,4 @@ private:
   Workstation *m_workstation = nullptr;
 
   QString m_activeSessionName;
-
 };

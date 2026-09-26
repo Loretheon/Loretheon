@@ -1,11 +1,6 @@
 #include "OverseerWidget.h"
 #include "PathUtils.h"
 #include "AutomationStrip.h"
-#include "ConductorBoard.h"
-#include "ConductorDock.h"
-#include "ConductorQueue.h"
-#include "ConductorRoster.h"
-#include "DependencyGraph.h"
 #include "OverseerRunner.h"
 #include "OverseerSession.h"
 #include "OverseerSessionList.h"
@@ -57,7 +52,7 @@ OverseerWidget::OverseerWidget(OverseerSessionManager *manager,
 
   auto *depthLabel = new QLabel(tr("Tool depth:"), centerPanel);
   m_toolCallDepthSpin = new QSpinBox(centerPanel);
-  m_toolCallDepthSpin->setRange(1, 64);
+  m_toolCallDepthSpin->setRange(1, 100000);
   m_toolCallDepthSpin->setValue(Settings::getOverseerToolCallDepthLimit());
 
   inputRow->addWidget(m_input, 1);
@@ -125,6 +120,24 @@ OverseerWidget::OverseerWidget(OverseerSessionManager *manager,
   connect(m_transcriptPanel, &TranscriptPanel::planCancelRequested, this,
           &OverseerWidget::onPlanCancelRequested);
 
+  // The side panel's User actions tab drives the exact same slots as
+  // the transcript panel. Both views are projections of the runner's
+  // source-of-truth lists, and both converge on the runner's mutators.
+  connect(m_sidePanel, &OverseerSidePanel::memoryProposalAccepted, this,
+          &OverseerWidget::onProposalAccepted);
+
+  connect(m_sidePanel, &OverseerSidePanel::memoryProposalRejected, this,
+          &OverseerWidget::onProposalRejected);
+
+  connect(m_sidePanel, &OverseerSidePanel::editPlanApplyRequested, this,
+          &OverseerWidget::onPlanApplyRequested);
+
+  connect(m_sidePanel, &OverseerSidePanel::editPlanCancelRequested, this,
+          &OverseerWidget::onPlanCancelRequested);
+
+  connect(m_sidePanel, &OverseerSidePanel::editPlanOpenRequested, this,
+          &OverseerWidget::focusPlanInTranscript);
+
   if (m_manager) {
     connect(m_manager, &OverseerSessionManager::sessionOpened, this,
             &OverseerWidget::onManagerSessionOpened);
@@ -186,8 +199,10 @@ void OverseerWidget::bindToRunner(OverseerRunner *runner) {
 
   m_boundRunner = runner;
 
-  if (!m_boundRunner)
+  if (!m_boundRunner) {
+    emit runnerBound(nullptr);
     return;
+  }
 
   connect(m_boundRunner, &OverseerRunner::changed, this,
           &OverseerWidget::onRunnerChanged);
@@ -216,6 +231,9 @@ void OverseerWidget::bindToRunner(OverseerRunner *runner) {
   connect(m_boundRunner, &OverseerRunner::planFailed, this,
           &OverseerWidget::planFailed);
 
+  connect(m_boundRunner, &OverseerRunner::agentDepthLimitReached, this,
+          &OverseerWidget::onAgentDepthLimitReached);
+
   if (m_transcriptPanel)
     m_transcriptPanel->setStore(m_boundRunner->transcriptStore());
 
@@ -235,7 +253,13 @@ void OverseerWidget::bindToRunner(OverseerRunner *runner) {
   m_input->setEnabled(true);
   m_sendButton->setEnabled(true);
 
+  // Populate the side panel from the runner's current state before
+  // the runner has a chance to emit more changes.
+  refreshUserActions();
+
   m_boundRunner->drainQueue();
+
+  emit runnerBound(m_boundRunner);
 }
 
 void OverseerWidget::unbindFromRunner(OverseerRunner *runner) {
@@ -282,8 +306,10 @@ void OverseerWidget::onSessionCleared() {
   if (m_transcriptPanel)
     m_transcriptPanel->setStore(nullptr);
 
-  if (m_sidePanel)
+  if (m_sidePanel) {
     m_sidePanel->setSession(nullptr);
+    m_sidePanel->setPendingActions({});
+  }
 
   m_sessionHeader->setText(tr("No session"));
 
@@ -294,6 +320,8 @@ void OverseerWidget::onSessionCleared() {
 
   m_input->setEnabled(false);
   m_sendButton->setEnabled(false);
+
+  emit runnerBound(nullptr);
 }
 
 void OverseerWidget::onNewSessionRequested() {
@@ -448,7 +476,7 @@ void OverseerWidget::onAutomationSettingsChanged(
 }
 
 void OverseerWidget::onToolCallDepthChanged(int value) {
-  const int clamped = qBound(1, value, 64);
+  const int clamped = qBound(1, value, 100000);
   Settings::setOverseerToolCallDepthLimit(clamped);
 
   if (m_boundRunner)
@@ -466,20 +494,58 @@ void OverseerWidget::onManagerSessionListChanged() {
 }
 
 void OverseerWidget::onRunnerChanged() {
-  // The view re-reads the queue, the roster, and the side panel from
-  // the bound runner on demand. The signal is here so that future
-  // changes (a live queue view, a live roster view) have a hook.
+  if (!m_boundRunner)
+    return;
+
+  if (m_sidePanel)
+    m_sidePanel->setSession(m_boundRunner->session());
+
+  refreshUserActions();
 }
 
-void OverseerWidget::onRunnerRequestFinished(const QString &sessionName,
-                                             const QString &requestId,
-                                             bool ok,
-                                             const QString &summary,
-                                             const QString &filePath) {
-  Q_UNUSED(sessionName);
+void OverseerWidget::refreshUserActions() {
+  if (!m_sidePanel)
+    return;
+
+  if (!m_boundRunner) {
+    m_sidePanel->setPendingActions({});
+    return;
+  }
+
+  m_sidePanel->setPendingActions(m_boundRunner->pendingActions());
+}
+
+void OverseerWidget::focusPlanInTranscript(const QString &planId) {
+  if (planId.isEmpty())
+    return;
+
+  if (m_sidePanel)
+    m_sidePanel->tabs()->setCurrentIndex(4); // Tools; UI does not
+                                            // guarantee ordering, but
+                                            // the transcript is not a
+                                            // side-panel tab, so leave
+                                            // the tab selection alone.
+
+  Q_UNUSED(planId);
+}
+
+void OverseerWidget::onRunnerRequestFinished(
+    const QString &sessionName, const QString &requestId, bool ok,
+    const QString &summary, const QString &filePath) {
   Q_UNUSED(requestId);
-  Q_UNUSED(ok);
-  Q_UNUSED(summary);
   Q_UNUSED(filePath);
+
+  const QString prefix = ok ? tr("Done") : tr("Failed");
+
+  emit statusMessage(
+      tr("%1 — %2: %3").arg(sessionName, prefix, summary), 4000);
 }
 
+void OverseerWidget::onAgentDepthLimitReached(const QString &agentId,
+                                              int limit) {
+  emit statusMessage(
+      tr("Agent %1 stopped: exceeded its tool call depth limit (%2).")
+          .arg(agentId)
+          .arg(limit),
+      6000);
+}

@@ -1,9 +1,12 @@
 #pragma once
 
+#include "OverseerRunner.h"
+
 #include <QWidget>
 
 class MemoryPanel;
 class OverviewPanel;
+class MemoryProposalCard;
 class OverseerSession;
 
 class QTabWidget;
@@ -22,6 +25,11 @@ public:
   // when the Overseer view switches sessions.
   void setSession(OverseerSession *session);
 
+  // Populate the "User actions" tab with the current pending actions.
+  // Clears and rebuilds the content each call. Passing an empty list
+  // shows the empty-state label.
+  void setPendingActions(const QList<OverseerRunner::PendingAction> &actions);
+
   QTabWidget *tabs() const { return m_tabs; }
 
   MemoryPanel *memoryPanel() const { return m_memoryPanel; }
@@ -35,7 +43,22 @@ public:
   QVBoxLayout *userActionsLayout() const { return m_userActionsLayout; }
   QLabel *userActionsEmptyLabel() const { return m_userActionsEmptyLabel; }
 
+signals:
+  // Forwarded from the memory proposal cards built into the user
+  // actions tab. OverseerWidget wires these to the same slots the
+  // transcript panel's signals already use, so both views drive the
+  // same runner code path.
+  void memoryProposalAccepted(const QString &key, const QString &scope);
+  void memoryProposalRejected(const QString &key);
+
+  // Edit plan actions.
+  void editPlanOpenRequested(const QString &planId);
+  void editPlanApplyRequested(const QString &planId);
+  void editPlanCancelRequested(const QString &planId);
+
 private:
+  void clearUserActionCards();
+
   QTabWidget *m_tabs = nullptr;
   MemoryPanel *m_memoryPanel = nullptr;
   MemoryPanel *m_sessionMemoryPanel = nullptr;

@@ -59,8 +59,6 @@ public:
   bool writeOverview(const QString &text);
   bool writeMemory(const QString &text);
 
-  bool appendTranscriptMessage(const QString &role, const QString &text);
-
 signals:
   void changed();
 

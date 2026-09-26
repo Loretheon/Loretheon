@@ -15,6 +15,7 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QObject>
+#include <QSet>
 #include <QString>
 #include <QStringList>
 #include <QVector>
@@ -45,6 +46,48 @@ class OverseerRunner : public QObject {
   Q_OBJECT
 
 public:
+  // A single thing the user needs to act on. Built by pendingActions()
+  // and rendered in the side panel's "User actions" tab. There is a
+  // one-to-one correspondence between a PendingAction and an item in
+  // the runner's source-of-truth lists (m_proposals, m_scopedSessions).
+  struct PendingAction {
+    enum class Kind {
+      MemoryProposal,
+      EditPlan,
+    };
+
+    // How the memory proposal card should present itself. Ignored
+    // when kind == EditPlan.
+    enum class ProposalMode {
+      NewFact,
+      Replace,
+      Delete,
+    };
+
+    Kind kind = Kind::MemoryProposal;
+    ProposalMode proposalMode = ProposalMode::NewFact;
+
+    // proposal key or planId. Unique within the runner.
+    QString key;
+
+    // Memory proposals: the fact (empty for Delete). Edit plans: the
+    // file name.
+    QString title;
+
+    // Memory proposals: the rationale. Edit plans: an "N edits" line.
+    QString subtitle;
+
+    // Memory proposals: the fact being replaced or deleted. Empty for
+    // NewFact. Edit plans: unused.
+    QString replacedFact;
+
+    // The session name, for routing from an OS notification.
+    QString sessionName;
+
+    // Memory proposals only: "global" or "session".
+    QString scope;
+  };
+
   OverseerRunner(InferenceService *inferenceService,
                  const QString &sessionName,
                  QObject *parent = nullptr);
@@ -64,6 +107,11 @@ public:
   SessionSettings settings() const { return m_sessionSettings; }
 
   FileAgent *fileAgentById(const QString &id) const;
+
+  // The current set of pending actions in this session: memory
+  // proposals with status "pending" and edit plans awaiting review.
+  // Read-only projection of the runner's source-of-truth lists.
+  QList<PendingAction> pendingActions() const;
 
   // Focused editor and document, set by the view as the user works.
   // Used by scoped edits and by agents that need the current cursor.
@@ -116,8 +164,13 @@ signals:
   void planApplied(const QString &absolutePath);
   void planFailed(const QString &absolutePath);
 
-  // Emitted when the queue, the roster, the transcript, or the memory
-  // proposals change. The view listens and refreshes.
+  // Emitted when a file agent hits its per-agent tool call depth
+  // limit. The view surfaces this to the user.
+  void agentDepthLimitReached(const QString &agentId, int limit);
+
+  // Emitted when the queue, the roster, the transcript, the memory
+  // proposals, or the pending action set change. The view listens and
+  // refreshes.
   void changed();
 
 public slots:
@@ -126,11 +179,18 @@ public slots:
 private:
   struct MemoryProposal {
     QString key;
-    QString fact;
+    QString fact;              // empty for Delete
     QString rationale;
-    QString status;
-    QString scope;
-    QString acceptedScope;
+    QString status;            // "pending", "accepted", "rejected"
+    QString scope;             // "global" or "session"
+
+    // If non-empty, this proposal replaces or deletes the fact whose
+    // key matches. Empty for a new-fact proposal. `replacedFact` is
+    // the verbatim text of the fact being superseded, for display.
+    QString replaces;
+    QString replacedFact;
+
+    QString acceptedScope;     // set on accept
   };
 
   struct ScopedSession {
@@ -143,7 +203,10 @@ private:
     EditPlanner *planner = nullptr;
     EditSession *session = nullptr;
 
-    bool awaitingAutoApply = false;
+    // True when the plan has finished generating and is waiting for
+    // the user to apply or cancel. Cleared on apply, cancel, and
+    // teardown. Drives the "User actions" tab.
+    bool awaitingReview = false;
 
     QString originAgentId;
     QString originTaskId;
@@ -158,6 +221,7 @@ private:
       Route,
       SpawnEdit,
       SpawnAgent,
+      ProposeMemory,
     };
 
     Kind kind = Kind::Route;
@@ -170,6 +234,12 @@ private:
     QString answer;
     QString reason;
     QStringList dependencies;
+
+    // ProposeMemory payload.
+    QString memoryFact;        // empty means delete
+    QString memoryRationale;
+    QString memoryScope;
+    QString memoryReplaces;    // key of the fact to replace or delete
   };
 
   void openSession();
@@ -195,6 +265,18 @@ private:
   bool dependenciesBlocked(const QString &requestId) const;
 
   void failDependentsOf(const QString &requestId, const QString &reason);
+
+  // Called after a request reaches a terminal state. Fails any
+  // dependent whose dependency has now failed or been rejected, and
+  // re-evaluates deferrals.
+  void failBlockedDependentsAfterTerminal(const QString &requestId);
+
+  // Mark every non-terminal request whose dependency has failed or
+  // been rejected as failed, and mark every other non-terminal
+  // request with an unmet dependency as deferred. Called by
+  // drainQueue() before it picks a candidate, and by the terminal
+  // path.
+  void settleDependentRequests();
 
   int expertiseForInstruction(const QString &instruction,
                               const QString &agentId) const;
@@ -242,11 +324,26 @@ private:
 
   QString spawnFileAgent(const QString &domain);
 
+  // Record a memory proposal. If `replacesKey` is non-empty, the
+  // proposal supersedes an existing fact whose key matches. `fact`
+  // may be empty only when `replacesKey` is non-empty; that means the
+  // proposal is a deletion. Returns the new proposal's key, or an
+  // empty string on failure.
   QString recordProposal(const QString &fact, const QString &rationale,
-                         const QString &scope);
+                         const QString &scope,
+                         const QString &replacesKey = QString());
 
   void setProposalStatus(const QString &key, const QString &status,
                          const QString &acceptedScope);
+
+  // Deterministic key for a fact within a scope. Stable across
+  // rationale edits. Replaces the old key which incorporated the
+  // rationale.
+  static QString factKey(const QString &fact, const QString &scope);
+
+  // Resolve a proposal key to the fact text it names. Returns empty
+  // if the key is not in m_proposals or the proposal is a deletion.
+  QString factForKey(const QString &key) const;
 
   QString proposalsSidecarPath() const;
 

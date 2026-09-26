@@ -441,7 +441,6 @@ add_executable(Lore
         include/app/theme/ThemeRegistry.h
         src/ui/SettingsDialog.cpp
         include/ui/SettingsDialog.h
-        src/overseer/ConductorTypes.cpp
         include/overseer/ConductorTypes.h
         src/overseer/ConductorQueue.cpp
         include/overseer/ConductorQueue.h
