@@ -47,6 +47,12 @@ void FileAgent::logAgent(const QString &tag, const QString &content) {
                 QStringLiteral("%1/%2").arg(m_id, tag), content);
 }
 
+void FileAgent::setMemoryFacts(const QStringList &globalFacts,
+                               const QStringList &sessionFacts) {
+  m_globalFacts = globalFacts;
+  m_sessionFacts = sessionFacts;
+}
+
 void FileAgent::setToolCallDepthLimit(int limit) {
   m_toolCallDepthLimit = qBound(1, limit, 100000);
 }
@@ -223,9 +229,6 @@ void FileAgent::dispatchTurn() {
   if (!m_inferenceService)
     return;
 
-  // Per-agent turn ceiling. The count is a lifetime total, not a
-  // per-task one. A healthy agent uses a handful of turns per task
-  // and never approaches the limit; a cyclic one does.
   if (m_toolCallCount >= m_toolCallDepthLimit) {
     const QString reason =
         QStringLiteral("Agent %1 exceeded its tool call depth limit "
@@ -359,9 +362,6 @@ void FileAgent::onResponseFinished(
              QStringLiteral("Task: %1\nError: %2\nRaw response:\n%3")
                  .arg(m_current.id, parseError.errorString(), response));
 
-    // Count how many parse errors this task has already recovered
-    // from. A parse error is recoverable: record the offending reply
-    // in the transcript and give the model one correction turn.
     int parseErrors = 0;
 
     for (const QJsonObject &call : std::as_const(m_taskToolCalls)) {
@@ -620,21 +620,26 @@ void FileAgent::appendHistory(const QString &line) {
 QString FileAgent::buildPrompt(const Task &task) const {
   QString prompt;
 
+  // The leading sentence, with the domain substituted. The .arg() here
+  // is the fix for the literal %1 that was reaching the model.
   prompt += QStringLiteral(
-      "You are a file-manipulation agent. Your domain is the "
-      "directory: %1\n"
+      "You are a file-manipulation agent. Your domain is: %1\n"
       "\n"
       "You handle read, write, create, and list operations for files "
       "under your domain.\n"
       "\n"
-      "You do not perform structural edits on existing files. If a "
-      "task requires an insert, replace, or delete on the content of "
-      "an existing file, you delegate it to a scoped edit agent.\n"
+      "write_file OVERWRITES. If you need to change a file you created "
+      "earlier in this task, call write_file again with the full new "
+      "contents. Do not delegate that change to a scoped edit agent.\n"
+      "\n"
+      "You do not perform structural edits on the content of an "
+      "existing file that was given to you by the user. If a task "
+      "requires an insert, replace, or delete on the content of an "
+      "existing file that you did not create, delegate it to a scoped "
+      "edit agent.\n"
       "\n"
       "Creating a new file is NOT a structural edit. Use write_file "
-      "for any task that creates a file that does not exist yet. Do "
-      "not delegate a new-file creation to a scoped edit agent, "
-      "because a scoped edit agent needs an existing file to edit.\n"
+      "for any task that creates a file that does not exist yet.\n"
       "\n"
       "You may call multiple tools to complete a task. Each response "
       "is exactly one JSON object naming one tool call or one "
@@ -666,7 +671,7 @@ QString FileAgent::buildPrompt(const Task &task) const {
       "\n"
       "  {\"action\": \"delegate_scoped_edit\",\n"
       "   \"file\": \"<path relative to the session output folder of "
-      "an EXISTING file>\",\n"
+      "an EXISTING file you did not create>\",\n"
       "   \"instruction\": \"...\"}\n"
       "\n"
       "  {\"action\": \"done\", \"summary\": \"...\"}\n"
@@ -677,7 +682,34 @@ QString FileAgent::buildPrompt(const Task &task) const {
       "properly escaped. Newlines must be written as \\n, quotes as "
       "\\\", and backslashes as \\\\. An unescaped newline inside a "
       "JSON string will make the whole response invalid and the task "
-      "will fail.\n");
+      "will fail.\n")
+      .arg(m_domain);
+
+  // Facts the agent can draw on. Only the fact text, not the keyed
+  // format the conductor sees. The agent does not need keys.
+  const bool hasGlobal = !m_globalFacts.isEmpty();
+  const bool hasSession = !m_sessionFacts.isEmpty();
+
+  if (hasGlobal || hasSession) {
+    prompt += QStringLiteral(
+        "\n"
+        "Facts you may draw on when the task depends on knowing "
+        "something about the user:\n");
+
+    if (hasGlobal) {
+      prompt += QStringLiteral("\nGlobal:\n");
+
+      for (const QString &fact : std::as_const(m_globalFacts))
+        prompt += QStringLiteral("- %1\n").arg(fact);
+    }
+
+    if (hasSession) {
+      prompt += QStringLiteral("\nThis session:\n");
+
+      for (const QString &fact : std::as_const(m_sessionFacts))
+        prompt += QStringLiteral("- %1\n").arg(fact);
+    }
+  }
 
   if (!m_taskToolCalls.isEmpty()) {
     prompt += QStringLiteral(

@@ -16,6 +16,7 @@ MemoryProposalCard::MemoryProposalCard(const QString &key,
   m_factLabel = new QLabel(fact, this);
   m_factLabel->setWordWrap(true);
   m_factLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+  m_factLabel->setVisible(!fact.isEmpty());
 
   m_replacedLabel = new QLabel(this);
   m_replacedLabel->setWordWrap(true);
@@ -38,6 +39,19 @@ MemoryProposalCard::MemoryProposalCard(const QString &key,
     QFont small = m_rationaleLabel->font();
     small.setPointSizeF(qMax(7.0, small.pointSizeF() - 1.0));
     m_rationaleLabel->setFont(small);
+  }
+
+  m_noteLabel = new QLabel(this);
+  m_noteLabel->setWordWrap(true);
+  m_noteLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+  m_noteLabel->setVisible(false);
+  m_noteLabel->setObjectName(QStringLiteral("memoryProposalNote"));
+
+  {
+    QFont small = m_noteLabel->font();
+    small.setPointSizeF(qMax(7.0, small.pointSizeF() - 1.0));
+    small.setItalic(true);
+    m_noteLabel->setFont(small);
   }
 
   m_scopeCombo = new QComboBox(this);
@@ -72,6 +86,7 @@ MemoryProposalCard::MemoryProposalCard(const QString &key,
   layout->addWidget(m_factLabel);
   layout->addWidget(m_replacedLabel);
   layout->addWidget(m_rationaleLabel);
+  layout->addWidget(m_noteLabel);
   layout->addLayout(buttons);
 
   connect(m_acceptButton, &QPushButton::clicked, this, [this]() {
@@ -94,6 +109,9 @@ MemoryProposalCard::MemoryProposalCard(const QString &key,
 void MemoryProposalCard::setMode(Mode mode, const QString &replacedFact) {
   m_mode = mode;
 
+  if (m_factLabel)
+    m_factLabel->setVisible(!m_factLabel->text().isEmpty());
+
   if (!m_replacedLabel)
     return;
 
@@ -102,13 +120,11 @@ void MemoryProposalCard::setMode(Mode mode, const QString &replacedFact) {
     m_replacedLabel->setVisible(false);
     break;
   case Mode::Replace:
-    m_replacedLabel->setText(
-        tr("Replaces: %1").arg(replacedFact));
+    m_replacedLabel->setText(tr("Replaces: %1").arg(replacedFact));
     m_replacedLabel->setVisible(!replacedFact.isEmpty());
     break;
   case Mode::Delete:
-    m_replacedLabel->setText(
-        tr("Deletes: %1").arg(replacedFact));
+    m_replacedLabel->setText(tr("Deletes: %1").arg(replacedFact));
     m_replacedLabel->setVisible(!replacedFact.isEmpty());
     break;
   }
@@ -142,6 +158,14 @@ void MemoryProposalCard::setOpenAffordanceLabel(const QString &label) {
 void MemoryProposalCard::setOpenAffordanceTooltip(const QString &tooltip) {
   if (m_openButton)
     m_openButton->setToolTip(tooltip);
+}
+
+void MemoryProposalCard::setNote(const QString &note) {
+  if (!m_noteLabel)
+    return;
+
+  m_noteLabel->setText(note);
+  m_noteLabel->setVisible(!note.isEmpty());
 }
 
 void MemoryProposalCard::setInteractive(bool interactive) {

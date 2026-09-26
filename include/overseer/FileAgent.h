@@ -45,20 +45,19 @@ public:
   bool isBusy() const { return m_busy; }
   int queueDepth() const { return m_queue.size(); }
 
-  // The id of the task currently in flight, or an empty string when
-  // the agent is idle.
   QString activeTaskId() const { return m_current.id; }
 
   QVector<Task> queue() const { return m_queue; }
 
   void setOutputFolder(const QString &folder) { m_outputFolder = folder; }
 
-  // Per-agent ceiling on the number of inference turns this agent will
-  // ever dispatch in its lifetime. Guards against a cyclic agent that
-  // never reaches a terminal action. Normal tasks use a handful of
-  // turns; the default is high enough that only a runaway agent hits
-  // it. Raising the limit from the UI does not clear the counter; the
-  // agent resumes dispatching as soon as the limit is above the count.
+  // Facts the agent may draw on when it needs to know something about
+  // the user. Rendered into the agent's prompt. Set by the runner
+  // from the session's global and session memory. Passing an empty
+  // list clears the section.
+  void setMemoryFacts(const QStringList &globalFacts,
+                      const QStringList &sessionFacts);
+
   void setToolCallDepthLimit(int limit);
   int toolCallDepthLimit() const { return m_toolCallDepthLimit; }
   int toolCallCount() const { return m_toolCallCount; }
@@ -88,18 +87,9 @@ signals:
 
   void stateChanged();
 
-  // Emitted around the execution of a write_file tool call so the
-  // scheduler can record which agent owns the write on a path and
-  // route subsequent readers of that path to this agent. The claim
-  // is task-scoped: it is held for the duration of the task that
-  // contains the write, across every turn of that task, and is
-  // released when the task finishes.
   void fileWriteClaimed(const QString &taskId, const QString &relativePath);
   void fileWriteReleased(const QString &taskId, const QString &relativePath);
 
-  // Emitted when the per-agent turn ceiling is hit. The agent stops
-  // dispatching and fails the current task. The runner listens and
-  // surfaces this to the user.
   void depthLimitReached(const QString &agentId, int limit);
 
 private slots:
@@ -110,13 +100,8 @@ private slots:
                        const QString &error);
 
 private:
-  // Take the next task from the queue and mark the agent busy.
   void beginNextTask();
-
-  // Send a request for the current task. Called once per turn.
   void dispatchTurn();
-
-  // Schedule beginNextTask on the next event-loop turn.
   void scheduleDispatch();
 
   void finishCurrent(bool ok, const QString &resultOrError);
@@ -127,10 +112,8 @@ private:
 
   void logAgent(const QString &tag, const QString &content);
 
-  // True if `token` belongs to the request currently being served.
   bool isCurrentToken(const InferenceService::RequestToken &token) const;
 
-  // Release any write claims held for the current task.
   void releaseTaskClaims();
 
   QString m_id;
@@ -152,20 +135,18 @@ private:
   QString m_activeTaskId;
   QString m_accumulated;
 
-  // Every tool call made during the current task, in order, each
-  // with its recorded result. Rendered into the prompt on every turn
-  // after the first, and cleared by finishCurrent.
   QVector<QJsonObject> m_taskToolCalls;
 
-  // Relative paths written during the current task. Claims are
-  // emitted on write and released when the task finishes.
   QStringList m_taskWriteClaims;
 
   QStringList m_history;
   QStringList m_filesSeen;
 
-  // Per-agent turn ceiling and the running count. The count is never
-  // reset per task; it is a lifetime total for this agent.
+  // Facts the agent may draw on. Two lists, matching the two memory
+  // scopes.
+  QStringList m_globalFacts;
+  QStringList m_sessionFacts;
+
   int m_toolCallDepthLimit = 64;
   int m_toolCallCount = 0;
 

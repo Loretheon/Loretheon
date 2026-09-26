@@ -2,6 +2,7 @@
 
 #include <QDateTime>
 #include <QString>
+#include <QStringList>
 
 // Where a request came from. User requests are typed into the Overseer
 // input. Lore requests are submitted by the assistant on the user's
@@ -13,16 +14,32 @@ enum class Origin {
 };
 
 // A user request as it appears in the queue and on the conductor's
-// board. Immutable except for its state, which the conductor advances.
+// board.
+//
+// States:
+//
+//   inbox      — waiting to be routed. May be deferred if a declared
+//                dependency is not yet satisfied.
+//   routing    — the conductor is deciding what to do with it.
+//   delegated  — handed to a worker (file agent, scoped edit, memory
+//                agent). Not yet terminal.
+//   awaiting   — the request's terminal effect is a user action. For a
+//                memory proposal, the proposal has been recorded and is
+//                pending accept/reject. For a scoped edit plan, the
+//                plan has been generated and is pending review. Requests
+//                in this state are NOT satisfied: a dependent that
+//                declared depends_on this request stays deferred until
+//                the user resolves it.
+//   done       — complete.
+//   failed     — something went wrong.
+//   rejected   — refused, either by the conductor or by the user.
 struct ConductorRequest {
   QString id;              // uuid
-  QString text;            // verbatim user text
+  QString text;            // verbatim user text, or pre-decided JSON
   QDateTime queuedAt;
 
   Origin origin = Origin::User;
 
-  // "inbox", "routing", "delegated", "awaiting", "done", "failed",
-  // "rejected"
   QString state = QStringLiteral("inbox");
 
   // Set when state is "delegated", "awaiting", "done", "failed":
@@ -35,25 +52,29 @@ struct ConductorRequest {
   QString rejectReason;
 
   // How many times this request has been automatically retried after
-  // a failure. A value of 1 means the first failure has already been
-  // retried once; a second failure is terminal.
+  // a failure.
   int retryCount = 0;
 
-  // Set when the conductor has deferred this request because its
-  // dependencies are not yet complete. A deferred request is skipped
-  // by drainQueue() until the flag is cleared, which happens when a
-  // dependency reaches a terminal state. Persisted so a restart does
-  // not lose the deferral.
+  // Set when the conductor has deferred this request because a
+  // declared dependency is not yet satisfied. A deferred request is
+  // skipped by drainQueue() until the flag is cleared.
   bool deferred = false;
+
+  // When deferred, the ids of the dependencies that are not yet
+  // satisfied. Populated by settleDependentRequests so the view can
+  // show what the request is waiting on. Empty when not deferred.
+  QStringList blockedOn;
+
+  // If non-empty, this request was fanned out from a batch decision
+  // made against another request, whose id this holds.
+  QString parentId;
 };
 
-// A worker on the conductor's roster. File agents are persistent;
-// scoped edit agents are transient and one per file.
 struct ConductorWorker {
   QString id;
-  QString type;            // "file" or "scoped_edit"
-  QString domain;          // file agents: a directory path or topic
-  QString file;            // scoped edit agents: the target file
+  QString type;            // "file", "scoped_edit", "memory"
+  QString domain;
+  QString file;
   QString state;           // "idle", "busy", "waiting", "done"
   int queueDepth = 0;
 };

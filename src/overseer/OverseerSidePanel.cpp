@@ -124,8 +124,6 @@ void OverseerSidePanel::setPendingActions(
         break;
       }
 
-      // The scope combo only appears for NewFact and Replace. A
-      // deletion has a fixed scope, chosen by the proposal.
       const bool showScope =
           action.proposalMode !=
           OverseerRunner::PendingAction::ProposalMode::Delete;

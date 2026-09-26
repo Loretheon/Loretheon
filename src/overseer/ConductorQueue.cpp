@@ -29,6 +29,26 @@ QString ConductorQueue::enqueue(const QString &text) {
   return req.id;
 }
 
+QString ConductorQueue::enqueueChild(const QString &text,
+                                     const QString &parentId,
+                                     Origin origin) {
+  ConductorRequest req;
+  req.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+  req.text = text;
+  req.queuedAt = QDateTime::currentDateTime();
+  req.state = QStringLiteral("inbox");
+  req.parentId = parentId;
+  req.origin = origin;
+
+  m_requests.append(req);
+
+  save();
+
+  emit requestAdded(req.id);
+
+  return req.id;
+}
+
 bool ConductorQueue::remove(const QString &id) {
   for (int i = 0; i < m_requests.size(); ++i) {
     if (m_requests.at(i).id != id)
@@ -43,6 +63,31 @@ bool ConductorQueue::remove(const QString &id) {
   return false;
 }
 
+QStringList ConductorQueue::removeChildren(const QString &parentId) {
+  if (parentId.isEmpty())
+    return {};
+
+  QStringList removed;
+
+  for (int i = m_requests.size() - 1; i >= 0; --i) {
+    if (m_requests.at(i).parentId != parentId)
+      continue;
+
+    removed.append(m_requests.at(i).id);
+    m_requests.removeAt(i);
+  }
+
+  if (removed.isEmpty())
+    return removed;
+
+  save();
+
+  for (const QString &id : std::as_const(removed))
+    emit requestRemoved(id);
+
+  return removed;
+}
+
 void ConductorQueue::setState(const QString &id, const QString &state) {
   for (ConductorRequest &req : m_requests) {
     if (req.id != id)
@@ -50,9 +95,10 @@ void ConductorQueue::setState(const QString &id, const QString &state) {
 
     req.state = state;
 
-    // A request that leaves the inbox is no longer deferred.
-    if (state != QStringLiteral("inbox"))
+    if (state != QStringLiteral("inbox")) {
       req.deferred = false;
+      req.blockedOn.clear();
+    }
 
     save();
     emit requestChanged(id);
@@ -108,6 +154,26 @@ void ConductorQueue::setDeferred(const QString &id, bool deferred) {
       return;
 
     req.deferred = deferred;
+
+    if (!deferred)
+      req.blockedOn.clear();
+
+    save();
+    emit requestChanged(id);
+    return;
+  }
+}
+
+void ConductorQueue::setBlockedOn(const QString &id,
+                                  const QStringList &blockedOn) {
+  for (ConductorRequest &req : m_requests) {
+    if (req.id != id)
+      continue;
+
+    if (req.blockedOn == blockedOn)
+      return;
+
+    req.blockedOn = blockedOn;
     save();
     emit requestChanged(id);
     return;
@@ -122,6 +188,7 @@ void ConductorQueue::clearAllDeferred() {
       continue;
 
     req.deferred = false;
+    req.blockedOn.clear();
     any = true;
   }
 
@@ -139,6 +206,7 @@ void ConductorQueue::retry(const QString &id) {
     req.retryCount += 1;
     req.state = QStringLiteral("inbox");
     req.deferred = false;
+    req.blockedOn.clear();
     req.rejectReason.clear();
     save();
     emit requestChanged(id);
@@ -178,6 +246,21 @@ ConductorRequest ConductorQueue::byId(const QString &id) const {
   return {};
 }
 
+QVector<ConductorRequest> ConductorQueue::children(
+    const QString &parentId) const {
+  QVector<ConductorRequest> result;
+
+  if (parentId.isEmpty())
+    return result;
+
+  for (const ConductorRequest &req : m_requests) {
+    if (req.parentId == parentId)
+      result.append(req);
+  }
+
+  return result;
+}
+
 void ConductorQueue::load() {
   m_requests.clear();
 
@@ -213,6 +296,21 @@ void ConductorQueue::load() {
     req.rejectReason = obj.value(QStringLiteral("rejectReason")).toString();
     req.retryCount = obj.value(QStringLiteral("retryCount")).toInt(0);
     req.deferred = obj.value(QStringLiteral("deferred")).toBool(false);
+    req.parentId = obj.value(QStringLiteral("parentId")).toString();
+
+    const QJsonArray blockedArray =
+        obj.value(QStringLiteral("blockedOn")).toArray();
+
+    for (const QJsonValue &bv : blockedArray) {
+      const QString blockedId = bv.toString();
+      if (!blockedId.isEmpty())
+        req.blockedOn.append(blockedId);
+    }
+
+    const QString originString =
+        obj.value(QStringLiteral("origin")).toString();
+    req.origin = originString == QStringLiteral("lore") ? Origin::Lore
+                                                        : Origin::User;
 
     if (req.id.isEmpty())
       continue;
@@ -240,6 +338,16 @@ void ConductorQueue::save() {
     obj.insert(QStringLiteral("rejectReason"), req.rejectReason);
     obj.insert(QStringLiteral("retryCount"), req.retryCount);
     obj.insert(QStringLiteral("deferred"), req.deferred);
+
+    QJsonArray blockedArray;
+    for (const QString &b : req.blockedOn)
+      blockedArray.append(b);
+    obj.insert(QStringLiteral("blockedOn"), blockedArray);
+
+    obj.insert(QStringLiteral("parentId"), req.parentId);
+    obj.insert(QStringLiteral("origin"),
+               req.origin == Origin::Lore ? QStringLiteral("lore")
+                                          : QStringLiteral("user"));
     arr.append(obj);
   }
 

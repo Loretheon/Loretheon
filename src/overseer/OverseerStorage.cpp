@@ -52,12 +52,6 @@ bool writeTextFile(const QString &path, const QString &text) {
   return true;
 }
 
-// Splits a memory file into (prose, facts). The prose is everything
-// before "## Accepted proposals". The facts list is the trimmed text
-// after "- " for each bullet line in the section. Lines that are not
-// bullets and blank lines inside the section are preserved verbatim
-// in `rawFacts` so a round-trip does not destroy formatting; `facts`
-// holds only the bullet payloads, in order, for key computation.
 struct ParsedMemory {
   QString prose;
   QStringList facts;
@@ -223,16 +217,18 @@ bool replaceFactInMemoryFile(const QString &path, const QString &oldFact,
   if (oldTrimmed.isEmpty() && newTrimmed.isEmpty())
     return false;
 
+  // No old fact to remove: a plain append.
   if (oldTrimmed.isEmpty())
     return appendFactToMemoryFile(path, newTrimmed);
 
+  // No new fact to write: a plain remove.
   if (newTrimmed.isEmpty())
     return removeFactFromMemoryFile(path, oldTrimmed);
 
   const QString existing = readTextFile(path);
 
   if (existing.isEmpty())
-    return appendFactToMemoryFile(path, newTrimmed);
+    return false;
 
   ParsedMemory parsed = parseMemory(existing);
 
@@ -250,8 +246,11 @@ bool replaceFactInMemoryFile(const QString &path, const QString &oldFact,
     }
   }
 
+  // The old fact is not present. Refuse rather than silently appending;
+  // a silent append is how two contradicting facts end up coexisting
+  // and how the user never learns the replace failed.
   if (target < 0)
-    return appendFactToMemoryFile(path, newTrimmed);
+    return false;
 
   parsed.rawFacts[target] = QStringLiteral("- %1").arg(newTrimmed);
 
