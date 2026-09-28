@@ -42,6 +42,11 @@ public:
   // [MinDockWidth, m_maxDockWidth]. No-op if unchanged.
   void fitToContentWidth();
 
+  // The width established by the first content-driven fit. Zero until
+  // that fit happens. After that it is also the ceiling: the dock will
+  // not grow past it.
+  int naturalWidth() const { return m_naturalWidth; }
+
   // True once the user has dragged the resize handle. Once true, the
   // dock will not auto-fit to content any more.
   bool hasUserOverrideWidth() const { return m_userOverrideWidth; }
@@ -109,8 +114,6 @@ private:
   void updateStripGeometry();
   void updateContentGeometry();
 
-  void recomputeMaxWidthFromScreen();
-
   static constexpr int kDefaultHideDelayMs = 1000;
 
   Edge m_edge;
@@ -123,8 +126,9 @@ private:
   QTimer *m_hideTimer = nullptr;
 
   int m_dockWidth = 280;
-  int m_maxDockWidth = 1200;
+  int m_maxDockWidth = 100000;
   int m_preferredContentWidth = 0;
+  int m_naturalWidth = 0;
   bool m_expanded = true;
   bool m_pinned = false;
   bool m_userOverrideWidth = false;

@@ -867,12 +867,6 @@ void MainWindow::buildNormalPage() {
       new AutoHideDock(AutoHideDock::Edge::Left,
                        QStringLiteral("normal/fileTree"), m_normalCenterRow);
 
-  // The file tree is allowed to be as wide as it needs to be. The
-  // half-screen cap the dock uses by default is a sanity limit for
-  // user drags, not a limit for content. Lift it here so the tree
-  // never gets clipped below what its columns need.
-  m_fileTreeDock->setMaxDockWidth(100000);
-
   m_fileTreeReservation = new DockReservation(m_fileTreeDock, m_normalCenterRow);
 
   m_fileWidget = new FileWidget(m_fileTreeDock);
@@ -928,45 +922,19 @@ void MainWindow::buildNormalPage() {
   rowLayout->addWidget(m_documentArea, 1);
   rowLayout->addWidget(m_chatReservation, 0);
 
-  // The document area must yield space to the docks. In a QHBoxLayout
-  // a widget with Preferred horizontal policy holds onto its
-  // sizeHint().width() and refuses to shrink below its
-  // minimumSizeHint().width(). If DocumentArea's minimum is large,
-  // the layout shrinks the file tree reservation first, which clips
-  // the tree. Setting the horizontal policy to Ignored tells the
-  // layout to give the document area whatever is left after the
-  // fixed-width siblings, and a small explicit minimum keeps it from
-  // collapsing entirely.
-  if (m_documentArea) {
-    m_documentArea->setSizePolicy(
-        QSizePolicy::Ignored,
-        m_documentArea->sizePolicy().verticalPolicy());
-    m_documentArea->setMinimumWidth(160);
-  }
-
+  // The tree's own preferred content width is the authority for the
+  // dock's natural width. fullContentWidth() deliberately counts
+  // hidden columns, so feeding max(preferred, full) here would latch
+  // the dock to a value wider than the visible tree needs, and the
+  // dock would then refuse to shrink back.
   if (auto *view = m_fileWidget->view()) {
     connect(view, &FileSystemView::preferredContentWidthChanged,
             m_fileTreeDock, [this](int width) {
-              // Use the full width, not the visible-columns width.
-              // The visible width is what the tree needs to not show a
-              // scrollbar right now; the full width is what it needs
-              // to actually show every column's data.
-              const int full = m_fileWidget->view()->fullContentWidth();
-              const int target = std::max(width, full);
-
-              m_fileTreeDock->setPreferredContentWidth(target);
+              m_fileTreeDock->setPreferredContentWidth(width);
               m_fileTreeDock->fitToContentWidth();
-
-              // Re-assert the document area's small minimum in case
-              // something else (a theme change, a layout reset) has
-              // restored its default minimum.
-              if (m_documentArea)
-                m_documentArea->setMinimumWidth(160);
             });
   }
 
-  // The chat panel's preferred width is its sizeHint, and it does not
-  // change shape the way the tree does. Report it once.
   m_chatDock->setPreferredContentWidth(
       std::max(m_chatWidget->sizeHint().width(),
                m_chatWidget->minimumSizeHint().width()));
@@ -978,9 +946,6 @@ void MainWindow::buildNormalPage() {
   m_fileTreeDock->showDock();
   m_chatDock->showDock();
 
-  // Defer the initial fit to the next event-loop turn, after the tree
-  // has had a chance to run its own measurement pass. Without this the
-  // first fit is a no-op because m_preferredContentWidth is still 0.
   QTimer::singleShot(0, this, [this]() {
     if (!m_fileWidget || !m_fileTreeDock)
       return;
@@ -1002,6 +967,7 @@ void MainWindow::buildNormalPage() {
     }
   });
 }
+
 void MainWindow::buildOverseerPage() {
   m_overseerSessionManager =
       new OverseerSessionManager(m_inferenceService, this);

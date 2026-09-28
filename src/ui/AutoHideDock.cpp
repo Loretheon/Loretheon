@@ -3,11 +3,9 @@
 #include <QCursor>
 #include <QEnterEvent>
 #include <QEvent>
-#include <QGuiApplication>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QResizeEvent>
-#include <QScreen>
 #include <QSettings>
 #include <QTimer>
 #include <QVBoxLayout>
@@ -22,8 +20,6 @@ AutoHideDock::AutoHideDock(Edge edge, const QString &settingsPrefix,
 
   setAttribute(Qt::WA_StyledBackground, true);
   setMouseTracking(true);
-
-  recomputeMaxWidthFromScreen();
 
   loadPersistedState();
 
@@ -70,29 +66,6 @@ AutoHideDock::AutoHideDock(Edge edge, const QString &settingsPrefix,
 
   updateStripGeometry();
   m_strip->setVisible(!m_expanded);
-}
-
-void AutoHideDock::recomputeMaxWidthFromScreen() {
-  QScreen *screen = nullptr;
-
-  if (QWidget *w = window())
-    screen = w->screen();
-
-  if (!screen)
-    screen = QGuiApplication::primaryScreen();
-
-  if (!screen)
-    return;
-
-  // The dock may occupy most of the screen, but leave enough room for
-  // the centre column to remain usable.
-  const int available = screen->availableGeometry().width();
-  const int cap = std::max(MinDockWidth, available - 320);
-
-  m_maxDockWidth = cap;
-
-  if (m_dockWidth > m_maxDockWidth)
-    setDockWidth(m_maxDockWidth);
 }
 
 QString AutoHideDock::widthSettingsKey() const {
@@ -145,7 +118,12 @@ void AutoHideDock::persistExpanded() {
 }
 
 void AutoHideDock::setMaxDockWidth(int width) {
-  const int clamped = std::max(MinDockWidth, width);
+  int clamped = std::max(MinDockWidth, width);
+
+  // Once the natural width is established it is also the ceiling.
+  // No caller may widen the dock past what the content asked for.
+  if (m_naturalWidth > 0)
+    clamped = std::min(clamped, m_naturalWidth);
 
   if (m_maxDockWidth == clamped)
     return;
@@ -188,14 +166,21 @@ void AutoHideDock::fitToContentWidth() {
   if (m_preferredContentWidth <= 0)
     return;
 
-  // Content-driven fit is authoritative. If the tree needs more room
-  // than the screen-derived cap, raise the cap. The cap exists to keep
-  // a *user* from dragging the dock absurdly wide, not to prevent the
-  // content from asking for the space it actually needs.
-  if (m_preferredContentWidth > m_maxDockWidth)
-    m_maxDockWidth = m_preferredContentWidth;
+  // The first content-driven fit establishes the dock's natural
+  // width. That value is also the ceiling: subsequent fits do not
+  // grow past it. User drags may still make the dock narrower.
+  if (m_naturalWidth == 0) {
+    m_naturalWidth = m_preferredContentWidth;
+    setMaxDockWidth(m_naturalWidth);
 
-  setDockWidth(m_preferredContentWidth);
+    // A width restored from a previous session (or a larger stored
+    // value from any other source) must not survive the first fit.
+    // Pull the dock down to the natural width rather than leaving it
+    // at the persisted value.
+    setDockWidth(std::min(m_dockWidth, m_naturalWidth));
+  }
+
+  setDockWidth(m_naturalWidth);
 }
 
 void AutoHideDock::clearUserOverrideWidth() {
@@ -203,6 +188,12 @@ void AutoHideDock::clearUserOverrideWidth() {
     return;
 
   m_userOverrideWidth = false;
+
+  // Forget the latched natural width so the next fit re-derives it
+  // from the current content measurement instead of re-applying a
+  // stale value.
+  m_naturalWidth = 0;
+
   persistOverride();
 
   fitToContentWidth();

@@ -167,7 +167,7 @@ void CustomTitleBar::buildMenus() {
   connect(m_overseerModeAct, &QAction::triggered, this,
           [this]() { if (m_callbacks.modeOverseer) m_callbacks.modeOverseer(); });
 
-  m_searchModeAct = new QAction(tr("@Search"), this);
+  m_searchModeAct = new QAction(tr("Search"), this);
   m_searchModeAct->setCheckable(true);
   m_searchModeAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_3));
   modeGroup->addAction(m_searchModeAct);

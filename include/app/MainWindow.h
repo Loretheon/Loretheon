@@ -123,6 +123,7 @@ private:
 
   bool confirmDiscardChanges(const QString &areaName);
 
+
   void buildIngestLayer();
 
   void importOne(const QString &sourcePath);
