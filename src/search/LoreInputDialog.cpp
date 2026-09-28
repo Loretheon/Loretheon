@@ -12,7 +12,7 @@ LoreInputDialog::LoreInputDialog(const QPoint &globalPosition,
     : QDialog(parent, Qt::Popup) {
   setObjectName(QStringLiteral("loreInputDialog"));
 
-  m_hint = new QLabel(tr("@Lore"), this);
+  m_hint = new QLabel(tr("Search"), this);
   m_hint->setObjectName(QStringLiteral("loreInputHint"));
 
   m_input = new QLineEdit(this);

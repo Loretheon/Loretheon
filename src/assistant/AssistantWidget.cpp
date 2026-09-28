@@ -176,7 +176,7 @@ void AssistantWidget::buildUi() {
                     static_cast<int>(
                         LoreAssistant::CompletionPolicy::AppendToNextUserMessage));
 
-  m_close = new QPushButton(QStringLiteral("✕"), m_header);
+  m_close = new QPushButton(QStringLiteral("x"), m_header);
   m_close->setObjectName(QStringLiteral("assistantClose"));
   m_close->setCursor(Qt::PointingHandCursor);
   m_close->setFlat(true);

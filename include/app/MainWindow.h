@@ -31,6 +31,8 @@ class ToastStack;
 class AvatarWidget;
 class LoreAssistant;
 class CustomTitleBar;
+class AutoHideDock;
+class DockReservation;
 
 class IngestRegistry;
 class IngestService;
@@ -46,16 +48,11 @@ class SearchPage;
 class SearchService;
 
 class QAction;
-class QActionGroup;
 class QEvent;
-class QMenu;
 class QProgressDialog;
 class QResizeEvent;
-class QSplitter;
 class QStackedWidget;
 class QTimer;
-class QToolBar;
-class QToolButton;
 class QVBoxLayout;
 
 class MainWindow : public QMainWindow {
@@ -71,8 +68,6 @@ protected:
   void resizeEvent(QResizeEvent *event) override;
   void showEvent(QShowEvent *event) override;
   void moveEvent(QMoveEvent *event) override;
-  void mousePressEvent(QMouseEvent *event) override;
-  void mouseMoveEvent(QMouseEvent *event) override;
 
 private slots:
   void about();
@@ -80,10 +75,6 @@ private slots:
   void manageModels();
   void openLlmSettings();
   void openSettings();
-  void onThemeSelected(const QString &theme);
-  void onOverseerThemeSelected(const QString &theme);
-
-  void onModeActionTriggered(QAction *action);
 
   void onImportRequested(const QString &path);
   void onImportAllRequested(const QStringList &paths);
@@ -99,23 +90,14 @@ private slots:
 
   void onAssistantMessageSubmitted(const QString &text);
   void onAssistantIconClicked();
-  void onTalkToLoreClicked();
+  void onToggleAvatar();
   void onDocumentSaved(TextDocument *document);
-
-  // Clamp the left pane of the main splitter to the file tree's
-  // preferred content width, so the handle cannot be dragged into dead
-  // space and extra space always goes to the editor.
-  void clampFileTreeWidth();
 
 private:
   enum class Mode { Normal = 0, Overseer = 1, Search = 2 };
-  bool m_avatarPlaced = false;
-  bool m_draggingTitleBar = false;
-  QPoint m_lastMousePos;
-  void createActions();
-  void createMenus();
-  void createToolbar();
+
   void createCustomTitleBar();
+  void wireTitleBar();
 
   void buildNormalPage();
   void buildOverseerPage();
@@ -179,19 +161,21 @@ private:
   SearchPage *m_searchPage = nullptr;
 
   QStackedWidget *m_centralStack = nullptr;
-  QToolBar *m_mainToolBar = nullptr;
-  QToolButton *m_modeButton = nullptr;
 
-  // The outer horizontal splitter hosting the file tree on the left and
-  // everything else on the right.  Clamped so the file tree cannot be
-  // dragged wider than its content.
-  QSplitter *m_mainSplitter = nullptr;
+  AutoHideDock *m_fileTreeDock = nullptr;
+  DockReservation *m_fileTreeReservation = nullptr;
+
+  AutoHideDock *m_chatDock = nullptr;
+  DockReservation *m_chatReservation = nullptr;
+
+  QWidget *m_normalCenterRow = nullptr;
 
   CustomTitleBar *m_titleBar = nullptr;
   QVBoxLayout *m_mainLayout = nullptr;
 
   ToastStack *m_toastStack = nullptr;
   AvatarWidget *m_avatar = nullptr;
+  bool m_avatarPlaced = false;
 
   LoreAssistant *m_assistant = nullptr;
   AssistantWidget *m_assistantWidget = nullptr;
@@ -206,39 +190,6 @@ private:
 
   QString m_currentNormalTheme;
   QString m_currentOverseerTheme;
-
-  QMenu *m_fileMenu = nullptr;
-  QMenu *m_newMenu = nullptr;
-  QMenu *m_toolsMenu = nullptr;
-  QMenu *m_themeMenu = nullptr;
-  QMenu *m_viewMenu = nullptr;
-  QMenu *m_modeMenu = nullptr;
-  QMenu *m_helpMenu = nullptr;
-
-  QAction *m_newTextAct = nullptr;
-  QAction *m_newMarkdownAct = nullptr;
-  QAction *m_newPlantUmlAct = nullptr;
-  QAction *m_openAct = nullptr;
-  QAction *m_importFilesAct = nullptr;
-  QAction *m_importFolderAct = nullptr;
-  QAction *m_saveAct = nullptr;
-  QAction *m_saveAllAct = nullptr;
-  QAction *m_exitAct = nullptr;
-  QAction *m_manageModelsAct = nullptr;
-  QAction *m_llmSettingsAct = nullptr;
-  QAction *m_settingsAct = nullptr;
-
-  QActionGroup *m_modeGroup = nullptr;
-  QAction *m_normalModeAct = nullptr;
-  QAction *m_overseerModeAct = nullptr;
-  QAction *m_searchModeAct = nullptr;
-
-  QAction *m_toggleSpeechAct = nullptr;
-  QAction *m_rebuildIndexAct = nullptr;
-  QAction *m_aboutAct = nullptr;
-  QAction *m_aboutQtAct = nullptr;
-
-  QAction *m_talkToLoreAct = nullptr;
 
   std::unique_ptr<IngestRegistry> m_ingestRegistry;
   std::unique_ptr<NoteWriter> m_noteWriter;

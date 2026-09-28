@@ -1,3 +1,4 @@
+```markdown
 # Overseer — Technical Overview
 
 ## What it is
@@ -42,18 +43,25 @@ The conductor is an LLM. It is given a prompt built from the session's
 current state: memory facts, pending proposals, the file tree, the
 agent roster, recent conductor actions, and the request queue.
 
+The conductor's job is to classify, not to touch files. It never reads
+or writes file contents itself.
+
 ### The file agents
 
-A file agent owns a domain — a directory of related files. It reads,
-writes, creates, and lists files under its domain. It runs its own
-multi-turn loop: each turn it emits one JSON object naming a tool call
-or a terminal action, and the harness executes it and feeds the result
-back.
+A file agent owns a domain — a semantic area of work, not necessarily a
+directory. It creates files in its domain, deletes them, and lists them.
+It runs its own multi-turn loop: each turn it emits one JSON object
+naming a tool call or a terminal action, and the harness executes it and
+feeds the result back.
 
-File agents delegate structural edits. If a task requires an insert,
-replace, or delete on the content of an existing file the agent did not
-create, it emits `delegate_scoped_edit` and the request is handed to a
-scoped edit agent.
+A file agent does not perform structural edits on the content of a file.
+Any change to a file that already exists — append, insert, replace,
+delete, or rewrite — is a structural edit and must go through a scoped
+edit. A file agent creates files and delegates edits to existing files.
+
+The distinction is the file agent's rule: `write_file` is for creating a
+file that does not exist yet. If the path already exists, the task is a
+structural edit and the file agent emits `delegate_scoped_edit`.
 
 ### The memory agent
 
@@ -72,7 +80,7 @@ about the operation and emits `add_fact`, `replace_fact`, or
 
 A scoped edit agent plans and applies a structural edit to one file. It
 is transient: created when a scoped edit is requested, torn down when the
-plan is applied or cancelled.
+plan is applied or cancelled. It does not persist between edits.
 
 Planning and applying are separate. The planner reads the file, resolves
 the user's intent against the file's structure, and emits a plan of
@@ -87,6 +95,12 @@ pending-edit highlights and accept or reject them in place. Overseer
 scoped edits run against a document loaded from disk and are reviewed
 through the transcript.
 
+The `TextDocument` is loaded with its type set explicitly. A `.md` file
+is opened as `DocumentMode::Markdown`, so the structure parser assigns
+ids only to the document root and to Markdown sections. That matters for
+the scope resolution below: a `replace_scope` against a paragraph is not
+possible, because paragraphs have no scope id.
+
 ---
 
 ## How a request flows
@@ -99,7 +113,8 @@ through the transcript.
    it `routing`. It sends the conductor a prompt.
 
 3. **Route.** The conductor replies with one JSON object. The runner
-   parses it and decides what to do.
+   parses it and decides what to do. If the reply is not valid JSON, the
+   runner retries the conductor once before failing the request.
 
 4. **Fan out or apply.** A single action becomes a dispatch to a worker.
    A `batch` fans out into N child requests, one per sub-action, each
@@ -110,13 +125,14 @@ through the transcript.
    wait for review.
 
 6. **Resolve.** Each request reaches a terminal state — `done`,
-   `failed`, or `rejected` — either on its own or after the user accepts
-   or rejects a pending action.
+   `rejected`, or `skipped` — either on its own or after the user accepts
+   or rejects a pending action. A failed request is not terminal until
+   the user acts on it.
 
-7. **Settle dependents.** Whenever a request reaches a terminal state,
-   the runner re-evaluates every deferred request. Those whose
-   dependencies are now satisfied become eligible and are picked up by
-   the next drain.
+7. **Settle dependents.** Whenever a request reaches a terminal state or
+   is resolved by the user, the runner re-evaluates every deferred
+   request. Those whose dependencies are now satisfied become eligible
+   and are picked up by the next drain.
 
 ---
 
@@ -139,19 +155,50 @@ Two ways to declare a dependency:
   child requests.
 
 A request whose dependencies are not yet satisfied sits in `inbox` with
-`deferred = true`. It is skipped by the drain loop until its
-dependencies are `done`. Dependencies are resolved in three states:
+`deferred = true` and `blockedOn` listing the ids it is waiting on. It is
+skipped by the drain loop until its dependencies resolve. Dependencies
+are resolved in four states:
 
 - `done` — satisfied.
-- `failed` or `rejected` — the dependent fails immediately with
-  `"Dependency X did not complete."`
+- `rejected` — satisfied. The user or the conductor decided the
+  dependency does not need to succeed; dependents continue.
+- `skipped` — satisfied. The user explicitly waived a failed dependency;
+  dependents continue.
+- `failed` — **not satisfied**. A failed request is recoverable, not
+  terminal. Its dependents stay paused — `inbox`, `deferred = true`,
+  `blockedOn` pointing at the failed request — until the user acts.
 - `awaiting` — **not satisfied**. A request that is waiting on a user
   action is not terminal, so its dependents stay deferred until the user
   resolves it.
 
-If a dependency fails, the runner fires a `NeedsUserInput` notification
-and the user chooses whether to retry the failed request or remove it and
-let the dependents fail.
+### Resolving a failed request
+
+When a request fails, the runner:
+
+1. Moves it to `failed` and records the failure reason.
+2. Pauses every dependent: they stay `inbox` with `deferred = true` and
+   `blockedOn` pointing at the failed request. They do not cascade to
+   `failed`.
+3. Fires a `NeedsUserInput` notification targeting the failed request id.
+4. Leaves the request in the `Failed` column of the Conductor Board with
+   three buttons: **Retry**, **Skip**, and **Remove**.
+
+The user then chooses:
+
+- **Retry** — the request is re-enqueued with `retryCount` reset to zero
+  (a manual retry is a fresh start, not a continuation of the automatic
+  retry budget). The dependents stay paused until it resolves.
+- **Skip** — the request moves to a new `skipped` state. Its dependents
+  are treated as satisfied and continue as if the dependency had
+  succeeded.
+- **Remove** — the request is deleted from the queue and its node is
+  removed from the dependency graph, along with every edge that touched
+  it. The released dependents have their `blockedOn` cleared and their
+  `deferred` flag unset, and they continue without the dependency.
+
+Nothing cascades to `failed` automatically except an unresolved
+dependency on another `failed` request that the user has not yet acted
+on.
 
 ---
 
@@ -217,6 +264,12 @@ event type differently. Memory proposals get an interactive card with
 scope, accept, and reject controls. Edit plans get an edit-plan card with
 per-edit accept and reject. Assistant messages are rendered as Markdown.
 
+Edit-plan cards serialize their commands through
+`ChatWidgetSerialization::editCommandToJson`, which renders the full
+operation name (`replace_scope`), the full position name (`inside`), and
+the real scope id (for a Markdown file, the section id assigned by the
+structure parser).
+
 The side panel's "User actions" tab shows every pending action across the
 session — memory proposals and pending edit plans — as a single queue.
 The side panel and the transcript are two views of the same underlying
@@ -227,9 +280,13 @@ state. Accepting or rejecting from either updates the other.
 ## The Conductor Board
 
 The Conductor Board is a kanban view of the request queue, grouped by
-state: Inbox, Routing, Delegated, Awaiting, Done, Failed, Rejected. Each
-card shows the request text, its current state, and any available
-actions. `blockedOn` requests display what they are waiting on.
+state: Inbox, Routing, Delegated, Awaiting, Done, Failed, Rejected,
+Skipped. Each card shows the request text, its current state, and any
+available actions. `blockedOn` requests display what they are waiting on.
+
+A failed card carries **Retry**, **Skip**, and **Remove** buttons. A
+card that has not reached a terminal state carries **Reject**. A skipped
+or rejected card carries **Remove**.
 
 Above the kanban is the dependency graph, rendered as SVG from the DOT
 file. Nodes are request ids with their text as a label. Edges are
@@ -315,6 +372,18 @@ Inside a batch, do not use `route_to_worker`: agent ids do not exist yet
 at the moment the batch is written. Use `spawn_file_agent` and let the
 dispatcher route to an existing agent by expertise.
 
+The choice between `spawn_file_agent` and `spawn_scoped_edit` is
+deterministic and follows the file agent's own rule:
+
+- Creating a file that does **not** exist yet → `spawn_file_agent`.
+- Any change to a file that **already** exists — append, insert,
+  replace, delete, or rewrite → `spawn_scoped_edit`. This applies even if
+  a file agent created the file in an earlier task.
+
+Routing an append, insert, replace, delete, or rewrite of an existing
+file to `spawn_file_agent` produces a loop: the file agent's own rule
+forbids it and it will fail or overwrite.
+
 ---
 
 ## The file agent's vocabulary
@@ -347,9 +416,16 @@ A file agent replies with exactly one JSON object per turn:
 {"action": "fail", "reason": "..."}
 ```
 
-`write_file` overwrites. To change a file the agent created earlier in
-the same task, call `write_file` again with the full new contents.
-Structural edits to files the agent did not create must be delegated.
+`write_file` is for creating a file that does not exist yet. It
+overwrites if the path already exists, which is why the agent must check
+first. If a task requires an append, insert, replace, delete, or rewrite
+of a file that already exists, the agent must emit `delegate_scoped_edit`
+rather than call `write_file`.
+
+A file agent that is asked to create a file and then append to it should
+not write twice. If the task genuinely requires two operations with a
+review step or a dependency in between, that is two tasks, not one task
+with two tool calls.
 
 ---
 
@@ -410,16 +486,20 @@ takes effect on the next request without reopening the session.
 
 Workers are retried up to three times on failure. A failed file agent
 task is re-dispatched to the same agent so its state carries over. A
-failed memory agent task is retried the same way.
+failed memory agent task is retried the same way. `retryCount` is bumped
+on each automatic retry and reset to zero on a manual retry.
 
 Parse failures in worker output get one correction turn. The offending
 raw response is appended to the prompt and the model is asked to reply
 with valid JSON only.
 
-A failed dependency fails its dependents. The runner fires a
-`NeedsUserInput` notification and gives the user the choice to retry the
-failed request or remove it. Removing it fails the dependents with
-`"Dependency X was removed."`
+A failed request does not cascade. Its dependents stay paused — `inbox`
+with `deferred = true` and `blockedOn` set — until the user acts on the
+failure. The `EditPlanner` has a watchdog: if no plan and no failure
+arrive within a fixed timeout, the planner emits `failed` itself, so a
+scoped edit cannot hang indefinitely. The exact same request that fails
+once may succeed on retry; the provider truncates streaming responses
+occasionally and a second attempt usually completes.
 
 ---
 
@@ -442,4 +522,8 @@ focused, as a system notification.
 Overseer does not own the files. The session folder is an ordinary
 directory. Files can be edited by hand, opened in other tools, copied,
 or deleted. The session's state is derived from those files on every
-reopen.
+reopen. The one exception is a file under an active scoped edit: while
+a scoped edit is in flight the file's contents are held in memory until
+the plan is applied or cancelled, and a manual edit in that window may
+be overwritten when the plan lands.
+```

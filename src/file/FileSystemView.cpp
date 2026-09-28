@@ -12,31 +12,28 @@
 #include <QDrag>
 #include <QFileInfo>
 #include <QFontMetrics>
+#include <QFrame>
 #include <QHeaderView>
 #include <QLineEdit>
 #include <QMenu>
 #include <QMimeData>
+#include <QScrollBar>
+#include <QStyle>
 #include <QTimer>
 #include <QUrl>
+
+#include <algorithm>
 
 namespace {
 
 constexpr const char *kNotesPathMimeType =
     "application/x-lore-notes-path";
 
-// Padding added to the widest content cell so text does not touch the
-// next column's edge.
-constexpr int kCellPadding = 8;
+constexpr int kCellPadding = 12;
 
-// Width reserved for the tree indentation column and the expand/collapse
-// arrows at the left of the view.  This is not part of any section but
-// it does consume horizontal space.
-constexpr int kIndentationAllowance = 40;
+constexpr int kIndentationAllowance = 60;
 
-// Minimal sensible width for the whole view, so the splitter cannot
-// collapse us into nothing.  Also used as the floor when the user has
-// hidden most columns.
-constexpr int kMinimumViewWidth = 120;
+constexpr int kMinimumViewWidth = 260;
 
 const QStringList &defaultImportableExtensions() {
   static const QStringList kExtensions = {
@@ -93,6 +90,11 @@ void FileSystemView::setModel(QAbstractItemModel *model) {
   connect(model, &QAbstractItemModel::layoutChanged, this,
           [this]() { scheduleColumnWidthRecalculation(); });
 
+  if (auto *fsModel = qobject_cast<FileSystemModel *>(model)) {
+    connect(fsModel, &FileSystemModel::directoryLoaded, this,
+            [this](const QString &) { scheduleColumnWidthRecalculation(); });
+  }
+
   connect(this, &QTreeView::expanded, this,
           [this]() { scheduleColumnWidthRecalculation(); });
   connect(this, &QTreeView::collapsed, this,
@@ -116,7 +118,7 @@ void FileSystemView::applyColumnSizing() {
   h->setMinimumSectionSize(40);
   h->setSectionsClickable(true);
   h->setSectionsMovable(true);
-  h->setSectionResizeMode(QHeaderView::Fixed);
+  h->setSectionResizeMode(QHeaderView::Interactive);
 
   m_columnsConfigured = true;
 }
@@ -139,13 +141,35 @@ int FileSystemView::headerWidth(int column) const {
   return h->sectionSizeHint(column);
 }
 
+int FileSystemView::contentWidthForRow(int column, const QModelIndex &index,
+                                       bool includeChildren) const {
+  const QAbstractItemModel *m = model();
+  if (!m || !index.isValid())
+    return 0;
+
+  QFontMetrics fm(fontMetrics());
+
+  const QString text = m->data(index, Qt::DisplayRole).toString();
+  int widest = text.isEmpty() ? 0 : fm.horizontalAdvance(text);
+
+  if (includeChildren && m->hasChildren(index)) {
+    const int rows = m->rowCount(index);
+    for (int row = 0; row < rows; ++row) {
+      const QModelIndex child = m->index(row, column, index);
+      widest = std::max(widest,
+                        contentWidthForRow(column, child, includeChildren));
+    }
+  }
+
+  return widest;
+}
+
 int FileSystemView::contentWidthRecursive(int column,
                                           const QModelIndex &parent) const {
   const QAbstractItemModel *m = model();
   if (!m)
     return 0;
 
-  QFontMetrics fm(fontMetrics());
   int widest = 0;
 
   const int rows = m->rowCount(parent);
@@ -154,12 +178,8 @@ int FileSystemView::contentWidthRecursive(int column,
     if (!index.isValid())
       continue;
 
-    const QString text = m->data(index, Qt::DisplayRole).toString();
-    if (!text.isEmpty())
-      widest = std::max(widest, fm.horizontalAdvance(text));
-
-    if (m->hasChildren(index) && isExpanded(index))
-      widest = std::max(widest, contentWidthRecursive(column, index));
+    widest = std::max(widest,
+                      contentWidthForRow(column, index, true));
   }
 
   return widest;
@@ -167,6 +187,55 @@ int FileSystemView::contentWidthRecursive(int column,
 
 int FileSystemView::contentWidth(int column) const {
   return contentWidthRecursive(column, rootIndex());
+}
+
+int FileSystemView::scrollbarAllowance() const {
+  // Reserve room for the vertical scrollbar. A visible vertical
+  // scrollbar consumes horizontal space, which is what makes the
+  // "fits exactly, then a horizontal scrollbar appears" bug happen:
+  // without this, the last column's right edge pushes against the
+  // vertical scrollbar's left edge.
+  return style()->pixelMetric(QStyle::PM_ScrollBarExtent) + 2;
+}
+
+int FileSystemView::frameAllowance() const {
+  // Reserve room for the viewport frame. On some styles this is 1 px
+  // per side, on others it is zero; add 2 px of slack.
+  const int frame = frameWidth();
+  return frame > 0 ? frame * 2 : 2;
+}
+
+int FileSystemView::measuredContentWidth() const {
+  if (!model())
+    return kMinimumViewWidth;
+
+  const QHeaderView *h = header();
+  if (!h)
+    return kMinimumViewWidth;
+
+  const int iconPadding =
+      (iconSize().width() > 0) ? iconSize().width() + 4 : 0;
+
+  int total = 0;
+
+  for (int col = 0; col < h->count(); ++col) {
+    if (isColumnHidden(col))
+      continue;
+
+    const int headerW = headerWidth(col);
+    const int contentW = contentWidth(col);
+    const int extra =
+        (col == 0) ? iconPadding + kIndentationAllowance : 0;
+    const int target =
+        std::max(headerW, contentW + extra) + kCellPadding;
+
+    total += target;
+  }
+
+  total += scrollbarAllowance();
+  total += frameAllowance();
+
+  return std::max(total, kMinimumViewWidth);
 }
 
 void FileSystemView::recalculateColumnWidths() {
@@ -190,8 +259,10 @@ void FileSystemView::recalculateColumnWidths() {
 
     const int headerW = headerWidth(col);
     const int contentW = contentWidth(col);
-    const int extra = (col == 0) ? iconPadding : 0;
-    const int target = std::max(headerW, contentW + extra) + kCellPadding;
+    const int extra =
+        (col == 0) ? iconPadding + kIndentationAllowance : 0;
+    const int target =
+        std::max(headerW, contentW + extra) + kCellPadding;
 
     h->resizeSection(col, target);
     total += target;
@@ -199,10 +270,11 @@ void FileSystemView::recalculateColumnWidths() {
 
   h->blockSignals(false);
 
-  total += kIndentationAllowance;
+  const int totalWithScrollbar =
+      total + scrollbarAllowance() + frameAllowance();
 
-  if (total != m_totalContentWidth) {
-    m_totalContentWidth = total;
+  if (totalWithScrollbar != m_totalContentWidth) {
+    m_totalContentWidth = totalWithScrollbar;
     emit preferredContentWidthChanged(m_totalContentWidth);
     updateGeometry();
   }
@@ -219,6 +291,67 @@ QSize FileSystemView::sizeHint() const {
 
 QSize FileSystemView::minimumSizeHint() const {
   return QSize(kMinimumViewWidth, QTreeView::minimumSizeHint().height());
+}
+
+// In FileSystemView.cpp:
+int FileSystemView::fullContentWidth() const {
+  if (!model())
+    return kMinimumViewWidth;
+
+  const QHeaderView *h = header();
+  if (!h)
+    return kMinimumViewWidth;
+
+  const int iconPadding =
+      (iconSize().width() > 0) ? iconSize().width() + 4 : 0;
+
+  int total = 0;
+
+  // Deliberately ignore isColumnHidden() here. The user asked for a
+  // fit-to-content dock; if a column has data in it, the width should
+  // account for that data even when the column is hidden. Hiding a
+  // column is a display preference, not a statement that its content
+  // does not matter.
+  for (int col = 0; col < h->count(); ++col) {
+    const int headerW = headerWidth(col);
+    const int contentW = contentWidth(col);
+    const int extra =
+        (col == 0) ? iconPadding + kIndentationAllowance : 0;
+    const int target =
+        std::max(headerW, contentW + extra) + kCellPadding;
+
+    total += target;
+  }
+
+  total += scrollbarAllowance();
+  total += frameAllowance();
+
+  return std::max(total, kMinimumViewWidth);
+}
+
+void FileSystemView::expandAllAndMeasure() {
+  expandAll();
+
+  // expandAll() schedules a single-shot recalculation via the
+  // expanded() signal, but it fires on the next event-loop turn, after
+  // the caller has already read our width. Do the recalculation now so
+  // the caller sees a fully-measured value.
+  recalculateColumnWidths();
+}
+
+void FileSystemView::showEvent(QShowEvent *event) {
+  QTreeView::showEvent(event);
+
+  if (m_firstShowDone)
+    return;
+
+  m_firstShowDone = true;
+
+  // On first show the tree has its real geometry, so scrollbar and
+  // icon metrics are correct. Force a full measurement so the host
+  // dock sizes correctly even if no rows were inserted after
+  // construction.
+  scheduleColumnWidthRecalculation();
 }
 
 void FileSystemView::setImportableExtensions(const QStringList &extensions) {

@@ -7,7 +7,7 @@
 
 namespace {
 
-const QString kTrigger = QStringLiteral("@Lore");
+const QString kTrigger = QStringLiteral("Search");
 
 } // namespace
 

@@ -5,21 +5,26 @@
 class AutoHideDock;
 class QPropertyAnimation;
 
-// A wrapper placed in the Overseer page's layout. Its only job is to
-// have a fixed width that animates between the strip width (dock
-// hidden) and the dock width (dock shown). The dock content is a child
-// of the wrapper and fills it entirely.
+// A wrapper placed in a page's layout. Its only job is to have a fixed
+// width that animates between the strip width (dock hidden) and the
+// dock width (dock shown). The dock content is a child of the wrapper
+// and fills it entirely.
 //
-// This is what actually reserves space in the layout: the center
-// column never overlaps with the dock, because the dock is a real
-// layout sibling.
+// The wrapper exposes a proper int Q_PROPERTY for animation, rather
+// than animating minimumWidth, so that the layout, the fixed-width
+// state, and the animation all agree.
 class DockReservation : public QWidget {
   Q_OBJECT
+
+  Q_PROPERTY(int reservedWidth READ reservedWidth WRITE setReservedWidth)
 
 public:
   explicit DockReservation(AutoHideDock *dock, QWidget *parent);
 
   AutoHideDock *dock() const { return m_dock; }
+
+  int reservedWidth() const { return m_currentWidth; }
+  void setReservedWidth(int width);
 
   // Animate to a target width. Called internally when the dock's
   // expanded state or dock width changes.

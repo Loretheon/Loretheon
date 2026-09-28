@@ -1,9 +1,11 @@
-#include "../../include/overseer/DockReservation.h"
+#include "DockReservation.h"
 
 #include "AutoHideDock.h"
 
 #include <QPropertyAnimation>
 #include <QResizeEvent>
+
+#include <algorithm>
 
 DockReservation::DockReservation(AutoHideDock *dock, QWidget *parent)
     : QWidget(parent), m_dock(dock) {
@@ -11,35 +13,12 @@ DockReservation::DockReservation(AutoHideDock *dock, QWidget *parent)
 
   if (m_dock) {
     m_dock->setParent(this);
-    m_dock->setFixedWidth(AutoHideDock::kStripWidth);
+    m_dock->setFixedWidth(AutoHideDock::StripWidth);
   }
 
-  m_animation = new QPropertyAnimation(this, "minimumWidth", this);
-  m_animation->setDuration(AutoHideDock::kSlideDurationMs);
+  m_animation = new QPropertyAnimation(this, "reservedWidth", this);
+  m_animation->setDuration(AutoHideDock::SlideDurationMs);
   m_animation->setEasingCurve(QEasingCurve::InOutCubic);
-
-  connect(m_animation, &QPropertyAnimation::valueChanged, this,
-          [this](const QVariant &value) {
-            const int w = value.toInt();
-
-            m_currentWidth = w;
-
-            setFixedWidth(w);
-
-            if (m_dock)
-              m_dock->setFixedWidth(w);
-          });
-
-  connect(m_animation, &QPropertyAnimation::finished, this, [this]() {
-    const int w = m_animation->endValue().toInt();
-
-    m_currentWidth = w;
-
-    setFixedWidth(w);
-
-    if (m_dock)
-      m_dock->setFixedWidth(w);
-  });
 
   if (m_dock) {
     connect(m_dock, &AutoHideDock::expandedChanged, this,
@@ -52,8 +31,22 @@ DockReservation::DockReservation(AutoHideDock *dock, QWidget *parent)
   syncToDockState(false);
 }
 
+void DockReservation::setReservedWidth(int width) {
+  const int target = std::max(AutoHideDock::StripWidth, width);
+
+  if (m_currentWidth == target)
+    return;
+
+  m_currentWidth = target;
+
+  setFixedWidth(target);
+
+  if (m_dock)
+    m_dock->setFixedWidth(target);
+}
+
 void DockReservation::animateToWidth(int width, bool animated) {
-  const int target = qMax(AutoHideDock::kStripWidth, width);
+  const int target = std::max(AutoHideDock::StripWidth, width);
 
   if (m_currentWidth == target)
     return;
@@ -65,13 +58,7 @@ void DockReservation::animateToWidth(int width, bool animated) {
     m_animation->start();
   } else {
     m_animation->stop();
-
-    m_currentWidth = target;
-
-    setFixedWidth(target);
-
-    if (m_dock)
-      m_dock->setFixedWidth(target);
+    setReservedWidth(target);
   }
 }
 
@@ -79,9 +66,10 @@ void DockReservation::syncToDockState(bool animated) {
   if (!m_dock)
     return;
 
-  const int target = m_dock->isExpanded()
-                         ? qMax(AutoHideDock::kMinDockWidth, m_dock->dockWidth())
-                         : AutoHideDock::kStripWidth;
+  const int target =
+      m_dock->isExpanded()
+          ? std::max(AutoHideDock::MinDockWidth, m_dock->dockWidth())
+          : AutoHideDock::StripWidth;
 
   animateToWidth(target, animated);
 }

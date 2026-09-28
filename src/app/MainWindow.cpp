@@ -23,8 +23,10 @@
 #include "../../include/voice/VoiceCommandRegistry.h"
 #include "AssistantIcon.h"
 #include "AssistantWidget.h"
+#include "AutoHideDock.h"
 #include "ChatWidget.h"
 #include "CustomTitleBar.h"
+#include "DockReservation.h"
 #include "DocumentArea.h"
 #include "EditSession.h"
 #include "FileWidget.h"
@@ -46,16 +48,14 @@
 #include <QDirIterator>
 #include <QStandardPaths>
 #include <QAction>
-#include <QActionGroup>
 #include <QApplication>
 #include <QCloseEvent>
 #include <QDir>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QHBoxLayout>
 #include <QIcon>
-#include <QMenu>
-#include <QMenuBar>
 #include <QMessageBox>
 #include <QMouseEvent>
 #include <QPalette>
@@ -64,14 +64,11 @@
 #include <QResizeEvent>
 #include <QScreen>
 #include <QSettings>
-#include <QSplitter>
 #include <QStackedWidget>
 #include <QStatusBar>
 #include <QTextCursor>
 #include <QThreadPool>
 #include <QTimer>
-#include <QToolBar>
-#include <QToolButton>
 #include <QUrl>
 #include <QVBoxLayout>
 #include <QWidget>
@@ -83,6 +80,7 @@ namespace {
 constexpr auto NormalThemeKey = "theme";
 constexpr auto OverseerThemeKey = "overseer/theme";
 constexpr auto ModeKey = "ui/mode";
+constexpr auto AvatarVisibleKey = "avatar/visible";
 
 constexpr auto AvatarSizeKey = "avatar/size";
 constexpr auto AvatarOffsetKey = "avatar/offset";
@@ -149,59 +147,6 @@ QString expandTokens(const QString &qss,
   }
 
   return out;
-}
-
-bool avatarIsMostlyVisible(const QRect &window, const QRect &avatar) {
-  if (window.isEmpty() || avatar.isEmpty()) {
-    return false;
-  }
-
-  const QRect overlap = window.intersected(avatar);
-
-  if (overlap.isEmpty()) {
-    return false;
-  }
-
-  const double avatarArea =
-      static_cast<double>(avatar.width()) * avatar.height();
-
-  const double overlapArea =
-      static_cast<double>(overlap.width()) * overlap.height();
-
-  return overlapArea / avatarArea >= kMinVisibleFraction;
-}
-
-QPoint clampAvatarOffset(const QSize &windowSize, const QSize &avatarSize,
-                         const QPoint &offset) {
-  if (windowSize.isEmpty() || avatarSize.isEmpty()) {
-    return offset;
-  }
-
-  const int x = windowSize.width() - avatarSize.width() - offset.x();
-  const int y = windowSize.height() - avatarSize.height() - offset.y();
-
-  const QRect avatarRect(QPoint(x, y), avatarSize);
-  const QRect windowRect(QPoint(0, 0), windowSize);
-
-  if (avatarIsMostlyVisible(windowRect, avatarRect)) {
-    return offset;
-  }
-
-  const int minOverlapX =
-      static_cast<int>(avatarSize.width() * kMinVisibleFraction);
-  const int minOverlapY =
-      static_cast<int>(avatarSize.height() * kMinVisibleFraction);
-
-  int clampedX = x;
-  clampedX = qMax(clampedX, -avatarSize.width() + minOverlapX);
-  clampedX = qMin(clampedX, windowSize.width() - minOverlapX);
-
-  int clampedY = y;
-  clampedY = qMax(clampedY, -avatarSize.height() + minOverlapY);
-  clampedY = qMin(clampedY, windowSize.height() - minOverlapY);
-
-  return QPoint(windowSize.width() - avatarSize.width() - clampedX,
-                windowSize.height() - avatarSize.height() - clampedY);
 }
 
 } // namespace
@@ -284,9 +229,7 @@ MainWindow::MainWindow() {
   m_toastStack = new ToastStack(this);
   NotificationService::instance().setToastHost(m_toastStack);
 
-  createActions();
-  createMenus();
-  createToolbar();
+  wireTitleBar();
 
   createAvatarOverlay();
 
@@ -430,13 +373,13 @@ MainWindow::MainWindow() {
 
   switch (storedMode) {
   case 1:
-    m_overseerModeAct->setChecked(true);
+    setMode(Mode::Overseer);
     break;
   case 2:
-    m_searchModeAct->setChecked(true);
+    setMode(Mode::Search);
     break;
   default:
-    m_normalModeAct->setChecked(true);
+    setMode(Mode::Normal);
     break;
   }
 
@@ -455,12 +398,22 @@ MainWindow::MainWindow() {
     setGeometry(screen->availableGeometry());
 
   positionAvatarOverlay();
+
+  const bool avatarVisible =
+      settings.value(AvatarVisibleKey, true).toBool();
+
+  if (m_avatar) {
+    m_avatar->setVisible(avatarVisible);
+    m_avatarPlaced = avatarVisible;
+  }
+
+  if (m_titleBar) {
+    m_titleBar->setAvatarVisible(avatarVisible);
+  }
 }
 
 void MainWindow::createCustomTitleBar() {
   m_titleBar = new CustomTitleBar(this);
-  m_titleBar->setStyleSheet(
-      "background-color: #2a2a2a; border-bottom: 1px solid #444;");
 
   connect(m_titleBar, &CustomTitleBar::minimizeRequested, this,
           &QWidget::showMinimized);
@@ -477,8 +430,87 @@ void MainWindow::createCustomTitleBar() {
           &QWidget::close);
 }
 
+void MainWindow::wireTitleBar() {
+  CustomTitleBar::Callbacks cb;
+
+  cb.newText     = [this]() { m_documentManager->newTextFile(); };
+  cb.newMarkdown = [this]() { m_documentManager->newMarkdownFile(); };
+  cb.newPlantUml = [this]() { m_documentManager->newPlantUmlFile(); };
+
+  cb.open = [this]() {
+    const QString path = QFileDialog::getOpenFileName(
+        this, tr("Open File"), QString(), tr("All Files (*)"));
+    if (!path.isEmpty())
+      m_documentManager->openFile(path);
+  };
+
+  cb.importFiles  = [this]() { onImportFilesDialog(); };
+  cb.importFolder = [this]() { onImportFolderDialog(); };
+
+  cb.save = [this]() {
+    if (m_centralStack && m_centralStack->currentIndex() == 1) {
+      if (m_overseerPage)
+        m_overseerPage->saveAll();
+    } else {
+      m_documentManager->save();
+    }
+  };
+
+  cb.saveAll = [this]() {
+    if (m_centralStack && m_centralStack->currentIndex() == 1) {
+      if (m_overseerPage)
+        m_overseerPage->saveAll();
+    } else {
+      for (TextDocument *doc : m_documentManager->openDocuments()) {
+        if (doc && doc->isModified())
+          m_documentManager->saveDocument(doc);
+      }
+    }
+  };
+
+  cb.exit = [this]() { close(); };
+
+  cb.modeNormal   = [this]() { setMode(Mode::Normal); };
+  cb.modeOverseer = [this]() { setMode(Mode::Overseer); };
+  cb.modeSearch   = [this]() { setMode(Mode::Search); };
+
+  cb.toggleSpeech = [this]() { onToggleSpeechPanel(); };
+  cb.toggleAvatar = [this]() { onToggleAvatar(); };
+  cb.talkToLore   = [this]() { onAssistantIconClicked(); };
+
+  cb.openSettings    = [this]() { openSettings(); };
+  cb.openLlmSettings = [this]() { openLlmSettings(); };
+  cb.manageModels    = [this]() { manageModels(); };
+
+  cb.rebuildIndex = [this]() {
+    if (m_scopeIndex) {
+      m_scopeIndex->rebuild(notesRootPath());
+      m_searchIndexNeedsBuild = false;
+    }
+  };
+
+  cb.selectNormalTheme   = [this](const QString &n) { applyNormalTheme(n); };
+  cb.selectOverseerTheme = [this](const QString &n) { applyOverseerTheme(n); };
+
+  cb.about   = [this]() { about(); };
+  cb.aboutQt = [this]() { aboutQt(); };
+
+  m_titleBar->setCallbacks(cb);
+
+  m_titleBar->setNormalThemes(
+      ThemeRegistry::instance().selectableNames(), m_currentNormalTheme);
+  m_titleBar->setOverseerThemes(
+      ThemeRegistry::instance().selectableNames(), m_currentOverseerTheme);
+}
+
 void MainWindow::createAvatarOverlay() {
   m_avatar = new AvatarWidget(nullptr);
+
+  m_avatar->setWindowFlags(Qt::Tool |
+                           Qt::FramelessWindowHint |
+                           Qt::NoDropShadowWindowHint |
+                           Qt::WindowStaysOnTopHint |
+                           Qt::WindowDoesNotAcceptFocus);
 
   m_avatar->setAttribute(Qt::WA_TranslucentBackground, true);
 
@@ -507,6 +539,10 @@ void MainWindow::positionAvatarOverlay() {
     return;
   }
 
+  if (m_avatarPlaced) {
+    return;
+  }
+
   const QRect frame = frameGeometry();
 
   const int margin = kAvatarConfig.margin;
@@ -516,8 +552,9 @@ void MainWindow::positionAvatarOverlay() {
 
   m_avatar->move(topLeft);
 
-  if (!m_avatarPlaced) {
-    m_avatarPlaced = true;
+  m_avatarPlaced = true;
+
+  if (isVisible() && !isMinimized()) {
     m_avatar->show();
     m_avatar->raise();
   }
@@ -671,6 +708,11 @@ void MainWindow::applyNormalTheme(const QString &name) {
   if (m_documentArea)
     m_documentArea->setThemeTokens(tokens);
 
+  if (m_titleBar) {
+    m_titleBar->setStyleSheet(combined);
+    m_titleBar->setPalette(paletteForTokens(tokens));
+  }
+
   if (m_assistantWidget) {
     m_assistantWidget->setStyleSheet(combined);
     m_assistantWidget->setPalette(paletteForTokens(tokens));
@@ -707,6 +749,11 @@ void MainWindow::applyOverseerTheme(const QString &name) {
 
   if (m_overseerPage)
     m_overseerPage->setThemeTokens(tokens);
+
+  if (m_titleBar) {
+    m_titleBar->setStyleSheet(combined);
+    m_titleBar->setPalette(paletteForTokens(tokens));
+  }
 
   if (m_assistantWidget) {
     m_assistantWidget->setStyleSheet(combined);
@@ -753,7 +800,6 @@ QPalette MainWindow::paletteForTokens(const ThemeTokens &tokens) const {
 void MainWindow::buildNormalPage() {
   m_normalPage = new QWidget(this);
 
-  m_fileWidget = new FileWidget(m_normalPage);
   m_documentManager = new DocumentManager(this);
 
   m_documentArea = new DocumentArea(m_documentManager, m_normalPage);
@@ -790,6 +836,47 @@ void MainWindow::buildNormalPage() {
           [this](const QString &text, int timeoutMs) {
             statusBar()->showMessage(text, timeoutMs);
           });
+
+  connect(m_documentManager, &DocumentManager::currentDocumentChanged,
+          m_documentArea, [this](TextDocument *document) {
+            auto *tw = m_documentArea->currentTextWidget();
+            if (!tw)
+              return;
+            const QString root =
+                document && !document->filePath().isEmpty()
+                    ? QFileInfo(document->filePath()).absolutePath()
+                    : QString();
+            tw->setProjectRoot(root);
+          });
+
+  connect(m_documentManager, &DocumentManager::currentDocumentChanged, this,
+          [this](TextDocument *) {
+            auto *editor = m_documentArea->currentEditor();
+            if (editor && m_editSession)
+              m_editSession->setEditor(editor);
+            if (m_chatWidget && editor)
+              m_chatWidget->setActiveEditor(editor);
+          });
+
+  m_normalCenterRow = new QWidget(m_normalPage);
+  auto *rowLayout = new QHBoxLayout(m_normalCenterRow);
+  rowLayout->setContentsMargins(0, 0, 0, 0);
+  rowLayout->setSpacing(0);
+
+  m_fileTreeDock =
+      new AutoHideDock(AutoHideDock::Edge::Left,
+                       QStringLiteral("normal/fileTree"), m_normalCenterRow);
+
+  // The file tree is allowed to be as wide as it needs to be. The
+  // half-screen cap the dock uses by default is a sanity limit for
+  // user drags, not a limit for content. Lift it here so the tree
+  // never gets clipped below what its columns need.
+  m_fileTreeDock->setMaxDockWidth(100000);
+
+  m_fileTreeReservation = new DockReservation(m_fileTreeDock, m_normalCenterRow);
+
+  m_fileWidget = new FileWidget(m_fileTreeDock);
+  m_fileTreeDock->setContent(m_fileWidget);
 
   connect(m_fileWidget, &FileWidget::fileSelected, m_documentManager,
           &DocumentManager::openFile);
@@ -831,101 +918,90 @@ void MainWindow::buildNormalPage() {
             m_fileWidget->setModifiedPaths(modifiedPaths());
           });
 
-  connect(m_documentManager, &DocumentManager::currentDocumentChanged, this,
-          [this](TextDocument *document) {
-            auto *tw = m_documentArea->currentTextWidget();
-            if (!tw)
-              return;
-            const QString root =
-                document && !document->filePath().isEmpty()
-                    ? QFileInfo(document->filePath()).absolutePath()
-                    : QString();
-            tw->setProjectRoot(root);
-          });
+  m_chatDock =
+      new AutoHideDock(AutoHideDock::Edge::Right,
+                       QStringLiteral("normal/chat"), m_normalCenterRow);
+  m_chatReservation = new DockReservation(m_chatDock, m_normalCenterRow);
+  m_chatDock->setContent(m_chatWidget);
 
-  connect(m_documentManager, &DocumentManager::currentDocumentChanged, this,
-          [this](TextDocument *) {
-            auto *editor = m_documentArea->currentEditor();
-            if (editor && m_editSession)
-              m_editSession->setEditor(editor);
-            if (m_chatWidget && editor)
-              m_chatWidget->setActiveEditor(editor);
-          });
+  rowLayout->addWidget(m_fileTreeReservation, 0);
+  rowLayout->addWidget(m_documentArea, 1);
+  rowLayout->addWidget(m_chatReservation, 0);
 
-  // JetBrains-style layout: tool window on left, editor in center,
-  // assistant tool window on right.
-  m_mainSplitter = new QSplitter(Qt::Horizontal, m_normalPage);
-  m_mainSplitter->setChildrenCollapsible(false);
-  m_mainSplitter->addWidget(m_fileWidget);
-
-  auto *centerSplitter = new QSplitter(Qt::Horizontal, m_mainSplitter);
-  centerSplitter->setChildrenCollapsible(false);
-  centerSplitter->addWidget(m_documentArea);
-  centerSplitter->addWidget(m_chatWidget);
-
-  m_mainSplitter->addWidget(centerSplitter);
-  m_mainSplitter->setStretchFactor(0, 0);
-  m_mainSplitter->setStretchFactor(1, 1);
-  m_mainSplitter->setSizes({260, 940});
-
-  centerSplitter->setStretchFactor(0, 1);
-  centerSplitter->setStretchFactor(1, 0);
-  centerSplitter->setSizes({700, 340});
-
-  // Keep the left pane clamped to what the file tree actually needs.
-  // The view tells us its preferred width whenever columns are
-  // recomputed; on every change we cap the left widget and, if the
-  // splitter is currently wider than that, shrink it and hand the
-  // slack to the right pane.
-  if (auto *view = m_fileWidget->view()) {
-    connect(view, &FileSystemView::preferredContentWidthChanged, this,
-            [this](int) { clampFileTreeWidth(); }, Qt::UniqueConnection);
-
-    // Re-clamp after the user drags the handle, in case the style
-    // allows a transient overshoot mid-drag.
-    connect(m_mainSplitter, &QSplitter::splitterMoved, this,
-            [this](int, int) { clampFileTreeWidth(); });
-
-    // And once after the initial event-loop turn, so the first pass of
-    // column measurement has completed with the model populated.
-    QTimer::singleShot(0, this, [this]() { clampFileTreeWidth(); });
+  // The document area must yield space to the docks. In a QHBoxLayout
+  // a widget with Preferred horizontal policy holds onto its
+  // sizeHint().width() and refuses to shrink below its
+  // minimumSizeHint().width(). If DocumentArea's minimum is large,
+  // the layout shrinks the file tree reservation first, which clips
+  // the tree. Setting the horizontal policy to Ignored tells the
+  // layout to give the document area whatever is left after the
+  // fixed-width siblings, and a small explicit minimum keeps it from
+  // collapsing entirely.
+  if (m_documentArea) {
+    m_documentArea->setSizePolicy(
+        QSizePolicy::Ignored,
+        m_documentArea->sizePolicy().verticalPolicy());
+    m_documentArea->setMinimumWidth(160);
   }
+
+  if (auto *view = m_fileWidget->view()) {
+    connect(view, &FileSystemView::preferredContentWidthChanged,
+            m_fileTreeDock, [this](int width) {
+              // Use the full width, not the visible-columns width.
+              // The visible width is what the tree needs to not show a
+              // scrollbar right now; the full width is what it needs
+              // to actually show every column's data.
+              const int full = m_fileWidget->view()->fullContentWidth();
+              const int target = std::max(width, full);
+
+              m_fileTreeDock->setPreferredContentWidth(target);
+              m_fileTreeDock->fitToContentWidth();
+
+              // Re-assert the document area's small minimum in case
+              // something else (a theme change, a layout reset) has
+              // restored its default minimum.
+              if (m_documentArea)
+                m_documentArea->setMinimumWidth(160);
+            });
+  }
+
+  // The chat panel's preferred width is its sizeHint, and it does not
+  // change shape the way the tree does. Report it once.
+  m_chatDock->setPreferredContentWidth(
+      std::max(m_chatWidget->sizeHint().width(),
+               m_chatWidget->minimumSizeHint().width()));
 
   auto *layout = new QVBoxLayout(m_normalPage);
   layout->setContentsMargins(0, 0, 0, 0);
-  layout->addWidget(m_mainSplitter);
+  layout->addWidget(m_normalCenterRow);
+
+  m_fileTreeDock->showDock();
+  m_chatDock->showDock();
+
+  // Defer the initial fit to the next event-loop turn, after the tree
+  // has had a chance to run its own measurement pass. Without this the
+  // first fit is a no-op because m_preferredContentWidth is still 0.
+  QTimer::singleShot(0, this, [this]() {
+    if (!m_fileWidget || !m_fileTreeDock)
+      return;
+
+    if (auto *view = m_fileWidget->view()) {
+      const int measured = view->measuredContentWidth();
+      if (measured > 0) {
+        m_fileTreeDock->setPreferredContentWidth(measured);
+        m_fileTreeDock->fitToContentWidth();
+      }
+    }
+
+    if (m_chatDock && m_chatWidget) {
+      const int target =
+          std::max(m_chatWidget->sizeHint().width(),
+                   m_chatWidget->minimumSizeHint().width());
+      m_chatDock->setPreferredContentWidth(target);
+      m_chatDock->fitToContentWidth();
+    }
+  });
 }
-
-void MainWindow::clampFileTreeWidth() {
-  if (!m_fileWidget || !m_mainSplitter)
-    return;
-
-  auto *view = m_fileWidget->view();
-  if (!view)
-    return;
-
-  const int preferred = view->preferredContentWidth();
-  const int minimum = view->minimumSizeHint().width();
-  const int cap = std::max(preferred, minimum);
-
-  // Cap the left widget so the handle cannot be dragged past the
-  // width the tree actually needs.
-  m_fileWidget->setMaximumWidth(cap);
-
-  // If the splitter is currently wider than the cap, shrink it and
-  // give the slack to the right pane.
-  QList<int> sizes = m_mainSplitter->sizes();
-  if (sizes.size() < 2)
-    return;
-
-  if (sizes.at(0) > cap) {
-    const int slack = sizes.at(0) - cap;
-    sizes[0] = cap;
-    sizes[1] += slack;
-    m_mainSplitter->setSizes(sizes);
-  }
-}
-
 void MainWindow::buildOverseerPage() {
   m_overseerSessionManager =
       new OverseerSessionManager(m_inferenceService, this);
@@ -944,9 +1020,7 @@ void MainWindow::buildOverseerPage() {
             if (m_documentManager)
               m_documentManager->openFile(absolutePath);
 
-            if (m_normalModeAct) {
-              m_normalModeAct->setChecked(true);
-            }
+            setMode(Mode::Normal);
           });
 
   connect(m_overseerPage->fileWidget(),
@@ -1163,298 +1237,91 @@ void MainWindow::bindCurrentEditor(TextEdit *editor) {
   m_loreTriggers.insert(editor, trigger);
 }
 
-void MainWindow::createActions() {
-  auto getSafeIcon = [](const QString &themeIcon,
-                        const QString &fallbackPath = "") -> QIcon {
-    QIcon icon = QIcon::fromTheme(themeIcon);
-    if (icon.isNull() && !fallbackPath.isEmpty())
-      icon = QIcon(fallbackPath);
-    return icon;
-  };
-
-  m_newTextAct =
-      new QAction(getSafeIcon("document-new", ":/icons/document-new.png"),
-                  tr("&Text File"), this);
-  m_newTextAct->setShortcuts(QKeySequence::New);
-  connect(m_newTextAct, &QAction::triggered, m_documentManager,
-          &DocumentManager::newTextFile);
-
-  m_newMarkdownAct =
-      new QAction(getSafeIcon("document-new", ":/icons/document-new.png"),
-                  tr("&Markdown File"), this);
-  connect(m_newMarkdownAct, &QAction::triggered, m_documentManager,
-          &DocumentManager::newMarkdownFile);
-
-  m_newPlantUmlAct =
-      new QAction(getSafeIcon("document-new", ":/icons/document-new.png"),
-                  tr("&PlantUML Diagram"), this);
-  connect(m_newPlantUmlAct, &QAction::triggered, m_documentManager,
-          &DocumentManager::newPlantUmlFile);
-
-  m_openAct =
-      new QAction(getSafeIcon("document-open", ":/icons/document-open.png"),
-                  tr("&Open..."), this);
-  m_openAct->setShortcuts(QKeySequence::Open);
-  connect(m_openAct, &QAction::triggered, this, [this]() {
-    const QString path =
-        QFileDialog::getOpenFileName(this, tr("Open File"), QString(),
-                                     tr("All Files (*)"));
-    if (!path.isEmpty())
-      m_documentManager->openFile(path);
-  });
-
-  m_importFilesAct =
-      new QAction(getSafeIcon("document-import",
-                              ":/icons/document-import.png"),
-                  tr("Import &Files..."), this);
-  m_importFilesAct->setStatusTip(
-      tr("Convert documents into notes in the notes folder"));
-  connect(m_importFilesAct, &QAction::triggered, this,
-          &MainWindow::onImportFilesDialog);
-
-  m_importFolderAct =
-      new QAction(getSafeIcon("document-import",
-                              ":/icons/document-import.png"),
-                  tr("Import F&older..."), this);
-  m_importFolderAct->setStatusTip(
-      tr("Recursively convert every supported document in a folder"));
-  connect(m_importFolderAct, &QAction::triggered, this,
-          &MainWindow::onImportFolderDialog);
-
-  m_saveAct =
-      new QAction(getSafeIcon("document-save", ":/icons/document-save.png"),
-                  tr("&Save"), this);
-  m_saveAct->setShortcuts(QKeySequence::Save);
-  connect(m_saveAct, &QAction::triggered, this, [this]() {
-    if (m_centralStack && m_centralStack->currentIndex() == 1) {
-      if (m_overseerPage)
-        m_overseerPage->saveAll();
-    } else {
-      m_documentManager->save();
-    }
-  });
-
-  m_saveAllAct = new QAction(tr("Save A&ll"), this);
-  m_saveAllAct->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_S));
-  connect(m_saveAllAct, &QAction::triggered, this, [this]() {
-    if (m_centralStack && m_centralStack->currentIndex() == 1) {
-      if (m_overseerPage)
-        m_overseerPage->saveAll();
-    } else {
-      for (TextDocument *doc : m_documentManager->openDocuments()) {
-        if (doc && doc->isModified())
-          m_documentManager->saveDocument(doc);
-      }
-    }
-  });
-
-  m_exitAct = new QAction(
-      getSafeIcon("application-exit", ":/icons/application-exit.png"),
-      tr("E&xit"), this);
-  m_exitAct->setShortcuts(QKeySequence::Quit);
-  connect(m_exitAct, &QAction::triggered, this, &QWidget::close);
-
-  m_manageModelsAct = new QAction(tr("&Manage Models..."), this);
-  connect(m_manageModelsAct, &QAction::triggered, this,
-          &MainWindow::manageModels);
-
-  m_llmSettingsAct = new QAction(tr("LLM &Settings..."), this);
-  connect(m_llmSettingsAct, &QAction::triggered, this,
-          &MainWindow::openLlmSettings);
-
-  m_settingsAct = new QAction(tr("&Settings..."), this);
-  connect(m_settingsAct, &QAction::triggered, this,
-          &MainWindow::openSettings);
-
-  m_modeGroup = new QActionGroup(this);
-  m_modeGroup->setExclusive(true);
-
-  m_normalModeAct = new QAction(tr("Normal"), this);
-  m_normalModeAct->setCheckable(true);
-  m_normalModeAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_1));
-  m_modeGroup->addAction(m_normalModeAct);
-
-  m_overseerModeAct = new QAction(tr("Overseer"), this);
-  m_overseerModeAct->setCheckable(true);
-  m_overseerModeAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_2));
-  m_modeGroup->addAction(m_overseerModeAct);
-
-  m_searchModeAct = new QAction(tr("@Lore"), this);
-  m_searchModeAct->setCheckable(true);
-  m_searchModeAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_3));
-  m_modeGroup->addAction(m_searchModeAct);
-
-  connect(m_modeGroup, &QActionGroup::triggered, this,
-          &MainWindow::onModeActionTriggered);
-
-  m_toggleSpeechAct = new QAction(tr("Voice Panel"), this);
-  m_toggleSpeechAct->setShortcut(
-      QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_Space));
-  m_toggleSpeechAct->setStatusTip(
-      tr("Show or hide the voice command panel"));
-  connect(m_toggleSpeechAct, &QAction::triggered, this,
-          &MainWindow::onToggleSpeechPanel);
-
-  m_rebuildIndexAct = new QAction(tr("Rebuild Search Index"), this);
-  m_rebuildIndexAct->setStatusTip(
-      tr("Re-walk the notes folder and rebuild the search index"));
-  connect(m_rebuildIndexAct, &QAction::triggered, this, [this]() {
-    if (m_scopeIndex) {
-      m_scopeIndex->rebuild(notesRootPath());
-      m_searchIndexNeedsBuild = false;
-    }
-  });
-
-  m_aboutAct = new QAction(getSafeIcon("help-about", ":/icons/help-about.png"),
-                           tr("&About"), this);
-  connect(m_aboutAct, &QAction::triggered, this, &MainWindow::about);
-
-  m_aboutQtAct = new QAction(tr("About &Qt"), this);
-  connect(m_aboutQtAct, &QAction::triggered, this, &MainWindow::aboutQt);
-
-  addAction(m_toggleSpeechAct);
-  addAction(m_normalModeAct);
-  addAction(m_overseerModeAct);
-  addAction(m_searchModeAct);
+void MainWindow::about() {
+  QMessageBox::about(this, tr("About Lore"),
+                     tr("The <b>Lore</b> document editor."));
 }
 
-void MainWindow::createMenus() {
-  m_fileMenu = menuBar()->addMenu(tr("&File"));
+void MainWindow::aboutQt() { QMessageBox::aboutQt(this, tr("About Qt")); }
 
-  m_newMenu = m_fileMenu->addMenu(tr("&New"));
-  m_newMenu->addAction(m_newTextAct);
-  m_newMenu->addAction(m_newMarkdownAct);
-  m_newMenu->addAction(m_newPlantUmlAct);
-
-  m_fileMenu->addAction(m_openAct);
-  m_fileMenu->addSeparator();
-  m_fileMenu->addAction(m_importFilesAct);
-  m_fileMenu->addAction(m_importFolderAct);
-  m_fileMenu->addSeparator();
-  m_fileMenu->addAction(m_saveAct);
-  m_fileMenu->addAction(m_saveAllAct);
-  m_fileMenu->addSeparator();
-  m_fileMenu->addAction(m_exitAct);
-
-  m_viewMenu = menuBar()->addMenu(tr("&View"));
-  m_viewMenu->addAction(m_normalModeAct);
-  m_viewMenu->addAction(m_overseerModeAct);
-  m_viewMenu->addAction(m_searchModeAct);
-  m_viewMenu->addSeparator();
-  m_viewMenu->addAction(m_toggleSpeechAct);
-
-  m_toolsMenu = menuBar()->addMenu(tr("&Tools"));
-  m_toolsMenu->addAction(m_settingsAct);
-  m_toolsMenu->addSeparator();
-  m_toolsMenu->addAction(m_llmSettingsAct);
-  m_toolsMenu->addSeparator();
-  m_toolsMenu->addAction(m_manageModelsAct);
-  m_toolsMenu->addSeparator();
-  m_toolsMenu->addAction(m_rebuildIndexAct);
-
-  m_themeMenu = menuBar()->addMenu(tr("&Theme"));
-
-  auto *normalThemeMenu = m_themeMenu->addMenu(tr("Normal"));
-  QActionGroup *normalGroup = new QActionGroup(this);
-  normalGroup->setExclusive(true);
-
-  for (const QString &theme : ThemeRegistry::instance().selectableNames()) {
-    QAction *a = normalThemeMenu->addAction(theme);
-    a->setCheckable(true);
-    normalGroup->addAction(a);
-
-    if (theme == m_currentNormalTheme)
-      a->setChecked(true);
-
-    connect(a, &QAction::triggered, this,
-            [this, theme]() { onThemeSelected(theme); });
-  }
-
-  auto *overseerThemeMenu = m_themeMenu->addMenu(tr("Overseer"));
-  QActionGroup *overseerGroup = new QActionGroup(this);
-  overseerGroup->setExclusive(true);
-
-  for (const QString &theme : ThemeRegistry::instance().selectableNames()) {
-    QAction *a = overseerThemeMenu->addAction(theme);
-    a->setCheckable(true);
-    overseerGroup->addAction(a);
-
-    if (theme == m_currentOverseerTheme)
-      a->setChecked(true);
-
-    connect(a, &QAction::triggered, this,
-            [this, theme]() { onOverseerThemeSelected(theme); });
-  }
-
-  m_helpMenu = menuBar()->addMenu(tr("&Help"));
-  m_helpMenu->addAction(m_aboutAct);
-  m_helpMenu->addAction(m_aboutQtAct);
-}
-
-void MainWindow::onModeActionTriggered(QAction *action) {
-  if (action == m_overseerModeAct) {
-    setMode(Mode::Overseer);
-  } else if (action == m_searchModeAct) {
-    setMode(Mode::Search);
-  } else {
-    setMode(Mode::Normal);
-  }
-}
-
-void MainWindow::setMode(Mode mode) {
-  if (!m_centralStack) {
+void MainWindow::closeEvent(QCloseEvent *event) {
+  if (!confirmDiscardChanges(tr("Normal mode"))) {
+    event->ignore();
     return;
   }
 
-  const int targetIndex = static_cast<int>(mode);
-
-  if (m_centralStack->currentIndex() != targetIndex) {
-    if (targetIndex == static_cast<int>(Mode::Overseer) &&
-        !confirmDiscardChanges(tr("Normal mode"))) {
-      m_normalModeAct->setChecked(true);
+  if (m_overseerPage && m_overseerPage->hasUnsavedChanges()) {
+    if (!confirmDiscardChanges(tr("Overseer mode"))) {
+      event->ignore();
       return;
     }
-
-    if (targetIndex != static_cast<int>(Mode::Overseer) &&
-        m_overseerPage && m_centralStack->currentIndex() == 1 &&
-        !confirmDiscardChanges(tr("Overseer mode"))) {
-      m_overseerModeAct->setChecked(true);
-      return;
-    }
-
-    m_centralStack->setCurrentIndex(targetIndex);
   }
 
-  if (mode == Mode::Overseer) {
-    ThemeRegistry::instance().setActiveTheme(m_currentOverseerTheme);
-  } else {
-    ThemeRegistry::instance().setActiveTheme(m_currentNormalTheme);
+  if (m_assistantWidget && m_assistantWidget->isOpen()) {
+    m_assistantWidget->close();
   }
 
-  if (m_modeButton) {
-    switch (mode) {
-    case Mode::Overseer:
-      m_modeButton->setText(tr("Overseer"));
-      m_modeButton->setIcon(QIcon::fromTheme(QStringLiteral("view-grid")));
-      break;
-    case Mode::Search:
-      m_modeButton->setText(tr("@Lore"));
-      m_modeButton->setIcon(QIcon::fromTheme(QStringLiteral("edit-find")));
-      break;
-    case Mode::Normal:
-    default:
-      m_modeButton->setText(tr("Normal"));
-      m_modeButton->setIcon(QIcon::fromTheme(QStringLiteral("document-edit")));
-      break;
-    }
-  }
-
-  if (mode == Mode::Search && m_searchPage) {
-    m_searchPage->focusQuery();
+  if (m_avatar) {
+    m_avatar->close();
   }
 
   QSettings settings;
-  settings.setValue(ModeKey, targetIndex);
+  if (m_centralStack) {
+    settings.setValue(ModeKey, m_centralStack->currentIndex());
+  }
+
+  event->accept();
+}
+
+void MainWindow::showEvent(QShowEvent *event) {
+  QMainWindow::showEvent(event);
+
+  if (m_avatar && !m_avatarPlaced) {
+    positionAvatarOverlay();
+  }
+}
+
+void MainWindow::resizeEvent(QResizeEvent *event) {
+  QMainWindow::resizeEvent(event);
+}
+
+void MainWindow::moveEvent(QMoveEvent *event) {
+  QMainWindow::moveEvent(event);
+}
+
+void MainWindow::changeEvent(QEvent *event) {
+  QMainWindow::changeEvent(event);
+
+  if (event->type() != QEvent::WindowStateChange) {
+    return;
+  }
+
+  const bool minimized = isMinimized();
+
+  if (m_avatar) {
+    QSettings settings;
+    const bool userWantsAvatar =
+        settings.value(AvatarVisibleKey, true).toBool();
+
+    if (minimized) {
+      m_avatar->hide();
+    } else if (userWantsAvatar) {
+      m_avatar->show();
+      m_avatar->raise();
+    }
+  }
+
+  if (minimized) {
+    if (m_assistantIcon) {
+      m_assistantIcon->anchorToScreen();
+      m_assistantIcon->show();
+      m_assistantIcon->raise();
+    }
+  } else {
+    if (m_assistantIcon) {
+      m_assistantIcon->hide();
+    }
+  }
 }
 
 bool MainWindow::confirmDiscardChanges(const QString &areaName) {
@@ -1506,12 +1373,61 @@ bool MainWindow::confirmDiscardChanges(const QString &areaName) {
   return true;
 }
 
-void MainWindow::onThemeSelected(const QString &theme) {
-  applyNormalTheme(theme);
-}
+void MainWindow::setMode(Mode mode) {
+  if (!m_centralStack) {
+    return;
+  }
 
-void MainWindow::onOverseerThemeSelected(const QString &theme) {
-  applyOverseerTheme(theme);
+  const int targetIndex = static_cast<int>(mode);
+
+  if (m_centralStack->currentIndex() != targetIndex) {
+    if (targetIndex == static_cast<int>(Mode::Overseer) &&
+        !confirmDiscardChanges(tr("Normal mode"))) {
+      return;
+    }
+
+    if (targetIndex != static_cast<int>(Mode::Overseer) &&
+        m_overseerPage && m_centralStack->currentIndex() == 1 &&
+        !confirmDiscardChanges(tr("Overseer mode"))) {
+      return;
+    }
+
+    m_centralStack->setCurrentIndex(targetIndex);
+  }
+
+  if (mode == Mode::Overseer) {
+    ThemeRegistry::instance().setActiveTheme(m_currentOverseerTheme);
+  } else {
+    ThemeRegistry::instance().setActiveTheme(m_currentNormalTheme);
+  }
+
+  if (m_titleBar) {
+    switch (mode) {
+    case Mode::Overseer:
+      m_titleBar->setModeText(tr("Overseer"));
+      m_titleBar->setModeIcon(QIcon::fromTheme(QStringLiteral("view-grid")));
+      break;
+    case Mode::Search:
+      m_titleBar->setModeText(tr("Search"));
+      m_titleBar->setModeIcon(QIcon::fromTheme(QStringLiteral("edit-find")));
+      break;
+    case Mode::Normal:
+    default:
+      m_titleBar->setModeText(tr("Normal"));
+      m_titleBar->setModeIcon(
+          QIcon::fromTheme(QStringLiteral("document-edit")));
+      break;
+    }
+
+    m_titleBar->setModeChecked(targetIndex);
+  }
+
+  if (mode == Mode::Search && m_searchPage) {
+    m_searchPage->focusQuery();
+  }
+
+  QSettings settings;
+  settings.setValue(ModeKey, targetIndex);
 }
 
 void MainWindow::openLlmSettings() {
@@ -1549,139 +1465,6 @@ QSet<QString> MainWindow::modifiedPaths() const {
   }
 
   return paths;
-}
-
-void MainWindow::about() {
-  QMessageBox::about(this, tr("About Lore"),
-                     tr("The <b>Lore</b> document editor."));
-}
-
-void MainWindow::aboutQt() { QMessageBox::aboutQt(this, tr("About Qt")); }
-
-void MainWindow::closeEvent(QCloseEvent *event) {
-  if (!confirmDiscardChanges(tr("Normal mode"))) {
-    event->ignore();
-    return;
-  }
-
-  if (m_overseerPage && m_overseerPage->hasUnsavedChanges()) {
-    if (!confirmDiscardChanges(tr("Overseer mode"))) {
-      event->ignore();
-      return;
-    }
-  }
-
-  if (m_assistantWidget && m_assistantWidget->isOpen()) {
-    m_assistantWidget->close();
-  }
-
-  if (m_avatar) {
-    m_avatar->close();
-  }
-
-  QSettings settings;
-  if (m_centralStack) {
-    settings.setValue(ModeKey, m_centralStack->currentIndex());
-  }
-
-  event->accept();
-}
-
-void MainWindow::showEvent(QShowEvent *event) {
-  QMainWindow::showEvent(event);
-  positionAvatarOverlay();
-}
-
-void MainWindow::resizeEvent(QResizeEvent *event) {
-  QMainWindow::resizeEvent(event);
-
-  if (m_avatarPlaced) {
-    positionAvatarOverlay();
-  }
-}
-
-void MainWindow::moveEvent(QMoveEvent *event) {
-  QMainWindow::moveEvent(event);
-
-  if (m_avatarPlaced) {
-    positionAvatarOverlay();
-  }
-}
-
-void MainWindow::changeEvent(QEvent *event) {
-  QMainWindow::changeEvent(event);
-
-  if (event->type() != QEvent::WindowStateChange) {
-    return;
-  }
-
-  if (isMinimized()) {
-    if (m_assistantIcon) {
-      m_assistantIcon->anchorToScreen();
-      m_assistantIcon->show();
-      m_assistantIcon->raise();
-    }
-  } else {
-    if (m_assistantIcon) {
-      m_assistantIcon->hide();
-    }
-  }
-}
-void MainWindow::mousePressEvent(QMouseEvent *event) {
-  if (!m_titleBar) {
-    QMainWindow::mousePressEvent(event);
-    return;
-  }
-
-  if (event->position().y() < m_titleBar->height()) {
-    if (event->button() == Qt::LeftButton) {
-      if (event->type() == QEvent::MouseButtonDblClick) {
-        if (isMaximized()) {
-          showNormal();
-        } else {
-          showMaximized();
-        }
-        event->accept();
-        return;
-      }
-
-      m_draggingTitleBar = true;
-      m_lastMousePos = event->globalPosition().toPoint();
-      event->accept();
-      return;
-    }
-  }
-
-  QMainWindow::mousePressEvent(event);
-}
-
-void MainWindow::mouseMoveEvent(QMouseEvent *event) {
-  if (m_draggingTitleBar) {
-    QScreen *screen = QGuiApplication::screenAt(event->globalPosition().toPoint());
-    if (!screen) {
-      screen = QGuiApplication::primaryScreen();
-    }
-
-    QRect screenGeom = screen->availableGeometry();
-    int snapThreshold = 5;
-
-    // If dragging to top, maximize
-    if (event->globalPosition().y() - screenGeom.top() < snapThreshold && !isMaximized()) {
-      showMaximized();
-      m_draggingTitleBar = false;
-      event->accept();
-      return;
-    }
-
-    // Otherwise start system move (handles side snapping)
-    if (windowHandle()->startSystemMove()) {
-      m_draggingTitleBar = false;
-      event->accept();
-      return;
-    }
-  }
-
-  QMainWindow::mouseMoveEvent(event);
 }
 
 void MainWindow::buildIngestLayer() {
@@ -2224,9 +2007,6 @@ void MainWindow::onSearchRequested() {
     m_searchIndexNeedsBuild = false;
   }
 
-  if (m_searchModeAct) {
-    m_searchModeAct->setChecked(true);
-  }
   setMode(Mode::Search);
 }
 
@@ -2240,9 +2020,6 @@ void MainWindow::onSearchOpenRequested(const QString &filePath,
 
   m_documentManager->openFile(filePath);
 
-  if (m_normalModeAct) {
-    m_normalModeAct->setChecked(true);
-  }
   setMode(Mode::Normal);
 }
 
@@ -2263,12 +2040,27 @@ void MainWindow::onAssistantIconClicked() {
   m_assistantWidget->toggle();
 }
 
-void MainWindow::onTalkToLoreClicked() {
-  if (!m_assistantWidget) {
+void MainWindow::onToggleAvatar() {
+  if (!m_avatar) {
     return;
   }
 
-  m_assistantWidget->toggle();
+  const bool nowVisible = !m_avatar->isVisible();
+
+  m_avatar->setVisible(nowVisible);
+
+  if (nowVisible && !m_avatarPlaced) {
+    positionAvatarOverlay();
+  } else if (nowVisible) {
+    m_avatar->raise();
+  }
+
+  if (m_titleBar) {
+    m_titleBar->setAvatarVisible(nowVisible);
+  }
+
+  QSettings settings;
+  settings.setValue(AvatarVisibleKey, nowVisible);
 }
 
 void MainWindow::onDocumentSaved(TextDocument *document) {
@@ -2289,50 +2081,4 @@ void MainWindow::onDocumentSaved(TextDocument *document) {
   }
 
   m_scopeIndex->markDirty(path);
-}
-
-void MainWindow::createToolbar() {
-  m_mainToolBar = new QToolBar(this);
-  m_mainToolBar->setObjectName(QStringLiteral("mainToolBar"));
-  m_mainToolBar->setMovable(false);
-  m_mainToolBar->setFloatable(false);
-  m_mainToolBar->setIconSize(QSize(18, 18));
-  m_mainToolBar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-  m_mainToolBar->setContextMenuPolicy(Qt::PreventContextMenu);
-
-  addToolBar(Qt::TopToolBarArea, m_mainToolBar);
-
-  m_modeButton = new QToolButton(m_mainToolBar);
-  m_modeButton->setObjectName(QStringLiteral("modeButton"));
-  m_modeButton->setPopupMode(QToolButton::InstantPopup);
-  m_modeButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-  m_modeButton->setText(tr("Normal"));
-
-  m_modeMenu = new QMenu(m_modeButton);
-  m_modeMenu->addAction(m_normalModeAct);
-  m_modeMenu->addAction(m_overseerModeAct);
-  m_modeMenu->addAction(m_searchModeAct);
-
-  m_modeButton->setMenu(m_modeMenu);
-
-  m_mainToolBar->addWidget(m_modeButton);
-
-  auto *spacer = new QWidget(m_mainToolBar);
-  spacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
-  m_mainToolBar->addWidget(spacer);
-
-  m_talkToLoreAct = new QAction(tr("Talk to Lore"), this);
-  m_talkToLoreAct->setToolTip(tr("Talk to Lore"));
-
-  auto *loreButton = new QToolButton(m_mainToolBar);
-  loreButton->setObjectName(QStringLiteral("talkToLoreButton"));
-  loreButton->setDefaultAction(m_talkToLoreAct);
-  loreButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-  loreButton->setAutoRaise(true);
-  loreButton->setText(tr("Lore"));
-
-  connect(m_talkToLoreAct, &QAction::triggered, this,
-          &MainWindow::onTalkToLoreClicked);
-
-  m_mainToolBar->addWidget(loreButton);
 }

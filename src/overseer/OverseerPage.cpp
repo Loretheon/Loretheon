@@ -1,7 +1,7 @@
 #include "../../include/overseer/OverseerPage.h"
 
-#include "../../include/overseer/DockReservation.h"
-#include "AutoHideDock.h"
+#include "../../include/ui/AutoHideDock.h"
+#include "../../include/ui/DockReservation.h"
 #include "ConductorBoard.h"
 #include "ConductorDock.h"
 #include "OverseerSession.h"
@@ -20,6 +20,7 @@
 
 #include "DocumentArea.h"
 #include "DocumentManager.h"
+#include "FileSystemView.h"
 #include "FileWidget.h"
 #include "OverseerRunner.h"
 #include "OverseerSessionManager.h"
@@ -41,6 +42,8 @@
 #include <QSplitter>
 #include <QToolButton>
 #include <QVBoxLayout>
+
+#include <algorithm>
 
 namespace {
 
@@ -366,7 +369,7 @@ OverseerPage::OverseerPage(InferenceService *inferenceService,
 
   leftLayout->addWidget(leftSplitter);
 
-  m_leftDock = new AutoHideDock(AutoHideDock::Edge::Left, this);
+  m_leftDock = new AutoHideDock(AutoHideDock::Edge::Left, QStringLiteral("overseer/dock"));
   m_leftDock->setContent(leftContent);
 
   auto *rightContent = new QWidget(this);
@@ -376,8 +379,23 @@ OverseerPage::OverseerPage(InferenceService *inferenceService,
 
   rightLayout->addWidget(m_overseer->sidePanel());
 
-  m_rightDock = new AutoHideDock(AutoHideDock::Edge::Right, this);
+  m_rightDock = new AutoHideDock(AutoHideDock::Edge::Right, QStringLiteral("overseer/dock"));
   m_rightDock->setContent(rightContent);
+
+  // The tree drives the left dock's width; the side panel drives the
+  // right dock's width. The dock is the single authority on its own
+  // width, and the DockReservation follows via dockWidthChanged.
+  if (auto *view = m_fileWidget->view()) {
+    connect(view, &FileSystemView::preferredContentWidthChanged,
+            m_leftDock, [this](int width) {
+              m_leftDock->setPreferredContentWidth(width);
+              m_leftDock->fitToContentWidth();
+            });
+  }
+
+  m_rightDock->setPreferredContentWidth(
+      std::max(m_overseer->sidePanel()->sizeHint().width(),
+               m_overseer->sidePanel()->minimumSizeHint().width()));
 
   auto *workstationColumn = new QWidget(this);
   auto *workstationLayout = new QVBoxLayout(workstationColumn);
@@ -434,6 +452,13 @@ OverseerPage::OverseerPage(InferenceService *inferenceService,
   root->setContentsMargins(0, 0, 0, 0);
   root->addWidget(columns);
 
+  // Open both docks at their content-derived widths before the first
+  // paint.
+  m_leftDock->fitToContentWidth();
+  m_leftDock->showDock();
+
+  m_rightDock->fitToContentWidth();
+  m_rightDock->showDock();
 
   migrateLegacyLayoutFiles();
 }

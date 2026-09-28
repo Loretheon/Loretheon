@@ -299,4 +299,10 @@ void FileWidget::setRootPath(const QString &path) {
   // keep matching. The tree will re-populate from the new root.
   DirectoryExplorerSettings::instance().setExpandedPaths({});
   DirectoryExplorerSettings::instance().setSelectedPath({});
+
+  // Expand everything under the new root and measure the widest cell
+  // per column. This is what lets the dock jump to a width that shows
+  // every column in full.
+  QTimer::singleShot(0, fileSystemView,
+                     [this]() { fileSystemView->expandAllAndMeasure(); });
 }

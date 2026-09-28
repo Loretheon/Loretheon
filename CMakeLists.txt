@@ -418,10 +418,10 @@ add_executable(Lore
         include/overseer/MarkdownView.h
         src/overseer/WorkstationBar.cpp
         include/overseer/WorkstationBar.h
-        src/overseer/AutoHideDock.cpp
-        include/overseer/AutoHideDock.h
-        src/overseer/DockReservation.cpp
-        include/overseer/DockReservation.h
+        src/ui/AutoHideDock.cpp
+        include/ui/AutoHideDock.h
+        src/ui/DockReservation.cpp
+        include/ui/DockReservation.h
         src/overseer/OpenFileTool.cpp
         include/overseer/OpenFileTool.h
         src/overseer/CloseFileTool.cpp
