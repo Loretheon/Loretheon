@@ -5,6 +5,7 @@
 #include "EditPlanner.h"
 #include "EditSession.h"
 #include "FileAgent.h"
+#include "MemoryAgent.h"
 #include "OverseerSession.h"
 #include "OverseerStorage.h"
 #include "PathUtils.h"
@@ -68,15 +69,45 @@ QStringList parseFacts(const QString &memory) {
   return facts;
 }
 
-QString normaliseFactKey(const QString &raw) {
-  const QString trimmed = raw.trimmed();
+// Parse one entry from the batch's "order" array. The expected shape
+// is [dependent_index, [prerequisite_index, ...]]. Accepts a bare
+// integer for the dependent side too, in case the model collapses the
+// dependency to a single edge.
+bool parseOrderEntry(const QJsonValue &value,
+                     int *dependent,
+                     QList<int> *prerequisites) {
+  if (!value.isArray())
+    return false;
 
-  const int pipeIndex = trimmed.indexOf(QChar('|'));
+  const QJsonArray arr = value.toArray();
 
-  if (pipeIndex > 0)
-    return trimmed.left(pipeIndex);
+  if (arr.size() < 2)
+    return false;
 
-  return trimmed;
+  if (!arr.at(0).isDouble())
+    return false;
+
+  *dependent = static_cast<int>(arr.at(0).toDouble());
+
+  prerequisites->clear();
+
+  const QJsonValue prereqValue = arr.at(1);
+
+  if (prereqValue.isDouble()) {
+    prerequisites->append(static_cast<int>(prereqValue.toDouble()));
+    return true;
+  }
+
+  if (prereqValue.isArray()) {
+    for (const QJsonValue &pv : prereqValue.toArray()) {
+      if (pv.isDouble())
+        prerequisites->append(static_cast<int>(pv.toDouble()));
+    }
+
+    return !prerequisites->isEmpty();
+  }
+
+  return false;
 }
 
 } // namespace
@@ -267,44 +298,34 @@ void OverseerRunner::appendEvent(const TranscriptEvent &event) {
     m_transcriptStore->append(event);
 }
 
-QString OverseerRunner::factKey(const QString &fact, const QString &scope) {
-  return QString::number(qHash(fact + QChar('|') + scope));
-}
-
-QString OverseerRunner::factForKey(const QString &key) const {
-  for (const MemoryProposal &p : m_proposals) {
-    if (p.key == key)
-      return p.fact;
-  }
-
-  return {};
-}
-
 QList<OverseerRunner::PendingAction> OverseerRunner::pendingActions() const {
   QList<PendingAction> result;
 
-  for (const MemoryProposal &p : m_proposals) {
-    if (p.status != QStringLiteral("pending"))
-      continue;
+  if (m_memoryAgent) {
+    for (const MemoryAgent::Proposal &p : m_memoryAgent->proposals()) {
+      if (p.status != QStringLiteral("pending"))
+        continue;
 
-    PendingAction action;
-    action.kind = PendingAction::Kind::MemoryProposal;
+      PendingAction action;
+      action.kind = PendingAction::Kind::MemoryProposal;
 
-    if (p.replaces.isEmpty()) {
-      action.proposalMode = PendingAction::ProposalMode::NewFact;
-    } else if (p.fact.isEmpty()) {
-      action.proposalMode = PendingAction::ProposalMode::Delete;
-    } else {
-      action.proposalMode = PendingAction::ProposalMode::Replace;
+      if (p.replaces.isEmpty()) {
+        action.proposalMode = PendingAction::ProposalMode::NewFact;
+      } else if (p.fact.isEmpty()) {
+        action.proposalMode = PendingAction::ProposalMode::Delete;
+      } else {
+        action.proposalMode = PendingAction::ProposalMode::Replace;
+      }
+
+      action.key = p.key;
+      action.title = p.fact;
+      action.subtitle = p.rationale;
+      action.replacedFact = p.replacedFact;
+      action.fallbackNote = p.fallbackNote;
+      action.sessionName = m_sessionName;
+      action.scope = p.scope;
+      result.append(action);
     }
-
-    action.key = p.key;
-    action.title = p.fact;
-    action.subtitle = p.rationale;
-    action.replacedFact = p.replacedFact;
-    action.sessionName = m_sessionName;
-    action.scope = p.scope;
-    result.append(action);
   }
 
   QStringList planIds = m_scopedSessions.keys();
@@ -371,7 +392,7 @@ void OverseerRunner::openSession() {
 
   m_transcriptStore->setSession(m_session);
 
-  loadProposals();
+  spawnMemoryAgent();
 
   drainQueue();
 }
@@ -399,7 +420,15 @@ void OverseerRunner::closeSession() {
       agent->deleteLater();
   }
 
+  if (m_memoryAgent) {
+    if (m_roster)
+      m_roster->remove(m_memoryAgent->id());
+    m_memoryAgent->deleteLater();
+    m_memoryAgent = nullptr;
+  }
+
   m_taskToAgent.clear();
+  m_retryWorker.clear();
   m_writeOwner.clear();
   m_agentWritePaths.clear();
   m_routingRequestId.clear();
@@ -411,8 +440,146 @@ void OverseerRunner::closeSession() {
     m_sessionLogger = nullptr;
   }
 
-  m_proposals.clear();
   m_actionSummary.clear();
+}
+
+void OverseerRunner::spawnMemoryAgent() {
+  if (!m_session)
+    return;
+
+  if (m_memoryAgent)
+    return;
+
+  m_memoryAgent = new MemoryAgent(QStringLiteral("memory"),
+                                  m_session,
+                                  m_inferenceService,
+                                  sessionLogger(),
+                                  this);
+
+  m_memoryAgent->setToolCallDepthLimit(m_toolCallDepthLimit);
+
+  connect(m_memoryAgent, &MemoryAgent::taskFinished, this,
+          [this](const QString &taskId, bool ok, const QString &summary) {
+            onMemoryAgentTaskFinished(taskId, ok, summary);
+          });
+
+  connect(m_memoryAgent, &MemoryAgent::proposalsChanged, this,
+          [this]() {
+            emit changed();
+            refreshFileAgentMemory();
+          });
+
+  connect(m_memoryAgent, &MemoryAgent::stateChanged, this,
+          [this]() { syncRoster(); });
+
+  connect(m_memoryAgent, &MemoryAgent::depthLimitReached, this,
+          [this](const QString &agentId, int limit) {
+            appendActionSummary(
+                QStringLiteral("Memory agent %1 hit its tool call depth "
+                               "limit (%2).")
+                    .arg(agentId)
+                    .arg(limit));
+            emit agentDepthLimitReached(agentId, limit);
+            emit changed();
+          });
+
+  refreshFileAgentMemory();
+  syncRoster();
+}
+
+void OverseerRunner::onMemoryAgentTaskFinished(
+    const QString &taskId, bool ok, const QString &summary) {
+  const QString requestId = m_taskToAgent.value(taskId);
+
+  if (!requestId.isEmpty()) {
+    if (!ok) {
+      const ConductorRequest req = m_queue->byId(requestId);
+
+      if (req.retryCount < 3) {
+        if (!req.workerId.isEmpty())
+          m_retryWorker.insert(requestId, req.workerId);
+
+        m_queue->retry(requestId);
+
+        appendActionSummary(
+            QStringLiteral("Retrying request %1 on memory agent after "
+                           "failure.")
+                .arg(requestId));
+      } else {
+        m_retryWorker.remove(requestId);
+
+        m_queue->setState(requestId, QStringLiteral("failed"));
+        m_queue->setRejectReason(requestId, summary);
+
+        pauseDependentsOf(requestId, summary);
+
+        announceRequestFinished(requestId, false, summary);
+      }
+    } else {
+      m_retryWorker.remove(requestId);
+
+      const bool hasPending = [&]() {
+        if (!m_memoryAgent)
+          return false;
+
+        for (const MemoryAgent::Proposal &p : m_memoryAgent->proposals()) {
+          if (p.requestId == requestId &&
+              p.status == QStringLiteral("pending"))
+            return true;
+        }
+
+        return false;
+      }();
+
+      if (hasPending) {
+        m_queue->setAnswer(requestId, summary);
+        m_queue->setState(requestId, QStringLiteral("awaiting"));
+
+        for (const MemoryAgent::Proposal &p : m_memoryAgent->proposals()) {
+          if (p.requestId != requestId)
+            continue;
+
+          TranscriptEvent event;
+          event.type = TranscriptEvent::Type::MemoryProposal;
+          event.role = QStringLiteral("memory");
+          event.origin = Origin::User;
+          event.body = p.fact;
+          event.proposalKey = p.key;
+          event.proposalFact = p.fact;
+          event.proposalRationale = p.rationale;
+          event.proposalScope = p.scope;
+          event.proposalStatus = QStringLiteral("pending");
+          event.proposalContext = p.replacedFact;
+          appendEvent(event);
+
+          NotificationService::instance().needsUserInput(
+              p.fact.isEmpty() ? tr("Memory deletion")
+                               : (p.replaces.isEmpty()
+                                      ? tr("Memory proposal")
+                                      : tr("Memory edit")),
+              p.fact.isEmpty() ? tr("Delete: %1").arg(p.replacedFact)
+                               : p.fact,
+              QString(),
+              p.key,
+              m_sessionName);
+        }
+
+        announceRequestFinished(requestId, true, summary);
+      } else {
+        m_queue->setAnswer(requestId, summary);
+        m_queue->setState(requestId, QStringLiteral("done"));
+
+        announceRequestFinished(requestId, true, summary);
+
+        failBlockedDependentsAfterTerminal(requestId);
+      }
+    }
+  }
+
+  m_taskToAgent.remove(taskId);
+  syncRoster();
+  settleDependentRequests();
+  drainQueue();
 }
 
 QString OverseerRunner::submitRequest(const QString &text) {
@@ -485,21 +652,36 @@ void OverseerRunner::cancelRequest(const QString &requestId) {
     tearDownScopedSession(req.planId);
 
   if (!req.workerId.isEmpty()) {
-    FileAgent *agent = fileAgentById(req.workerId);
-
-    if (agent) {
+    if (req.workerId == QStringLiteral("memory") && m_memoryAgent) {
       const QStringList taskIds = m_taskToAgent.keys();
 
       for (const QString &taskId : taskIds) {
         if (m_taskToAgent.value(taskId) != requestId)
           continue;
 
-        agent->cancel(taskId);
+        m_memoryAgent->cancel(taskId);
         m_taskToAgent.remove(taskId);
         break;
       }
+    } else {
+      FileAgent *agent = fileAgentById(req.workerId);
+
+      if (agent) {
+        const QStringList taskIds = m_taskToAgent.keys();
+
+        for (const QString &taskId : taskIds) {
+          if (m_taskToAgent.value(taskId) != requestId)
+            continue;
+
+          agent->cancel(taskId);
+          m_taskToAgent.remove(taskId);
+          break;
+        }
+      }
     }
   }
+
+  m_retryWorker.remove(requestId);
 
   m_queue->setRejectReason(requestId, tr("Cancelled by user."));
   m_queue->setState(requestId, QStringLiteral("rejected"));
@@ -523,49 +705,96 @@ void OverseerRunner::removeFailedRequest(const QString &requestId) {
 
   const QStringList removedChildren = m_queue->removeChildren(requestId);
 
-  for (const QString &childId : removedChildren) {
+  for (const QString &childId : removedChildren)
     appendActionSummary(
         QStringLiteral("Removed child request %1.").arg(childId));
-  }
 
+  // Delete every edge that touched this node. Dependents that pointed
+  // at it lose the dependency entirely and continue.
   const QStringList dependents = m_dependencies.edgesFrom(requestId);
 
-  QStringList affected;
+  m_dependencies.removeNode(requestId);
 
+  m_queue->remove(requestId);
+
+  m_retryWorker.remove(requestId);
+
+  appendActionSummary(
+      QStringLiteral("Removed request %1; dependents released.")
+          .arg(requestId));
+
+  // Clear blockedOn on the released dependents and let them run.
   for (const QString &dep : dependents) {
     const ConductorRequest r = m_queue->byId(dep);
 
     if (r.id.isEmpty())
       continue;
 
-    if (r.state == QStringLiteral("done") ||
-        r.state == QStringLiteral("failed") ||
-        r.state == QStringLiteral("rejected"))
+    if (r.state != QStringLiteral("inbox"))
       continue;
 
-    affected.append(dep);
+    m_queue->setBlockedOn(dep, {});
+    m_queue->setDeferred(dep, false);
   }
 
-  for (const QString &dep : std::as_const(affected)) {
-    const QString reason =
-        tr("Dependency %1 was removed.").arg(requestId.left(8));
-
-    m_queue->setRejectReason(dep, reason);
-    m_queue->setState(dep, QStringLiteral("rejected"));
-
-    m_dependencies.removeNode(dep);
-
-    announceRequestFinished(dep, false, reason);
-  }
-
-  m_dependencies.removeNode(requestId);
-  m_queue->remove(requestId);
-
-  appendActionSummary(
-      QStringLiteral("Removed request %1.").arg(requestId));
-
+  settleDependentRequests();
   drainQueue();
 }
+
+void OverseerRunner::retryFailedRequest(const QString &requestId) {
+  if (requestId.isEmpty())
+    return;
+
+  const ConductorRequest req = m_queue->byId(requestId);
+
+  if (req.id.isEmpty())
+    return;
+
+  if (req.state != QStringLiteral("failed"))
+    return;
+
+  m_queue->retryFresh(requestId);
+
+  appendActionSummary(
+      QStringLiteral("User retried request %1.").arg(requestId));
+
+  settleDependentRequests();
+  drainQueue();
+}
+
+void OverseerRunner::skipFailedRequest(const QString &requestId) {
+  if (requestId.isEmpty())
+    return;
+
+  const ConductorRequest req = m_queue->byId(requestId);
+
+  if (req.id.isEmpty())
+    return;
+
+  if (req.state != QStringLiteral("failed"))
+    return;
+
+  const QString reason =
+      tr("Skipped by user; dependents continue.");
+
+  m_queue->skip(requestId, reason);
+
+  appendActionSummary(
+      QStringLiteral("User skipped request %1.").arg(requestId));
+
+  const QVector<NotificationService::Notification> pendingNotifs =
+      NotificationService::instance().pending();
+
+  for (const NotificationService::Notification &n : pendingNotifs) {
+    if (n.targetCardId == requestId)
+      NotificationService::instance().acknowledge(n.id);
+  }
+
+  failBlockedDependentsAfterTerminal(requestId);
+  settleDependentRequests();
+  drainQueue();
+}
+
 
 void OverseerRunner::setSessionSettings(const SessionSettings &settings) {
   m_sessionSettings = settings;
@@ -582,47 +811,6 @@ void OverseerRunner::setSessionSettings(const SessionSettings &settings) {
 }
 
 void OverseerRunner::settleDependentRequests() {
-  const QVector<ConductorRequest> all = m_queue->all();
-
-  for (const ConductorRequest &req : all) {
-    if (req.state != QStringLiteral("inbox"))
-      continue;
-
-    if (!dependenciesBlocked(req.id))
-      continue;
-
-    const QStringList deps = m_dependencies.edgesTo(req.id);
-
-    QString failedDep;
-
-    for (const QString &dep : deps) {
-      const ConductorRequest r = m_queue->byId(dep);
-
-      if (r.id.isEmpty())
-        continue;
-
-      if (r.state == QStringLiteral("failed") ||
-          r.state == QStringLiteral("rejected")) {
-        failedDep = dep;
-        break;
-      }
-    }
-
-    const QString reason =
-        tr("Dependency %1 did not complete.")
-            .arg(failedDep.left(8));
-
-    m_queue->setState(req.id, QStringLiteral("failed"));
-    m_queue->setRejectReason(req.id, reason);
-
-    appendActionSummary(
-        QStringLiteral("Failed request %1 because dependency %2 did not "
-                       "complete.")
-            .arg(req.id, failedDep));
-
-    announceRequestFinished(req.id, false, reason);
-  }
-
   for (const ConductorRequest &req : m_queue->all()) {
     if (req.state != QStringLiteral("inbox"))
       continue;
@@ -654,10 +842,10 @@ void OverseerRunner::failBlockedDependentsAfterTerminal(
   if (req.id.isEmpty())
     return;
 
-  if (req.state == QStringLiteral("failed") ||
-      req.state == QStringLiteral("rejected")) {
-    failDependentsOf(requestId, req.rejectReason);
-  }
+  // Only a failed terminal state cascades. A rejected or skipped
+  // request is satisfied as far as its dependents are concerned.
+  if (req.state == QStringLiteral("failed"))
+    pauseDependentsOf(requestId, req.rejectReason);
 
   settleDependentRequests();
 }
@@ -666,10 +854,6 @@ void OverseerRunner::drainQueue() {
   if (!m_session)
     return;
 
-  // Reload settings from disk on every drain. A user can toggle
-  // auto-memory or auto-edits while the session is open; without this,
-  // the runner keeps whatever was loaded at openSession time and
-  // silently auto-accepts proposals the user believes are pending.
   m_sessionSettings = SessionSettings::load(m_session->settingsPath());
   m_sessionSettings.normalize();
 
@@ -828,12 +1012,15 @@ QStringList OverseerRunner::unsatisfiedDependencies(
   for (const QString &dep : deps) {
     const ConductorRequest r = m_queue->byId(dep);
 
-    if (r.id.isEmpty()) {
+    if (r.id.isEmpty())
       continue;
-    }
 
-    if (r.state != QStringLiteral("done"))
-      result.append(dep);
+    if (r.state == QStringLiteral("done") ||
+        r.state == QStringLiteral("rejected") ||
+        r.state == QStringLiteral("skipped"))
+      continue;
+
+    result.append(dep);
   }
 
   return result;
@@ -848,16 +1035,20 @@ bool OverseerRunner::dependenciesBlocked(const QString &requestId) const {
     if (r.id.isEmpty())
       continue;
 
-    if (r.state == QStringLiteral("failed") ||
-        r.state == QStringLiteral("rejected"))
+    // A dependency that failed and has not yet been resolved by the
+    // user blocks its dependents. A dependency the user explicitly
+    // rejected or skipped is treated as satisfied: the user has
+    // decided the dependency does not need to succeed for the rest
+    // of the session to continue.
+    if (r.state == QStringLiteral("failed"))
       return true;
   }
 
   return false;
 }
 
-void OverseerRunner::failDependentsOf(const QString &requestId,
-                                      const QString &reason) {
+void OverseerRunner::pauseDependentsOf(const QString &requestId,
+                                       const QString &reason) {
   if (requestId.isEmpty())
     return;
 
@@ -871,22 +1062,18 @@ void OverseerRunner::failDependentsOf(const QString &requestId,
 
     if (r.state == QStringLiteral("done") ||
         r.state == QStringLiteral("failed") ||
-        r.state == QStringLiteral("rejected"))
+        r.state == QStringLiteral("rejected") ||
+        r.state == QStringLiteral("skipped"))
       continue;
 
-    m_queue->setState(dep, QStringLiteral("failed"));
-    m_queue->setRejectReason(
-        dep, tr("Dependency %1 failed: %2")
-                 .arg(requestId.left(8), reason));
+    m_queue->setDeferred(dep, true);
+    m_queue->setBlockedOn(dep, {requestId});
 
     appendActionSummary(
-        QStringLiteral("Failed dependent request %1 because dependency "
-                       "%2 failed.")
-            .arg(dep, requestId));
+        QStringLiteral("Paused request %1; it waits on failed %2.")
+            .arg(dep, requestId.left(8)));
 
-    announceRequestFinished(
-        dep, false,
-        tr("Dependency %1 failed: %2").arg(requestId.left(8), reason));
+    Q_UNUSED(reason);
   }
 }
 
@@ -1170,6 +1357,39 @@ OverseerRunner::DispatchPlan OverseerRunner::decideDispatch(
       return reject;
     }
 
+    // Read the top-level "order" array. Each entry is
+    // [dependent_index, [prerequisite_index, ...]] with 1-based
+    // indexing matching the positions of the actions array. Copied
+    // verbatim into the plan; applyRoutingDecision translates the
+    // indices into request edges after fan-out.
+    const QJsonArray orderArray =
+        decision.value(QStringLiteral("order")).toArray();
+
+    for (const QJsonValue &v : orderArray) {
+      int dependent = -1;
+      QList<int> prerequisites;
+
+      if (!parseOrderEntry(v, &dependent, &prerequisites))
+        continue;
+
+      if (dependent < 1 || dependent > batch.fanOutActions.size())
+        continue;
+
+      QJsonObject entry;
+      entry.insert(QStringLiteral("dependent"), dependent);
+
+      QJsonArray prereqArray;
+
+      for (int p : prerequisites) {
+        if (p >= 1 && p <= batch.fanOutActions.size() && p != dependent)
+          prereqArray.append(p);
+      }
+
+      entry.insert(QStringLiteral("prerequisites"), prereqArray);
+
+      batch.order.append(entry);
+    }
+
     return batch;
   }
 
@@ -1209,8 +1429,17 @@ OverseerRunner::DispatchPlan OverseerRunner::decideDispatch(
     return plan;
 
   if (plan.kind == DispatchPlan::Kind::Route) {
-    if (fileAgentById(plan.agentId))
+    if (fileAgentById(plan.agentId) ||
+        (m_memoryAgent && plan.agentId == m_memoryAgent->id())) {
       return plan;
+    }
+
+    if (!plan.agentId.isEmpty()) {
+      const_cast<OverseerRunner *>(this)->appendActionSummary(
+          QStringLiteral("Named worker %1 is not available; falling "
+                         "back to expertise or least-loaded.")
+              .arg(plan.agentId));
+    }
 
     plan.agentId.clear();
   }
@@ -1250,12 +1479,6 @@ void OverseerRunner::applyRoutingDecision(const QString &requestId,
 
   recordEdges(requestId, plan.dependencies);
 
-  // A request whose declared dependencies are not yet satisfied must
-  // not apply its plan. The answer text, or any other effect, was
-  // generated against a state where the dependency was still pending
-  // — for example, a fact that had been proposed but not accepted.
-  // Put the request back in the inbox; when the dependencies resolve,
-  // drainQueue re-routes it and the conductor sees the updated state.
   if (!plan.dependencies.isEmpty() && !dependenciesSatisfied(requestId)) {
     m_queue->setState(requestId, QStringLiteral("inbox"));
 
@@ -1271,15 +1494,21 @@ void OverseerRunner::applyRoutingDecision(const QString &requestId,
 
   if (plan.kind == DispatchPlan::Kind::FanOut) {
     const ConductorRequest parent = m_queue->byId(requestId);
-
-    const Origin origin =
-        parent.id.isEmpty() ? Origin::User : parent.origin;
+    const Origin origin = parent.id.isEmpty() ? Origin::User : parent.origin;
 
     QStringList childIds;
 
     for (const QJsonObject &action : plan.fanOutActions) {
-      const QString childText = QString::fromUtf8(
-          QJsonDocument(action).toJson(QJsonDocument::Compact));
+      QJsonObject copy = action;
+
+      // Depends_on on sub-actions is no longer read. The batch's
+      // top-level "order" array carries the graph. Strip any stray
+      // depends_on so a sub-action cannot introduce an unresolved
+      // index reference.
+      copy.remove(QStringLiteral("depends_on"));
+
+      const QString childText =
+          QString::fromUtf8(QJsonDocument(copy).toJson(QJsonDocument::Compact));
 
       const QString childId =
           m_queue->enqueueChild(childText, requestId, origin);
@@ -1289,8 +1518,33 @@ void OverseerRunner::applyRoutingDecision(const QString &requestId,
       childIds.append(childId);
     }
 
-    const QString summary =
-        tr("Split into %n task(s).", "", childIds.size());
+    // Translate the order entries into graph edges. Each entry names a
+    // 1-based dependent index and a list of 1-based prerequisite
+    // indices into childIds.
+    for (const QJsonObject &entry : plan.order) {
+      const int dependent = entry.value(QStringLiteral("dependent")).toInt();
+
+      if (dependent < 1 || dependent > childIds.size())
+        continue;
+
+      const QJsonArray prereqs =
+          entry.value(QStringLiteral("prerequisites")).toArray();
+
+      for (const QJsonValue &pv : prereqs) {
+        const int prereq = static_cast<int>(pv.toDouble());
+
+        if (prereq < 1 || prereq > childIds.size())
+          continue;
+
+        if (prereq == dependent)
+          continue;
+
+        m_dependencies.addEdge(childIds.at(prereq - 1),
+                               childIds.at(dependent - 1));
+      }
+    }
+
+    const QString summary = tr("Split into %n task(s).", "", childIds.size());
 
     m_queue->setAnswer(requestId, summary);
     m_queue->setState(requestId, QStringLiteral("done"));
@@ -1316,8 +1570,7 @@ void OverseerRunner::applySinglePlan(const QString &requestId,
     m_queue->setAnswer(requestId, plan.answer);
     m_queue->setState(requestId, QStringLiteral("done"));
 
-    appendActionSummary(
-        QStringLiteral("Answered request %1.").arg(requestId));
+    appendActionSummary(QStringLiteral("Answered request %1.").arg(requestId));
 
     TranscriptEvent event;
     event.type = TranscriptEvent::Type::AssistantMessage;
@@ -1345,13 +1598,8 @@ void OverseerRunner::applySinglePlan(const QString &requestId,
   }
 
   if (plan.kind == DispatchPlan::Kind::ProposeMemory) {
-    const bool isDelete = plan.memoryFact.trimmed().isEmpty() &&
-                          !plan.memoryReplaces.isEmpty();
-
-    if (plan.memoryFact.trimmed().isEmpty() && plan.memoryReplaces.isEmpty()) {
-      const QString reason =
-          tr("The conductor proposed a memory fact with no fact text "
-             "and no fact to replace.");
+    if (!m_memoryAgent) {
+      const QString reason = tr("Memory agent is not available.");
 
       m_queue->setState(requestId, QStringLiteral("failed"));
       m_queue->setRejectReason(requestId, reason);
@@ -1362,110 +1610,29 @@ void OverseerRunner::applySinglePlan(const QString &requestId,
       return;
     }
 
-    const QString key = recordProposal(requestId,
-                                       plan.memoryFact,
-                                       plan.memoryRationale,
-                                       plan.memoryScope,
-                                       plan.memoryReplaces);
+    QJsonObject actionJson;
+    actionJson.insert(QStringLiteral("fact"), plan.memoryFact);
+    actionJson.insert(QStringLiteral("rationale"), plan.memoryRationale);
+    actionJson.insert(QStringLiteral("scope"), plan.memoryScope);
 
-    if (key.isEmpty()) {
-      const QString reason = tr("Could not record the memory proposal.");
+    if (!plan.memoryReplaces.isEmpty())
+      actionJson.insert(QStringLiteral("replaces"), plan.memoryReplaces);
 
-      m_queue->setState(requestId, QStringLiteral("failed"));
-      m_queue->setRejectReason(requestId, reason);
+    MemoryAgent::Task task;
+    task.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    task.requestId = requestId;
+    task.preDecidedAction = actionJson;
 
-      announceRequestFinished(requestId, false, reason);
+    m_taskToAgent.insert(task.id, requestId);
 
-      failBlockedDependentsAfterTerminal(requestId);
-      return;
-    }
+    m_memoryAgent->enqueue(task);
 
-    const bool autoAccepted = m_sessionSettings.effectiveAutoMemory();
-
-    QString replacedFact;
-
-    for (const MemoryProposal &p : std::as_const(m_proposals)) {
-      if (p.key == key) {
-        replacedFact = p.replacedFact;
-        break;
-      }
-    }
-
-    TranscriptEvent event;
-    event.type = TranscriptEvent::Type::MemoryProposal;
-    event.role = QStringLiteral("memory");
-    event.origin = Origin::User;
-    event.body = plan.memoryFact;
-    event.proposalKey = key;
-    event.proposalFact = plan.memoryFact;
-    event.proposalRationale = plan.memoryRationale;
-    event.proposalScope = plan.memoryScope;
-    event.proposalStatus =
-        autoAccepted ? QStringLiteral("accepted") : QStringLiteral("pending");
-    event.proposalAcceptedScope = autoAccepted ? plan.memoryScope : QString();
-    event.proposalContext = replacedFact;
-    appendEvent(event);
-
-    QString summary;
-
-    if (isDelete) {
-      summary = autoAccepted
-                    ? tr("Deleted a memory fact.")
-                    : tr("Proposed deleting a memory fact.");
-    } else if (!plan.memoryReplaces.isEmpty()) {
-      summary = autoAccepted
-                    ? tr("Replaced a memory fact.")
-                    : tr("Proposed replacing a memory fact.");
-    } else {
-      summary = autoAccepted
-                    ? tr("Remembered: %1").arg(plan.memoryFact)
-                    : tr("Proposed a memory fact: %1").arg(plan.memoryFact);
-    }
-
-    m_queue->setAnswer(requestId, summary);
-
-    // A pending proposal leaves the request in "awaiting": the user
-    // has to accept or reject before the request's effect is real.
-    // Dependents that declared depends_on this request stay blocked
-    // until then. An auto-accepted proposal is already real.
-    m_queue->setState(requestId,
-                      autoAccepted ? QStringLiteral("done")
-                                   : QStringLiteral("awaiting"));
+    m_queue->setWorker(requestId, m_memoryAgent->id(), QString());
+    m_queue->setState(requestId, QStringLiteral("delegated"));
 
     appendActionSummary(
-        QStringLiteral("Recorded memory proposal %1 for request %2.")
-            .arg(key, requestId));
-
-    if (!autoAccepted) {
-      QString notifBody;
-
-      if (isDelete)
-        notifBody = tr("Delete: %1").arg(replacedFact);
-      else if (!plan.memoryReplaces.isEmpty())
-        notifBody = tr("Replace \"%1\" with \"%2\"")
-                        .arg(replacedFact, plan.memoryFact);
-      else
-        notifBody = plan.memoryFact;
-
-      NotificationService::instance().needsUserInput(
-          isDelete ? tr("Memory deletion")
-                   : (!plan.memoryReplaces.isEmpty()
-                          ? tr("Memory edit")
-                          : tr("Memory proposal")),
-          notifBody,
-          QString(),
-          key,
-          m_sessionName);
-    }
-
-    announceRequestFinished(requestId, true, summary);
-
-    // A request sitting in "awaiting" is not terminal. Do not run the
-    // terminal-dependent pass; the request will be moved to done or
-    // rejected when the user resolves the proposal.
-    if (autoAccepted)
-      failBlockedDependentsAfterTerminal(requestId);
-
+        QStringLiteral("Routed request %1 to memory agent.")
+            .arg(requestId));
     return;
   }
 
@@ -1518,10 +1685,19 @@ void OverseerRunner::applySinglePlan(const QString &requestId,
   }
 
   if (plan.kind == DispatchPlan::Kind::Route) {
-    FileAgent *agent = fileAgentById(plan.agentId);
+    QString targetAgentId = plan.agentId;
+
+    const QString retryWorker = m_retryWorker.value(requestId);
+
+    if (!retryWorker.isEmpty() && fileAgentById(retryWorker))
+      targetAgentId = retryWorker;
+
+    FileAgent *agent = fileAgentById(targetAgentId);
 
     if (!agent) {
-      const QString reason = tr("No such worker: %1").arg(plan.agentId);
+      const QString reason = tr("No such worker: %1").arg(targetAgentId);
+
+      m_retryWorker.remove(requestId);
 
       m_queue->setState(requestId, QStringLiteral("failed"));
       m_queue->setRejectReason(requestId, reason);
@@ -1539,12 +1715,12 @@ void OverseerRunner::applySinglePlan(const QString &requestId,
 
     agent->enqueue(task);
 
-    m_queue->setWorker(requestId, plan.agentId, QString());
+    m_queue->setWorker(requestId, targetAgentId, QString());
     m_queue->setState(requestId, QStringLiteral("delegated"));
 
     appendActionSummary(
         QStringLiteral("Routed request %1 to %2.")
-            .arg(requestId, plan.agentId));
+            .arg(requestId, targetAgentId));
     return;
   }
 
@@ -1642,8 +1818,8 @@ void OverseerRunner::handleSpawnScopedEdit(const QString &requestId,
                                            const QString &instruction,
                                            const QString &originAgentId,
                                            const QString &originTaskId) {
-  if (!m_inferenceService || !m_focusedEditor) {
-    const QString reason = tr("No editor available for the target file.");
+  if (!m_inferenceService) {
+    const QString reason = tr("Inference service is unavailable.");
 
     m_queue->setState(requestId, QStringLiteral("failed"));
     m_queue->setRejectReason(requestId, reason);
@@ -1655,16 +1831,39 @@ void OverseerRunner::handleSpawnScopedEdit(const QString &requestId,
   const QString absolute =
       QDir(m_session->outputPath()).absoluteFilePath(filePath);
 
+  // If another scoped edit is already active on this file, defer this
+  // request behind the one that holds the lock. Do not fail. The
+  // dependency graph will unblock this request when the owner
+  // resolves, whether by apply, cancel, or failure.
   if (m_workstation && m_workstation->isFileLocked(absolute)) {
-    const QString reason =
-        tr("A scoped edit is already active on %1.")
-            .arg(QFileInfo(absolute).fileName());
+    for (auto sit = m_scopedSessions.constBegin();
+         sit != m_scopedSessions.constEnd(); ++sit) {
+      if (sit.value().filePath != absolute)
+        continue;
 
-    m_queue->setState(requestId, QStringLiteral("failed"));
-    m_queue->setRejectReason(requestId, reason);
+      const QString blockerRequestId = sit.value().requestId;
 
-    announceRequestFinished(requestId, false, reason);
-    return;
+      if (blockerRequestId.isEmpty())
+        continue;
+
+      m_dependencies.addEdge(blockerRequestId, requestId);
+
+      m_queue->setState(requestId, QStringLiteral("inbox"));
+      m_queue->setDeferred(requestId, true);
+      m_queue->setBlockedOn(requestId, {blockerRequestId});
+
+      appendActionSummary(
+          QStringLiteral("Deferred scoped edit %1 behind %2 on %3.")
+              .arg(requestId, blockerRequestId,
+                   QFileInfo(absolute).fileName()));
+
+      settleDependentRequests();
+      drainQueue();
+      return;
+    }
+
+    // Locked but no scoped session found. Fall through to the fail
+    // path so the situation is not silent.
   }
 
   const int cap = Settings::getOverseerConcurrencyCap();
@@ -1673,6 +1872,30 @@ void OverseerRunner::handleSpawnScopedEdit(const QString &requestId,
     m_queue->setState(requestId, QStringLiteral("inbox"));
     return;
   }
+
+  QFile file(absolute);
+
+  if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+    const QString reason =
+        tr("Could not open %1 for reading.").arg(QFileInfo(absolute).fileName());
+
+    m_queue->setState(requestId, QStringLiteral("failed"));
+    m_queue->setRejectReason(requestId, reason);
+
+    announceRequestFinished(requestId, false, reason);
+    return;
+  }
+
+  QTextStream stream(&file);
+  stream.setEncoding(QStringConverter::Utf8);
+
+  const QString contents = stream.readAll();
+  file.close();
+
+  auto *document = new TextDocument(this);
+  document->setFilePath(absolute);
+  document->setType(DocumentMode::Markdown);
+  document->setPlainText(contents);
 
   const QString planId = QUuid::createUuid().toString(QUuid::WithoutBraces);
 
@@ -1686,6 +1909,7 @@ void OverseerRunner::handleSpawnScopedEdit(const QString &requestId,
   ctx.instruction = instruction;
   ctx.originAgentId = originAgentId;
   ctx.originTaskId = originTaskId;
+  ctx.document = document;
 
   auto *planner = new EditPlanner(m_inferenceService, this);
 
@@ -1708,9 +1932,8 @@ void OverseerRunner::handleSpawnScopedEdit(const QString &requestId,
 
   emit planGenerationStarted(absolute);
 
-  planner->start(m_focusedEditor, instruction);
+  planner->start(document, instruction);
 }
-
 void OverseerRunner::onPlannerValidated(
     const QString &planId, const QVector<EditCommand> &commands) {
   auto it = m_scopedSessions.find(planId);
@@ -1732,8 +1955,8 @@ void OverseerRunner::onPlannerValidated(
     return;
   }
 
-  if (!m_focusedEditor) {
-    const QString reason = tr("No editor available.");
+  if (!ctx.document) {
+    const QString reason = tr("No document loaded for the target file.");
 
     m_queue->setState(ctx.requestId, QStringLiteral("failed"));
     m_queue->setRejectReason(ctx.requestId, reason);
@@ -1745,27 +1968,12 @@ void OverseerRunner::onPlannerValidated(
   }
 
   ctx.commands = commands;
-  ctx.session = new EditSession(m_focusedEditor, this);
+  ctx.session = EditSession::forDocument(ctx.document, this);
 
   ctx.session->setSessionId(ctx.filePath);
   EditSession *session = ctx.session;
 
   session->setInferenceService(m_inferenceService);
-
-  connect(session, &EditSession::pendingEditStarted, m_focusedEditor,
-          &TextEdit::showPendingEdit);
-
-  connect(session, &EditSession::pendingEditUpdated, m_focusedEditor,
-          &TextEdit::updatePendingEdit);
-
-  connect(session, &EditSession::pendingEditFinished, m_focusedEditor,
-          [this](const PendingEdit &edit) {
-            if (m_focusedEditor)
-              m_focusedEditor->updatePendingEdit(edit);
-          });
-
-  connect(session, &EditSession::pendingEditsChanged, m_focusedEditor,
-          &TextEdit::refreshPendingEdits);
 
   connect(session, &EditSession::failed, this,
           [this, planId](const QString &reason) {
@@ -1782,8 +1990,9 @@ void OverseerRunner::onPlannerValidated(
             announceRequestFinished(requestId, false, reason);
 
             tearDownScopedSession(planId);
-          });
 
+            failBlockedDependentsAfterTerminal(requestId);
+          });
   connect(session, &EditSession::generationFinished, this,
           [this, planId](bool allCompleted) {
             auto sessionIt = m_scopedSessions.find(planId);
@@ -1881,11 +2090,11 @@ void OverseerRunner::autoApplySession(const QString &planId) {
     announceRequestFinished(requestId, false, reason);
 
     tearDownScopedSession(planId);
+
+    failBlockedDependentsAfterTerminal(requestId);
+    drainQueue();
     return;
   }
-
-  if (!filePath.isEmpty())
-    emit saveWorkstationFileRequested(filePath);
 
   it->awaitingReview = false;
 
@@ -1910,7 +2119,21 @@ void OverseerRunner::autoApplySession(const QString &planId) {
       tr("%1 has been updated.").arg(QFileInfo(filePath).fileName()),
       filePath);
 
-  tearDownScopedSession(planId);
+  // Persist the edited document back to disk before tearing down the
+  // session. The scoped edit owns the file while it runs; the
+  // Workstation is only a viewer.
+  tearDownScopedSession(planId, /*persistDocument=*/true);
+
+  // If a Workstation window is open for this file, its TextDocument is
+  // a separate instance holding stale content. Reload it from disk so
+  // the user sees the applied edit.
+  if (m_workstation && !filePath.isEmpty()) {
+    if (WorkstationWindow *window = m_workstation->windowForPath(filePath))
+      m_workstation->reloadWindowFromDisk(window);
+  }
+
+  failBlockedDependentsAfterTerminal(requestId);
+  drainQueue();
 }
 
 void OverseerRunner::onPlannerFailed(const QString &planId,
@@ -1921,6 +2144,7 @@ void OverseerRunner::onPlannerFailed(const QString &planId,
     return;
 
   const QString requestId = it->requestId;
+  const QString filePath = it->filePath;
 
   m_queue->setState(requestId, QStringLiteral("failed"));
   m_queue->setRejectReason(requestId, reason);
@@ -1928,14 +2152,27 @@ void OverseerRunner::onPlannerFailed(const QString &planId,
   appendActionSummary(
       QStringLiteral("Plan for %1 failed: %2").arg(requestId, reason));
 
-  emit planFailed(it->filePath);
+  emit planFailed(filePath);
+
+  tearDownScopedSession(planId);
+
+  pauseDependentsOf(requestId, reason);
+
+  NotificationService::instance().needsUserInput(
+      tr("Edit plan failed"),
+      QStringLiteral("%1 — %2")
+          .arg(QFileInfo(filePath).fileName(), reason),
+      filePath,
+      requestId,
+      m_sessionName);
 
   announceRequestFinished(requestId, false, reason);
 
-  tearDownScopedSession(planId);
+  drainQueue();
 }
 
-void OverseerRunner::tearDownScopedSession(const QString &planId) {
+void OverseerRunner::tearDownScopedSession(const QString &planId,
+                                           bool persistDocument) {
   auto it = m_scopedSessions.find(planId);
 
   if (it == m_scopedSessions.end())
@@ -1956,6 +2193,29 @@ void OverseerRunner::tearDownScopedSession(const QString &planId) {
     ctx.session->abort();
     ctx.session->deleteLater();
     ctx.session = nullptr;
+  }
+
+  // Persist the document back to disk if the caller asks for it and
+  // the document has a file path. The scoped edit's target file is the
+  // one the plan was built against.
+  if (persistDocument && ctx.document && !ctx.filePath.isEmpty()) {
+    QFile file(ctx.filePath);
+
+    if (file.open(QIODevice::WriteOnly | QIODevice::Truncate |
+                  QIODevice::Text)) {
+      QTextStream stream(&file);
+      stream.setEncoding(QStringConverter::Utf8);
+      stream << ctx.document->toPlainText();
+      stream.flush();
+                  } else {
+                    qWarning() << "[OverseerRunner] Failed to persist scoped edit to"
+                               << ctx.filePath;
+                  }
+  }
+
+  if (ctx.document) {
+    ctx.document->deleteLater();
+    ctx.document = nullptr;
   }
 
   if (m_workstation && !ctx.filePath.isEmpty())
@@ -2014,21 +2274,29 @@ QString OverseerRunner::spawnFileAgent(const QString &domain) {
               if (!ok) {
                 const ConductorRequest req = m_queue->byId(requestId);
 
-                if (req.retryCount < 1) {
+                if (req.retryCount < 3) {
+                  if (!req.workerId.isEmpty())
+                    m_retryWorker.insert(requestId, req.workerId);
+
                   m_queue->retry(requestId);
 
                   appendActionSummary(
-                      QStringLiteral("Retrying request %1 after failure.")
-                          .arg(requestId));
+                      QStringLiteral("Retrying request %1 on %2 after "
+                                     "failure.")
+                          .arg(requestId, req.workerId));
                 } else {
+                  m_retryWorker.remove(requestId);
+
                   m_queue->setState(requestId, QStringLiteral("failed"));
                   m_queue->setRejectReason(requestId, result);
 
-                  failDependentsOf(requestId, result);
+                  pauseDependentsOf(requestId, result);
 
                   announceRequestFinished(requestId, false, result);
                 }
               } else {
+                m_retryWorker.remove(requestId);
+
                 m_queue->setState(requestId, QStringLiteral("done"));
 
                 appendActionSummary(
@@ -2100,10 +2368,14 @@ void OverseerRunner::syncRoster() {
   const QVector<ConductorWorker> existing = m_roster->all();
 
   for (const ConductorWorker &w : existing) {
-    if (w.type != QStringLiteral("file"))
+    if (w.type != QStringLiteral("file") &&
+        w.type != QStringLiteral("memory"))
       continue;
 
-    if (!m_fileAgents.contains(w.id))
+    if (w.type == QStringLiteral("file") && !m_fileAgents.contains(w.id))
+      m_roster->remove(w.id);
+    else if (w.type == QStringLiteral("memory") &&
+             (!m_memoryAgent || w.id != m_memoryAgent->id()))
       m_roster->remove(w.id);
   }
 
@@ -2113,6 +2385,9 @@ void OverseerRunner::syncRoster() {
 
     m_roster->add(agent->rosterEntry());
   }
+
+  if (m_memoryAgent)
+    m_roster->add(m_memoryAgent->rosterEntry());
 
   emit changed();
 }
@@ -2133,7 +2408,9 @@ QString OverseerRunner::buildConductorPrompt(
 
     for (const QString &f : facts) {
       out += QStringLiteral("[%1] %2\n")
-                 .arg(factKey(f, QStringLiteral("global")), f);
+                 .arg(QString::number(qHash(f + QChar('|') +
+                                            QStringLiteral("global"))),
+                      f);
     }
 
     while (out.endsWith(QChar('\n')))
@@ -2152,7 +2429,9 @@ QString OverseerRunner::buildConductorPrompt(
 
     for (const QString &f : facts) {
       out += QStringLiteral("[%1] %2\n")
-                 .arg(factKey(f, QStringLiteral("session")), f);
+                 .arg(QString::number(qHash(f + QChar('|') +
+                                            QStringLiteral("session"))),
+                      f);
     }
 
     while (out.endsWith(QChar('\n')))
@@ -2164,15 +2443,12 @@ QString OverseerRunner::buildConductorPrompt(
   const QString globalMemory = renderKeyedFacts(globalMemoryRaw);
   const QString sessionMemory = renderSessionFacts(sessionMemoryRaw);
 
-  // Pending memory proposals: facts the user hasn't yet accepted or
-  // rejected. The conductor needs to see them so it can declare a
-  // dependency rather than answer as if the fact exists.
   QString pendingSection;
 
-  {
+  if (m_memoryAgent) {
     QStringList lines;
 
-    for (const MemoryProposal &p : std::as_const(m_proposals)) {
+    for (const MemoryAgent::Proposal &p : m_memoryAgent->proposals()) {
       if (p.status != QStringLiteral("pending"))
         continue;
 
@@ -2195,6 +2471,8 @@ QString OverseerRunner::buildConductorPrompt(
     pendingSection = lines.isEmpty()
                          ? QStringLiteral("(no pending proposals)")
                          : lines.join(QChar('\n'));
+  } else {
+    pendingSection = QStringLiteral("(no pending proposals)");
   }
 
   QString directoryHighlights;
@@ -2225,9 +2503,12 @@ QString OverseerRunner::buildConductorPrompt(
 
   QString agents;
 
-  if (m_fileAgents.isEmpty()) {
-    agents = QStringLiteral("(no file agents yet)");
+  if (m_fileAgents.isEmpty() && !m_memoryAgent) {
+    agents = QStringLiteral("(no agents yet)");
   } else {
+    if (m_memoryAgent)
+      agents += m_memoryAgent->summaryForConductor();
+
     for (FileAgent *agent : std::as_const(m_fileAgents)) {
       if (!agent)
         continue;
@@ -2286,8 +2567,6 @@ QString OverseerRunner::buildConductorPrompt(
       actionHistory += m_actionSummary.at(i) + QChar('\n');
   }
 
-  // Recent requests with their ids and current states. The conductor
-  // needs this to cite request ids in "depends_on".
   QString requestHistory;
 
   {
@@ -2402,6 +2681,10 @@ QString OverseerRunner::buildConductorPrompt(
       "     {\"action\": \"...\"},\n"
       "     {\"action\": \"...\"},\n"
       "     ...\n"
+      "   ],\n"
+      "   \"order\": [\n"
+      "     [<dependent>, [<prerequisite>, ...]],\n"
+      "     ...\n"
       "   ]}\n"
       "  {\"action\": \"spawn_scoped_edit\",\n"
       "   \"file\": \"recipe.md\",\n"
@@ -2417,7 +2700,7 @@ QString OverseerRunner::buildConductorPrompt(
       "\"depends_on\" array of request ids this request needs completed\n"
       "first.\n"
       "\n"
-      "## Declaring dependencies\n"
+      "## Declaring dependencies (top-level requests)\n"
       "\n"
       "You MUST declare depends_on when the current request depends on\n"
       "the outcome of an earlier request. Specifically:\n"
@@ -2466,15 +2749,99 @@ QString OverseerRunner::buildConductorPrompt(
       "user's statement slightly refines an existing fact, use the\n"
       "replace shape rather than adding a second near-duplicate.\n"
       "\n"
-      "Use \"batch\" when the user's request is really several\n"
-      "independent actions at once. Every sub-action inside a batch\n"
-      "must be a full action object of the same shapes listed above,\n"
-      "except that a batch cannot itself contain a nested batch. The\n"
-      "sub-actions become independent tasks. Use batch when the user\n"
-      "asks for multiple unrelated things in one message. Do not use\n"
-      "batch when the sub-actions depend on each other; if the\n"
-      "sub-actions need ordering, send them as separate requests with\n"
-      "depends_on, or answer the user with the sequence instead.\n"
+      "## Batches and their order\n"
+      "\n"
+      "Use \"batch\" when the user's request is really several actions\n"
+      "at once. Every sub-action inside a batch must be a full action\n"
+      "object of the same shapes listed above, except that a batch\n"
+      "cannot itself contain a nested batch.\n"
+      "\n"
+      "Inside a batch, always use spawn_file_agent. Do NOT use\n"
+      "route_to_worker inside a batch: agent ids do not exist yet at\n"
+      "the moment you write the batch.\n"
+      "\n"
+      "A single spawn_file_agent instruction should name at most one\n"
+      "operation per file. If the user's request requires multiple\n"
+      "operations on the same file, split them into multiple\n"
+      "sub-actions and chain them with order. Creating a file and\n"
+      "then appending to it is two operations, not one. A file agent\n"
+      "that is asked to write a file and then append to it will\n"
+      "compose one final content string; if the user's wording is\n"
+      "\"create X, then append Y\", the file agent will produce X+Y\n"
+      "in one write and the two operations collapse into one. That\n"
+      "is fine when the user wants X+Y as the final contents, but\n"
+      "not when the appends have dependencies or review steps in\n"
+      "between.\n"
+      "\n"
+      "The actions array is the full list. The order array declares\n"
+      "which actions depend on which. Each entry of order is:\n"
+      "\n"
+      "  [<dependent position>, [<prerequisite position>, ...]]\n"
+      "\n"
+      "Positions are 1-based indices into the actions array. The first\n"
+      "action is 1. The second is 2. An action with no entry in order\n"
+      "runs immediately. An action whose entry lists prerequisites\n"
+      "runs only after every prerequisite has completed.\n"
+      "\n"
+      "Write actions first, then write order. Two separate fields,\n"
+      "two separate concerns. Do not put depends_on on a sub-action;\n"
+      "put the relationship in order instead.\n"
+      "\n"
+      "Example. The user says \"create notes.md, then once it exists\n"
+      "remember that it was created\". Correct batch:\n"
+      "\n"
+      "  {\"action\": \"batch\",\n"
+      "   \"actions\": [\n"
+      "     {\"action\": \"spawn_file_agent\",\n"
+      "      \"domain\": \"notes\",\n"
+      "      \"instruction\": \"Create notes.md\"},\n"
+      "     {\"action\": \"propose_memory\",\n"
+      "      \"fact\": \"notes.md was created\",\n"
+      "      \"scope\": \"global\"}\n"
+      "   ],\n"
+      "   \"order\": [\n"
+      "     [2, [1]]\n"
+      "   ]}\n"
+      "\n"
+      "Action 2 waits for action 1. Action 1 has no order entry and\n"
+      "runs immediately.\n"
+      "\n"
+      "Second example. The user says \"create config.yaml, then\n"
+      "remember the theme is dark, and separately edit project.md\n"
+      "and then summarise it\". Correct batch:\n"
+      "\n"
+      "  {\"action\": \"batch\",\n"
+      "   \"actions\": [\n"
+      "     {\"action\": \"spawn_file_agent\",\n"
+      "      \"domain\": \"config\",\n"
+      "      \"instruction\": \"Create config.yaml\"},\n"
+      "     {\"action\": \"propose_memory\",\n"
+      "      \"fact\": \"my theme is dark\",\n"
+      "      \"scope\": \"global\"},\n"
+      "     {\"action\": \"spawn_file_agent\",\n"
+      "      \"domain\": \"project\",\n"
+      "      \"instruction\": \"Edit project.md\"},\n"
+      "     {\"action\": \"spawn_file_agent\",\n"
+      "      \"domain\": \"project\",\n"
+      "      \"instruction\": \"Summarise project.md\"}\n"
+      "   ],\n"
+      "   \"order\": [\n"
+      "     [2, [1]],\n"
+      "     [4, [3]]\n"
+      "   ]}\n"
+      "\n"
+      "Action 2 waits for action 1. Action 4 waits for action 3.\n"
+      "Actions 1 and 3 run immediately in parallel.\n"
+      "\n"
+      "Use order whenever the user's wording chains sub-actions:\n"
+      "\"then\", \"after that\", \"once X exists\", \"when you've\n"
+      "done Y\". Omitting order when the sub-actions are truly\n"
+      "independent is correct. Omitting it when they are not produces\n"
+      "incorrect results.\n"
+      "\n"
+      "Any single top-level action (not inside a batch) may declare\n"
+      "depends_on, but there it names earlier REQUEST ids, not\n"
+      "positions.\n"
       "\n"
       "The \"fact\" field is one sentence. The \"rationale\" is\n"
       "optional but encouraged. The \"scope\" is \"global\" for a\n"
@@ -2482,12 +2849,24 @@ QString OverseerRunner::buildConductorPrompt(
       "fact that applies only to this session. The \"replaces\" key\n"
       "MUST come from the keyed lists below; do not invent one.\n"
       "\n"
-      "Use \"spawn_scoped_edit\" when the request is a structural\n"
-      "edit to a specific file that already exists. Use\n"
-      "\"route_to_worker\" when an existing file agent already knows\n"
-      "the files this request names. Use \"spawn_file_agent\" only\n"
-      "when no existing agent has any knowledge of the files this\n"
-      "request names.\n"
+      "Choosing between spawn_scoped_edit, spawn_file_agent, and\n"
+      "route_to_worker:\n"
+      "\n"
+      "* Creating a file that does NOT exist yet -> spawn_file_agent\n"
+      "  (or route_to_worker if an existing agent already knows the\n"
+      "  file's neighbours).\n"
+      "\n"
+      "* Any change to a file that ALREADY exists -- append, insert,\n"
+      "  replace, delete, or rewrite -- -> spawn_scoped_edit. This\n"
+      "  applies even if a file agent created the file in an earlier\n"
+      "  task. A file agent does not modify existing files.\n"
+      "\n"
+      "* A question or pure reasoning task about files an existing\n"
+      "  agent already knows -> route_to_worker.\n"
+      "\n"
+      "Do NOT route an append, insert, replace, delete, or rewrite\n"
+      "of an existing file to spawn_file_agent. The file agent will\n"
+      "either fail or overwrite the file, and the request will loop.\n"
       "\n"
       "Do NOT use \"spawn_file_agent\" if the Agent capacity section\n"
       "below says you are at capacity. Use \"route_to_worker\" for an\n"
@@ -2537,356 +2916,26 @@ void OverseerRunner::appendActionSummary(const QString &line) {
 
 void OverseerRunner::acceptProposal(const QString &key,
                                     const QString &scope) {
-  setProposalStatus(key, QStringLiteral("accepted"), scope);
-}
-
-void OverseerRunner::rejectProposal(const QString &key) {
-  setProposalStatus(key, QStringLiteral("rejected"), QString());
-}
-
-QString OverseerRunner::proposalsSidecarPath() const {
-  if (!m_session)
-    return {};
-  return QDir(m_session->folderPath())
-      .filePath(QStringLiteral("proposals.json"));
-}
-
-void OverseerRunner::loadProposals() {
-  m_proposals.clear();
-
-  const QString path = proposalsSidecarPath();
-  if (path.isEmpty() || !QFileInfo::exists(path))
+  if (!m_memoryAgent)
     return;
 
-  QFile file(path);
-  if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
-    return;
+  const bool ok = m_memoryAgent->acceptProposal(key, scope);
 
-  const QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
-  if (!doc.isArray())
-    return;
-
-  for (const QJsonValue &value : doc.array()) {
-    if (!value.isObject())
-      continue;
-
-    const QJsonObject obj = value.toObject();
-
-    MemoryProposal proposal;
-    proposal.key = obj.value(QStringLiteral("key")).toString();
-    proposal.fact = obj.value(QStringLiteral("fact")).toString();
-    proposal.rationale = obj.value(QStringLiteral("rationale")).toString();
-    proposal.status =
-        obj.value(QStringLiteral("status")).toString(QStringLiteral("pending"));
-    proposal.scope =
-        obj.value(QStringLiteral("scope")).toString(QStringLiteral("global"));
-    proposal.replaces = obj.value(QStringLiteral("replaces")).toString();
-    proposal.replacedFact =
-        obj.value(QStringLiteral("replacedFact")).toString();
-    proposal.acceptedScope =
-        obj.value(QStringLiteral("acceptedScope")).toString();
-    proposal.fallbackNote =
-        obj.value(QStringLiteral("fallbackNote")).toString();
-    proposal.requestId = obj.value(QStringLiteral("requestId")).toString();
-
-    if (proposal.key.isEmpty())
-      continue;
-
-    m_proposals.append(proposal);
-  }
-}
-
-void OverseerRunner::saveProposals() {
-  const QString path = proposalsSidecarPath();
-  if (path.isEmpty())
-    return;
-
-  QJsonArray arr;
-
-  for (const MemoryProposal &p : std::as_const(m_proposals)) {
-    QJsonObject obj;
-    obj.insert(QStringLiteral("key"), p.key);
-    obj.insert(QStringLiteral("fact"), p.fact);
-    obj.insert(QStringLiteral("rationale"), p.rationale);
-    obj.insert(QStringLiteral("status"), p.status);
-    obj.insert(QStringLiteral("scope"), p.scope);
-    obj.insert(QStringLiteral("replaces"), p.replaces);
-    obj.insert(QStringLiteral("replacedFact"), p.replacedFact);
-    obj.insert(QStringLiteral("acceptedScope"), p.acceptedScope);
-    obj.insert(QStringLiteral("fallbackNote"), p.fallbackNote);
-    obj.insert(QStringLiteral("requestId"), p.requestId);
-    arr.append(obj);
-  }
-
-  QFile file(path);
-  if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text))
-    return;
-
-  file.write(QJsonDocument(arr).toJson(QJsonDocument::Indented));
-}
-
-QString OverseerRunner::recordProposal(const QString &requestId,
-                                       const QString &fact,
-                                       const QString &rationale,
-                                       const QString &scope,
-                                       const QString &replacesKey) {
-  const QString trimmedFact = fact.trimmed();
-  const QString trimmedReplaces = normaliseFactKey(replacesKey);
-
-  if (trimmedFact.isEmpty() && trimmedReplaces.isEmpty())
-    return {};
-
-  for (const MemoryProposal &p : std::as_const(m_proposals)) {
-    if (p.scope != scope)
-      continue;
-
-    if (p.replaces != trimmedReplaces)
-      continue;
-
-    if (p.fact != trimmedFact)
-      continue;
-
-    if (p.status == QStringLiteral("pending") ||
-        p.status == QStringLiteral("accepted")) {
-      return p.key;
-    }
-  }
-
-  MemoryProposal proposal;
-  proposal.fact = trimmedFact;
-  proposal.rationale = rationale;
-  proposal.scope = scope;
-  proposal.replaces = trimmedReplaces;
-  proposal.requestId = requestId;
-
-  proposal.key = QString::number(
-      qHash(trimmedFact + QChar('|') + scope + QChar('|') + trimmedReplaces));
-
-  if (!trimmedReplaces.isEmpty()) {
-    const QString targetFile =
-        (scope == QStringLiteral("session") && m_session)
-            ? m_session->memoryPath()
-            : OverseerStorage::memoryPath();
-
-    QFile target(targetFile);
-
-    if (target.open(QIODevice::ReadOnly | QIODevice::Text)) {
-      QTextStream stream(&target);
-      stream.setEncoding(QStringConverter::Utf8);
-
-      const QStringList facts = parseFacts(stream.readAll());
-
-      for (const QString &f : facts) {
-        if (factKey(f, scope) == trimmedReplaces) {
-          proposal.replacedFact = f;
-          break;
-        }
-      }
-    }
-  }
-
-  const QString targetFile =
-      (scope == QStringLiteral("session") && m_session)
-          ? m_session->memoryPath()
-          : OverseerStorage::memoryPath();
-
-  if (m_sessionSettings.effectiveAutoMemory()) {
-    bool ok = false;
-    bool fellBackToInsert = false;
-
-    if (trimmedReplaces.isEmpty()) {
-      ok = OverseerStorage::appendFactToMemoryFile(targetFile, trimmedFact);
-    } else if (trimmedFact.isEmpty()) {
-      ok = OverseerStorage::removeFactFromMemoryFile(
-          targetFile, proposal.replacedFact);
-    } else {
-      // Try the replace. If the old fact is not present, fall back to
-      // an insert and note it.
-      const QString current = OverseerStorage::readMemory();
-
-      bool present = false;
-      Q_UNUSED(current);
-
-      const QString targetPath =
-          (scope == QStringLiteral("session") && m_session)
-              ? m_session->memoryPath()
-              : OverseerStorage::memoryPath();
-
-      QFile target(targetPath);
-
-      if (target.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        QTextStream stream(&target);
-        stream.setEncoding(QStringConverter::Utf8);
-
-        const QStringList facts = parseFacts(stream.readAll());
-
-        present = facts.contains(proposal.replacedFact);
-      }
-
-      if (present) {
-        ok = OverseerStorage::replaceFactInMemoryFile(
-            targetFile, proposal.replacedFact, trimmedFact);
-      } else {
-        ok = OverseerStorage::appendFactToMemoryFile(targetFile, trimmedFact);
-        fellBackToInsert = true;
-      }
-    }
-
-    if (ok) {
-      proposal.status = QStringLiteral("accepted");
-      proposal.acceptedScope = scope;
-
-      if (fellBackToInsert) {
-        proposal.fallbackNote =
-            tr("The fact this proposal would have replaced was no longer "
-               "present. It was recorded as a new fact instead.");
-      }
-    } else {
-      proposal.status = QStringLiteral("pending");
-    }
-  } else {
-    proposal.status = QStringLiteral("pending");
-  }
-
-  m_proposals.append(proposal);
-
-  saveProposals();
-
-  refreshFileAgentMemory();
-
-  return proposal.key;
-}
-
-void OverseerRunner::settleProposalRequest(const QString &proposalKey,
-                                           bool accepted) {
-  for (const MemoryProposal &p : std::as_const(m_proposals)) {
-    if (p.key != proposalKey)
-      continue;
-
-    if (p.requestId.isEmpty())
-      return;
-
-    const ConductorRequest req = m_queue->byId(p.requestId);
-
-    if (req.id.isEmpty())
-      return;
-
-    if (accepted) {
-      m_queue->setState(p.requestId, QStringLiteral("done"));
-      announceRequestFinished(p.requestId, true, req.answer);
-      failBlockedDependentsAfterTerminal(p.requestId);
-    } else {
-      m_queue->setState(p.requestId, QStringLiteral("rejected"));
-      announceRequestFinished(p.requestId, false,
-                              tr("The proposal was rejected by the user."));
-      failBlockedDependentsAfterTerminal(p.requestId);
-    }
-
-    drainQueue();
-
-    return;
-  }
-}
-void OverseerRunner::setProposalStatus(const QString &key,
-                                       const QString &status,
-                                       const QString &acceptedScope) {
-  bool changedAny = false;
-  bool applyFailed = false;
-  QString failureReason;
-
-  for (MemoryProposal &p : m_proposals) {
-    if (p.key != key)
-      continue;
-
-    if (status == QStringLiteral("accepted")) {
-      const QString scope = p.scope;
-      const QString targetPath =
-          (scope == QStringLiteral("session") && m_session)
-              ? m_session->memoryPath()
-              : OverseerStorage::memoryPath();
-
-      bool ok = false;
-      bool fellBackToInsert = false;
-
-      if (p.replaces.isEmpty()) {
-        ok = OverseerStorage::appendFactToMemoryFile(targetPath, p.fact);
-      } else if (p.fact.isEmpty()) {
-        ok = OverseerStorage::removeFactFromMemoryFile(targetPath,
-                                                       p.replacedFact);
-      } else {
-        // Check whether the old fact is still present.
-        bool present = false;
-
-        QFile target(targetPath);
-
-        if (target.open(QIODevice::ReadOnly | QIODevice::Text)) {
-          QTextStream stream(&target);
-          stream.setEncoding(QStringConverter::Utf8);
-
-          const QStringList facts = parseFacts(stream.readAll());
-
-          present = facts.contains(p.replacedFact);
-        }
-
-        if (present) {
-          ok = OverseerStorage::replaceFactInMemoryFile(
-              targetPath, p.replacedFact, p.fact);
-        } else {
-          ok = OverseerStorage::appendFactToMemoryFile(targetPath, p.fact);
-          fellBackToInsert = true;
-        }
-      }
-
-      if (!ok) {
-        applyFailed = true;
-        failureReason = tr("Could not write the fact to memory.");
-        break;
-      }
-
-      if (fellBackToInsert) {
-        p.fallbackNote =
-            tr("The fact this proposal would have replaced was no longer "
-               "present. It was recorded as a new fact instead.");
-      }
-
-      p.acceptedScope = acceptedScope;
-    }
-
-    p.status = status;
-    changedAny = true;
-
-    break;
-  }
-
-  if (!changedAny)
-    return;
-
-  if (applyFailed) {
-    for (MemoryProposal &p : m_proposals) {
-      if (p.key != key)
-        continue;
-
-      p.status = QStringLiteral("failed");
-      p.rationale = failureReason.isEmpty() ? p.rationale : failureReason;
-      break;
-    }
-
-    saveProposals();
-
-    if (m_transcriptStore)
-      m_transcriptStore->updateProposalStatus(
-          key, QStringLiteral("failed"), QString());
-
-    reloadMemoryPanels();
-
+  if (!ok) {
     emit changed();
     return;
   }
 
-  saveProposals();
+  for (const MemoryAgent::Proposal &p : m_memoryAgent->proposals()) {
+    if (p.key != key)
+      continue;
 
-  if (m_transcriptStore)
-    m_transcriptStore->updateProposalStatus(key, status, acceptedScope);
+    if (m_transcriptStore)
+      m_transcriptStore->updateProposalStatus(
+          key, QStringLiteral("accepted"), p.acceptedScope);
+
+    break;
+  }
 
   const QVector<NotificationService::Notification> pending =
       NotificationService::instance().pending();
@@ -2897,15 +2946,81 @@ void OverseerRunner::setProposalStatus(const QString &key,
   }
 
   refreshFileAgentMemory();
+  emit changed();
 
-  reloadMemoryPanels();
+  for (const MemoryAgent::Proposal &p : m_memoryAgent->proposals()) {
+    if (p.key != key)
+      continue;
+
+    if (p.requestId.isEmpty())
+      break;
+
+    const ConductorRequest req = m_queue->byId(p.requestId);
+
+    if (req.id.isEmpty())
+      break;
+
+    m_queue->setState(p.requestId, QStringLiteral("done"));
+    announceRequestFinished(p.requestId, true, req.answer);
+    failBlockedDependentsAfterTerminal(p.requestId);
+    drainQueue();
+    break;
+  }
+}
+
+void OverseerRunner::rejectProposal(const QString &key) {
+  if (!m_memoryAgent)
+    return;
+
+  const bool ok = m_memoryAgent->rejectProposal(key);
+
+  if (!ok)
+    return;
+
+  if (m_transcriptStore)
+    m_transcriptStore->updateProposalStatus(
+        key, QStringLiteral("rejected"), QString());
+
+  const QVector<NotificationService::Notification> pending =
+      NotificationService::instance().pending();
+
+  for (const NotificationService::Notification &n : pending) {
+    if (n.targetCardId == key)
+      NotificationService::instance().acknowledge(n.id);
+  }
 
   emit changed();
 
-  // Move the originating request to its terminal state and free any
-  // dependents that were blocked on it.
-  settleProposalRequest(key,
-                        status == QStringLiteral("accepted"));
+  for (const MemoryAgent::Proposal &p : m_memoryAgent->proposals()) {
+    if (p.key != key)
+      continue;
+
+    if (p.requestId.isEmpty())
+      break;
+
+    m_queue->setState(p.requestId, QStringLiteral("rejected"));
+    announceRequestFinished(p.requestId, false,
+                            tr("The proposal was rejected by the user."));
+    failBlockedDependentsAfterTerminal(p.requestId);
+    drainQueue();
+    break;
+  }
+}
+
+QString OverseerRunner::proposalsSidecarPath() const {
+  if (!m_session)
+    return {};
+  return QDir(m_session->folderPath())
+      .filePath(QStringLiteral("proposals.json"));
+}
+
+void OverseerRunner::loadProposals() {
+  // Proposals are owned by the memory agent now.
+}
+
+void OverseerRunner::saveProposals() {
+  if (m_memoryAgent)
+    m_memoryAgent->save();
 }
 
 void OverseerRunner::reloadMemoryPanels() {
@@ -3030,6 +3145,9 @@ void OverseerRunner::setToolCallDepthLimit(int limit) {
     if (agent)
       agent->setToolCallDepthLimit(m_toolCallDepthLimit);
   }
+
+  if (m_memoryAgent)
+    m_memoryAgent->setToolCallDepthLimit(m_toolCallDepthLimit);
 }
 
 void OverseerRunner::acceptPlanEdit(const QString &planId, int editId) {
@@ -3068,11 +3186,11 @@ void OverseerRunner::applyPlan(const QString &planId) {
     announceRequestFinished(requestId, false, reason);
 
     tearDownScopedSession(planId);
+
+    failBlockedDependentsAfterTerminal(requestId);
+    drainQueue();
     return;
   }
-
-  if (!filePath.isEmpty())
-    emit saveWorkstationFileRequested(filePath);
 
   it->awaitingReview = false;
 
@@ -3105,9 +3223,21 @@ void OverseerRunner::applyPlan(const QString &planId) {
       NotificationService::instance().acknowledge(n.id);
   }
 
-  tearDownScopedSession(planId);
+  // Persist the edited document back to disk before tearing down the
+  // session. The scoped edit owns the file while it runs; the
+  // Workstation is only a viewer.
+  tearDownScopedSession(planId, /*persistDocument=*/true);
+
+  // If a Workstation window is open for this file, its TextDocument is
+  // a separate instance holding stale content. Reload it from disk so
+  // the user sees the applied edit.
+  if (m_workstation && !filePath.isEmpty()) {
+    if (WorkstationWindow *window = m_workstation->windowForPath(filePath))
+      m_workstation->reloadWindowFromDisk(window);
+  }
 
   failBlockedDependentsAfterTerminal(requestId);
+  drainQueue();
 }
 
 void OverseerRunner::cancelPlan(const QString &planId) {
@@ -3140,4 +3270,5 @@ void OverseerRunner::cancelPlan(const QString &planId) {
   tearDownScopedSession(planId);
 
   failBlockedDependentsAfterTerminal(requestId);
+  drainQueue();
 }

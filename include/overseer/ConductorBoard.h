@@ -31,6 +31,8 @@ public:
 signals:
   void cancelRequested(const QString &requestId);
   void removeRequested(const QString &requestId);
+  void retryRequested(const QString &requestId);
+  void skipRequested(const QString &requestId);
 
 protected:
   void changeEvent(QEvent *event) override;

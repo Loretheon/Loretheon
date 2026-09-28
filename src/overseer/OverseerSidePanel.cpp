@@ -131,6 +131,9 @@ void OverseerSidePanel::setPendingActions(
       card->setScopeSelectorVisible(showScope, action.scope);
       card->setOpenAffordanceVisible(false);
 
+      if (!action.fallbackNote.isEmpty())
+        card->setNote(action.fallbackNote);
+
       connect(card, &MemoryProposalCard::accepted, this,
               &OverseerSidePanel::memoryProposalAccepted);
 

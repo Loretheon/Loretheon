@@ -591,6 +591,8 @@ add_executable(Lore
         include/assistant/NoteEditJob.h
         src/app/CustomTitleBar.cpp
         include/app/CustomTitleBar.h
+        src/overseer/MemoryAgent.cpp
+        include/overseer/MemoryAgent.h
 )
 
 add_dependencies(Lore

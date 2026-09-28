@@ -37,14 +37,15 @@ struct ColumnSpec {
 
 const QVector<ColumnSpec> &columnSpecs() {
   static const QVector<ColumnSpec> specs = {
-      {QStringLiteral("inbox"), QStringLiteral("Inbox")},
-      {QStringLiteral("routing"), QStringLiteral("Routing")},
-      {QStringLiteral("delegated"), QStringLiteral("Delegated")},
-      {QStringLiteral("awaiting"), QStringLiteral("Awaiting")},
-      {QStringLiteral("done"), QStringLiteral("Done")},
-      {QStringLiteral("failed"), QStringLiteral("Failed")},
-      {QStringLiteral("rejected"), QStringLiteral("Rejected")},
-  };
+    {QStringLiteral("inbox"), QStringLiteral("Inbox")},
+    {QStringLiteral("routing"), QStringLiteral("Routing")},
+    {QStringLiteral("delegated"), QStringLiteral("Delegated")},
+    {QStringLiteral("awaiting"), QStringLiteral("Awaiting")},
+    {QStringLiteral("done"), QStringLiteral("Done")},
+    {QStringLiteral("failed"), QStringLiteral("Failed")},
+    {QStringLiteral("rejected"), QStringLiteral("Rejected")},
+    {QStringLiteral("skipped"), QStringLiteral("Skipped")},
+};
   return specs;
 }
 
@@ -66,7 +67,7 @@ constexpr auto SplitterStateFilename = "conductor_splitter.json";
 } // namespace
 
 ConductorBoard::ConductorBoard(QWidget *parent) : QWidget(parent) {
-  setObjectName(QStringLiteral("conductorBoard"));
+  setObjectName(QStringLiteral("conducConductorBoardtorBoard"));
 
   m_stack = new QStackedWidget(this);
 
@@ -421,6 +422,21 @@ void ConductorBoard::rebuild() {
       text->setTextInteractionFlags(Qt::TextSelectableByMouse);
       cardLayout->addWidget(text);
 
+      if (!req.blockedOn.isEmpty()) {
+        QStringList blockers;
+
+        for (const QString &b : req.blockedOn)
+          blockers.append(b.left(8));
+
+        auto *blocked = new QLabel(
+            tr("Waiting on %1").arg(blockers.join(QStringLiteral(", "))),
+            card);
+        blocked->setWordWrap(true);
+        blocked->setStyleSheet(
+            QStringLiteral("color: %1;").arg(tokens.textMuted.name()));
+        cardLayout->addWidget(blocked);
+      }
+
       if (req.state == QStringLiteral("done") && !req.answer.isEmpty()) {
         auto *answer = new QLabel(req.answer, card);
         answer->setWordWrap(true);
@@ -454,31 +470,39 @@ void ConductorBoard::rebuild() {
               [this, requestId = req.id]() { showDetail(requestId); });
       actions->addWidget(detail);
 
-      const bool cancellable =
-          req.state != QStringLiteral("done") &&
-          req.state != QStringLiteral("failed") &&
-          req.state != QStringLiteral("rejected");
+      const bool failed = req.state == QStringLiteral("failed");
+      const bool skipped = req.state == QStringLiteral("skipped");
+      const bool rejected = req.state == QStringLiteral("rejected");
+      const bool done = req.state == QStringLiteral("done");
 
-      if (cancellable) {
-        auto *cancel = new QPushButton(tr("Reject"), card);
-
-        connect(cancel, &QPushButton::clicked, this,
+      if (failed) {
+        auto *retry = new QPushButton(tr("Retry"), card);
+        connect(retry, &QPushButton::clicked, this,
                 [this, requestId = req.id]() {
-                  emit cancelRequested(requestId);
+                  emit retryRequested(requestId);
                 });
+        actions->addWidget(retry);
 
-        actions->addWidget(cancel);
-      }
+        auto *skip = new QPushButton(tr("Skip"), card);
+        connect(skip, &QPushButton::clicked, this,
+                [this, requestId = req.id]() {
+                  emit skipRequested(requestId);
+                });
+        actions->addWidget(skip);
 
-      if (req.state == QStringLiteral("failed")) {
         auto *remove = new QPushButton(tr("Remove"), card);
-
         connect(remove, &QPushButton::clicked, this,
                 [this, requestId = req.id]() {
                   emit removeRequested(requestId);
                 });
-
         actions->addWidget(remove);
+      } else if (!done && !skipped && !rejected) {
+        auto *cancel = new QPushButton(tr("Reject"), card);
+        connect(cancel, &QPushButton::clicked, this,
+                [this, requestId = req.id]() {
+                  emit cancelRequested(requestId);
+                });
+        actions->addWidget(cancel);
       }
 
       actions->addStretch(1);

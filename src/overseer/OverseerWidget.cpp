@@ -371,7 +371,15 @@ void OverseerWidget::onNewSessionRequested() {
   rebuildSessionList();
   m_sessionListPanel->selectByName(trimmedName);
 }
+void OverseerWidget::retryRequest(const QString &requestId) {
+  if (m_boundRunner)
+    m_boundRunner->retryFailedRequest(requestId);
+}
 
+void OverseerWidget::skipRequest(const QString &requestId) {
+  if (m_boundRunner)
+    m_boundRunner->skipFailedRequest(requestId);
+}
 
 void OverseerWidget::setFocusedFilePath(const QString &absolutePath) {
   if (m_boundRunner)

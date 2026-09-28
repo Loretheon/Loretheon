@@ -18,6 +18,7 @@ class EditApplier;
 class EditCandidateView;
 class InferenceService;
 class PayloadLogger;
+class TextDocument;
 class TextEdit;
 
 class EditSession : public QObject {
@@ -37,10 +38,20 @@ public:
   void setSessionId(const QString &id) { m_sessionId = id; }
   Q_ENUM(State)
 
+  // Normal mode: the editor is required and its document is the target.
   explicit EditSession(TextEdit *editor = nullptr, QObject *parent = nullptr);
+
+  // Overseer mode: the document is the target and no editor is needed.
+  // The document is owned by the caller and must outlive the session.
+  // Factory because a document constructor would be ambiguous with the
+  // editor constructor when both are given nullptr.
+  static EditSession *forDocument(TextDocument *document,
+                                  QObject *parent = nullptr);
 
   void setEditor(TextEdit *editor);
   void setInferenceService(InferenceService *service);
+
+  TextDocument *document() const { return m_document; }
 
   State state() const { return m_state; }
 
@@ -102,6 +113,12 @@ private slots:
   void onCandidateSelected(int index);
 
 private:
+  struct DocumentTag {};
+
+  // Tagged constructor used by forDocument. Distinguished from the
+  // editor constructor by the tag so overload resolution is
+  // unambiguous.
+  EditSession(DocumentTag, TextDocument *document, QObject *parent);
 
   QString m_sessionId;
   void setState(State state);
@@ -123,7 +140,12 @@ private:
   QString systemPromptFor(const EditCommand &command) const;
   QString userPromptFor(const EditCommand &command) const;
 
+  // Optional. Present in normal mode. Null in Overseer mode.
   TextEdit *m_editor = nullptr;
+
+  // The target document. Always non-null after construction.
+  TextDocument *m_document = nullptr;
+
   EditMatcher m_matcher;
   EditApplier *m_applier = nullptr;
   EditCandidateView *m_candidateView = nullptr;

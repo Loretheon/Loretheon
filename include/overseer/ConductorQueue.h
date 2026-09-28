@@ -41,7 +41,18 @@ public:
 
   void clearAllDeferred();
 
+  // Automatic retry: bumps retryCount. Used by the failure paths that
+  // want the "max N attempts" cap to apply.
   void retry(const QString &id);
+
+  // Manual retry: resets retryCount to zero. Used when the user clicks
+  // Retry on a failed request. A manual retry is a fresh start.
+  void retryFresh(const QString &id);
+
+  // Manual skip: mark the request skipped so that its dependents
+  // continue as if the dependency had succeeded. Sets rejectReason to
+  // the supplied text so the user can see why.
+  void skip(const QString &id, const QString &reason);
 
   ConductorRequest nextInbox() const;
   ConductorRequest nextReadyInbox() const;

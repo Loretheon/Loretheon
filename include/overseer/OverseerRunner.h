@@ -6,6 +6,7 @@
 #include "ConductorTypes.h"
 #include "DependencyGraph.h"
 #include "SessionSettings.h"
+#include "TextDocument.h"
 #include "ToolRegistry.h"
 #include "TranscriptEvent.h"
 
@@ -22,6 +23,7 @@
 
 class AutomationStrip;
 class FileAgent;
+class MemoryAgent;
 class OverseerSession;
 class PayloadLogger;
 class TranscriptStore;
@@ -55,6 +57,7 @@ public:
     QString title;
     QString subtitle;
     QString replacedFact;
+    QString fallbackNote;
     QString sessionName;
     QString scope;
   };
@@ -78,6 +81,7 @@ public:
   SessionSettings settings() const { return m_sessionSettings; }
 
   FileAgent *fileAgentById(const QString &id) const;
+  MemoryAgent *memoryAgent() const { return m_memoryAgent; }
 
   QList<PendingAction> pendingActions() const;
 
@@ -89,6 +93,8 @@ public:
 
   void cancelRequest(const QString &requestId);
   void removeFailedRequest(const QString &requestId);
+  void retryFailedRequest(const QString &requestId);
+  void skipFailedRequest(const QString &requestId);
 
   void setSessionSettings(const SessionSettings &settings);
   void acceptProposal(const QString &key, const QString &scope);
@@ -122,22 +128,6 @@ public slots:
   void drainQueue();
 
 private:
-  struct MemoryProposal {
-    QString key;
-    QString fact;
-    QString rationale;
-    QString status;
-    QString scope;
-    QString replaces;
-    QString replacedFact;
-    QString acceptedScope;
-    QString fallbackNote;
-
-    // The request this proposal was generated from. Used to move that
-    // request out of "awaiting" when the user accepts or rejects.
-    QString requestId;
-  };
-
   struct ScopedSession {
     QString planId;
     QString requestId;
@@ -152,6 +142,11 @@ private:
 
     QString originAgentId;
     QString originTaskId;
+
+    // Owned by the runner. Freed in tearDownScopedSession. Used as the
+    // planning and apply target for the scoped edit. Null until the
+    // runner has loaded the file.
+    TextDocument *document = nullptr;
   };
 
   struct DispatchPlan {
@@ -184,6 +179,7 @@ private:
     QString memoryReplaces;
 
     QVector<QJsonObject> fanOutActions;
+    QVector<QJsonObject> order;
   };
 
   void openSession();
@@ -217,7 +213,11 @@ private:
 
   QStringList unsatisfiedDependencies(const QString &requestId) const;
 
-  void failDependentsOf(const QString &requestId, const QString &reason);
+  // Pause every dependent of requestId. Used in place of the old
+  // fail-everything cascade: a failed request leaves its dependents
+  // deferred in the inbox until the user retries, skips, or removes
+  // the failure.
+  void pauseDependentsOf(const QString &requestId, const QString &reason);
 
   void failBlockedDependentsAfterTerminal(const QString &requestId);
 
@@ -257,7 +257,8 @@ private:
                           const QVector<EditCommand> &commands);
   void onPlannerFailed(const QString &planId, const QString &reason);
 
-  void tearDownScopedSession(const QString &planId);
+  void tearDownScopedSession(const QString &planId,
+                           bool persistDocument = false);
 
   void buildEditPlanEvent(const ScopedSession &ctx);
 
@@ -269,23 +270,12 @@ private:
 
   QString spawnFileAgent(const QString &domain);
 
+  void spawnMemoryAgent();
+
   void refreshFileAgentMemory();
 
-  QString recordProposal(const QString &requestId,
-                         const QString &fact, const QString &rationale,
-                         const QString &scope,
-                         const QString &replacesKey = QString());
-
-  void setProposalStatus(const QString &key, const QString &status,
-                         const QString &acceptedScope);
-
-  // Move a proposal's originating request to a terminal state when the
-  // proposal is accepted or rejected.
-  void settleProposalRequest(const QString &proposalKey, bool accepted);
-
-  static QString factKey(const QString &fact, const QString &scope);
-
-  QString factForKey(const QString &key) const;
+  void onMemoryAgentTaskFinished(const QString &taskId, bool ok,
+                                 const QString &summary);
 
   QString proposalsSidecarPath() const;
 
@@ -326,7 +316,6 @@ private:
   int m_toolCallDepthLimit = 16;
   int m_nextAgentOrdinal = 1;
 
-  QList<MemoryProposal> m_proposals;
   QStringList m_actionSummary;
 
   QString m_focusedFilePath;
@@ -335,9 +324,12 @@ private:
 
   Workstation *m_workstation = nullptr;
 
+  MemoryAgent *m_memoryAgent = nullptr;
+
   QHash<QString, ScopedSession> m_scopedSessions;
   QHash<QString, FileAgent *> m_fileAgents;
   QHash<QString, QString> m_taskToAgent;
+  QHash<QString, QString> m_retryWorker;
   QHash<QString, QString> m_writeOwner;
   QHash<QString, QStringList> m_agentWritePaths;
 };

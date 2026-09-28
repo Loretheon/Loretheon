@@ -63,6 +63,9 @@ public:
   OverseerRunner *m_boundRunner = nullptr;
 
 public slots:
+
+  void retryRequest(const QString &requestId);
+  void skipRequest(const QString &requestId);
   void setFocusedFilePath(const QString &absolutePath);
   void setFocusedDocument(TextDocument *document, TextEdit *editor);
 

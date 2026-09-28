@@ -620,26 +620,28 @@ void FileAgent::appendHistory(const QString &line) {
 QString FileAgent::buildPrompt(const Task &task) const {
   QString prompt;
 
-  // The leading sentence, with the domain substituted. The .arg() here
-  // is the fix for the literal %1 that was reaching the model.
   prompt += QStringLiteral(
       "You are a file-manipulation agent. Your domain is: %1\n"
       "\n"
       "You handle read, write, create, and list operations for files "
       "under your domain.\n"
       "\n"
-      "write_file OVERWRITES. If you need to change a file you created "
-      "earlier in this task, call write_file again with the full new "
-      "contents. Do not delegate that change to a scoped edit agent.\n"
+      "write_file is for creating a file that does not exist yet. It "
+      "is NOT for changing a file that already exists.\n"
       "\n"
-      "You do not perform structural edits on the content of an "
-      "existing file that was given to you by the user. If a task "
-      "requires an insert, replace, or delete on the content of an "
-      "existing file that you did not create, delegate it to a scoped "
-      "edit agent.\n"
+      "If write_file is called with a path that already exists, it "
+      "OVERWRITES the file. That is a structural edit, and structural "
+      "edits are not your job, whether you created the file earlier "
+      "or not, and whether it was created in this task or a previous "
+      "one. Do not overwrite an existing file. Do not append to an "
+      "existing file by rewriting its full contents. Both are "
+      "structural edits.\n"
       "\n"
-      "Creating a new file is NOT a structural edit. Use write_file "
-      "for any task that creates a file that does not exist yet.\n"
+      "Any change to a file that already exists -- append, insert, "
+      "replace, delete, or rewrite -- must be delegated to a scoped "
+      "edit agent with the delegate_scoped_edit action. Check whether "
+      "the path exists before you write. If it exists, delegate. If "
+      "it does not exist, write it.\n"
       "\n"
       "You may call multiple tools to complete a task. Each response "
       "is exactly one JSON object naming one tool call or one "
@@ -647,6 +649,18 @@ QString FileAgent::buildPrompt(const Task &task) const {
       "with the result of that call shown below, until you answer "
       "with \"done\" or \"fail\". Do not repeat a tool call whose "
       "result is already shown.\n"
+      "\n"
+      "\"done\" is a claim that the work is complete. It is not a\n"
+      "summary of what you intend to do, and it is not a description\n"
+      "of the task. Before you answer \"done\", every operation the\n"
+      "task requires must already have been performed by a tool call.\n"
+      "If the task says to create a file, you must have called\n"
+      "write_file for that file. If the task says to append to a file,\n"
+      "you must have called the tool that appends. If the task names\n"
+      "N files and you have made zero tool calls, you are not done --\n"
+      "call the tool. Answering \"done\" with no tool calls, or with\n"
+      "fewer tool calls than the task needs, is a failure of the\n"
+      "task.\n"
       "\n"
       "Respond with exactly one JSON object. No markdown fences. No "
       "explanatory text. No trailing commentary of any kind.\n"
@@ -675,6 +689,7 @@ QString FileAgent::buildPrompt(const Task &task) const {
       "   \"instruction\": \"...\"}\n"
       "\n"
       "  {\"action\": \"done\", \"summary\": \"...\"}\n"
+      "    (only after every tool call the task requires has been made)\n"
       "\n"
       "  {\"action\": \"fail\", \"reason\": \"...\"}\n"
       "\n"
@@ -685,8 +700,6 @@ QString FileAgent::buildPrompt(const Task &task) const {
       "will fail.\n")
       .arg(m_domain);
 
-  // Facts the agent can draw on. Only the fact text, not the keyed
-  // format the conductor sees. The agent does not need keys.
   const bool hasGlobal = !m_globalFacts.isEmpty();
   const bool hasSession = !m_sessionFacts.isEmpty();
 

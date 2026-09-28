@@ -214,6 +214,37 @@ void ConductorQueue::retry(const QString &id) {
   }
 }
 
+void ConductorQueue::retryFresh(const QString &id) {
+  for (ConductorRequest &req : m_requests) {
+    if (req.id != id)
+      continue;
+
+    req.retryCount = 0;
+    req.state = QStringLiteral("inbox");
+    req.deferred = false;
+    req.blockedOn.clear();
+    req.rejectReason.clear();
+    save();
+    emit requestChanged(id);
+    return;
+  }
+}
+
+void ConductorQueue::skip(const QString &id, const QString &reason) {
+  for (ConductorRequest &req : m_requests) {
+    if (req.id != id)
+      continue;
+
+    req.state = QStringLiteral("skipped");
+    req.deferred = false;
+    req.blockedOn.clear();
+    req.rejectReason = reason;
+    save();
+    emit requestChanged(id);
+    return;
+  }
+}
+
 ConductorRequest ConductorQueue::nextInbox() const {
   for (const ConductorRequest &req : m_requests) {
     if (req.state == QStringLiteral("inbox"))

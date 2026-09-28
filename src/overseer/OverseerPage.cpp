@@ -89,7 +89,13 @@ OverseerPage::OverseerPage(InferenceService *inferenceService,
   m_conductorDock = new ConductorDock(this);
 
   connect(m_conductorDock->board(), &ConductorBoard::removeRequested,
-          m_overseer, &OverseerWidget::removeFailedRequest);
+        m_overseer, &OverseerWidget::removeFailedRequest);
+
+  connect(m_conductorDock->board(), &ConductorBoard::retryRequested,
+          m_overseer, &OverseerWidget::retryRequest);
+
+  connect(m_conductorDock->board(), &ConductorBoard::skipRequested,
+          m_overseer, &OverseerWidget::skipRequest);
 
   m_dockTrigger = new QToolButton(this);
   m_dockTrigger->setObjectName(QStringLiteral("conductorDockTrigger"));
