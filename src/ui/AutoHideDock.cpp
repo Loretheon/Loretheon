@@ -166,20 +166,15 @@ void AutoHideDock::fitToContentWidth() {
   if (m_preferredContentWidth <= 0)
     return;
 
-  // The first content-driven fit establishes the dock's natural
-  // width. That value is also the ceiling: subsequent fits do not
-  // grow past it. User drags may still make the dock narrower.
-  if (m_naturalWidth == 0) {
-    m_naturalWidth = m_preferredContentWidth;
-    setMaxDockWidth(m_naturalWidth);
+  // Re-derive the natural width from the current content
+  // measurement. The tree's reported width is not monotonic (it
+  // grows when a subtree is expanded and shrinks when the widest
+  // entry is removed or renamed), so a one-shot latch pins the dock
+  // to whichever measurement happened to arrive first — usually the
+  // fully-expanded one from expandAllAndMeasure().
+  m_naturalWidth = m_preferredContentWidth;
 
-    // A width restored from a previous session (or a larger stored
-    // value from any other source) must not survive the first fit.
-    // Pull the dock down to the natural width rather than leaving it
-    // at the persisted value.
-    setDockWidth(std::min(m_dockWidth, m_naturalWidth));
-  }
-
+  setMaxDockWidth(m_naturalWidth);
   setDockWidth(m_naturalWidth);
 }
 
