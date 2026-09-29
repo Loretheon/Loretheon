@@ -18,7 +18,6 @@ constexpr int kTitleBarHeight = 32;
 constexpr int kButtonSize = 32;
 constexpr int kSnapThreshold = 5;
 constexpr int kModeButtonMinWidth = 104;
-constexpr int kAvatarButtonMinWidth = 112;
 constexpr int kLoreButtonMinWidth = 72;
 } // namespace
 
@@ -41,9 +40,6 @@ CustomTitleBar::CustomTitleBar(QWidget *parent) : QWidget(parent) {
 
   buildMenus();
   buildToolbarArea();
-
-  layout->addSpacing(8);
-  layout->addWidget(m_avatarButton);
 
   layout->addStretch(1);
 
@@ -180,10 +176,6 @@ void CustomTitleBar::buildMenus() {
   connect(toggleSpeechAct, &QAction::triggered, this,
           [this]() { if (m_callbacks.toggleSpeech) m_callbacks.toggleSpeech(); });
 
-  auto *toggleAvatarAct = m_viewMenu->addAction(tr("Avatar"));
-  connect(toggleAvatarAct, &QAction::triggered, this,
-          [this]() { if (m_callbacks.toggleAvatar) m_callbacks.toggleAvatar(); });
-
   // ---- Tools ----
   m_toolsMenu = m_menuBar->addMenu(tr("&Tools"));
 
@@ -227,18 +219,6 @@ void CustomTitleBar::buildMenus() {
 }
 
 void CustomTitleBar::buildToolbarArea() {
-  m_avatarButton = new QToolButton(this);
-  m_avatarButton->setObjectName(QStringLiteral("titleBarAvatar"));
-  m_avatarButton->setText(tr("Hide Avatar"));
-  m_avatarButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
-  m_avatarButton->setAutoRaise(true);
-  m_avatarButton->setFocusPolicy(Qt::NoFocus);
-  m_avatarButton->setMinimumSize(kAvatarButtonMinWidth,
-                                 kTitleBarHeight - 6);
-  m_avatarButton->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
-  connect(m_avatarButton, &QToolButton::clicked, this,
-          [this]() { if (m_callbacks.toggleAvatar) m_callbacks.toggleAvatar(); });
-
   m_modeButton = new QToolButton(this);
   m_modeButton->setObjectName(QStringLiteral("titleBarMode"));
   m_modeButton->setPopupMode(QToolButton::InstantPopup);
@@ -325,10 +305,6 @@ void CustomTitleBar::setModeChecked(int modeIndex) {
     if (m_normalModeAct) m_normalModeAct->setChecked(true);
     break;
   }
-}
-
-void CustomTitleBar::setAvatarVisible(bool visible) {
-  m_avatarButton->setText(visible ? tr("Hide Avatar") : tr("Show Avatar"));
 }
 
 void CustomTitleBar::toggleMaximizeRestore() {

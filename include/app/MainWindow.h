@@ -14,8 +14,6 @@
 #include "inference/InferenceService.h"
 
 class OverseerSessionManager;
-class AssistantIcon;
-class AssistantWidget;
 class DocumentArea;
 class TextEdit;
 class TextDocument;
@@ -33,6 +31,7 @@ class LoreAssistant;
 class CustomTitleBar;
 class AutoHideDock;
 class DockReservation;
+class AssistantShell;
 
 class IngestRegistry;
 class IngestService;
@@ -47,13 +46,12 @@ class ScopeIndex;
 class SearchPage;
 class SearchService;
 
-class QAction;
 class QEvent;
 class QProgressDialog;
 class QResizeEvent;
+class QShortcut;
 class QStackedWidget;
 class QTimer;
-class QVBoxLayout;
 
 class MainWindow : public QMainWindow {
   Q_OBJECT
@@ -89,12 +87,16 @@ private slots:
                              const QString &scopeId);
 
   void onAssistantMessageSubmitted(const QString &text);
-  void onAssistantIconClicked();
-  void onToggleAvatar();
   void onDocumentSaved(TextDocument *document);
+
+  void enterAssistantShell();
+  void leaveAssistantShell();
 
 private:
   enum class Mode { Normal = 0, Overseer = 1, Search = 2 };
+  enum class Shell { Assistant = 0, Workspace = 1 };
+
+  void buildAssistantShell();
 
   void createCustomTitleBar();
   void wireTitleBar();
@@ -103,11 +105,8 @@ private:
   void buildOverseerPage();
   void buildSearchLayer();
 
-  void createAvatarOverlay();
-  void positionAvatarOverlay();
-  void positionAssistantIcon();
-
   void setMode(Mode mode);
+  void setShell(Shell shell);
 
   bool loadThemeFromResource(const QString &name);
   bool loadAllThemes();
@@ -123,7 +122,6 @@ private:
 
   bool confirmDiscardChanges(const QString &areaName);
 
-
   void buildIngestLayer();
 
   void importOne(const QString &sourcePath);
@@ -134,6 +132,7 @@ private:
   void reportImportSummary(int succeeded, int failed, int total);
 
   QString importDialogFilter() const;
+
   struct ImportCandidate {
     QString absolutePath;
     QString relativeSubpath;
@@ -162,6 +161,12 @@ private:
   SearchPage *m_searchPage = nullptr;
 
   QStackedWidget *m_centralStack = nullptr;
+  QWidget *m_workspacePage = nullptr;
+
+  AssistantShell *m_assistantShell = nullptr;
+  QWidget *m_assistantShellPage = nullptr;
+
+  QStackedWidget *m_shellStack = nullptr;
 
   AutoHideDock *m_fileTreeDock = nullptr;
   DockReservation *m_fileTreeReservation = nullptr;
@@ -172,15 +177,13 @@ private:
   QWidget *m_normalCenterRow = nullptr;
 
   CustomTitleBar *m_titleBar = nullptr;
-  QVBoxLayout *m_mainLayout = nullptr;
 
   ToastStack *m_toastStack = nullptr;
+
   AvatarWidget *m_avatar = nullptr;
-  bool m_avatarPlaced = false;
 
   LoreAssistant *m_assistant = nullptr;
-  AssistantWidget *m_assistantWidget = nullptr;
-  AssistantIcon *m_assistantIcon = nullptr;
+  QString m_assistantShellBuffer;
 
   InferenceService *m_inferenceService = nullptr;
   ModelDialog *m_modelDialog = nullptr;
@@ -223,6 +226,11 @@ private:
   QSet<QString> m_dirtyNotePaths;
   QTimer *m_noteIndexTimer = nullptr;
   bool m_searchIndexNeedsBuild = false;
+
+  QShortcut *m_escapeShortcut = nullptr;
+  QShortcut *m_summonShortcut = nullptr;
+
+  Shell m_shell = Shell::Assistant;
 };
 
 #endif // MAINWINDOW_H

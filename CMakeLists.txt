@@ -561,10 +561,6 @@ add_executable(Lore
         include/avatar/AvatarMoveGrip.h
         src/avatar/VisemeTable.cpp
         include/avatar/VisemeTable.h
-        src/assistant/AssistantWidget.cpp
-        include/assistant/AssistantWidget.h
-        src/assistant/AssistantIcon.cpp
-        include/assistant/AssistantIcon.h
         src/overseer/OverseerRunner.cpp
         include/overseer/OverseerRunner.h
         src/overseer/OverseerSessionManager.cpp
@@ -595,6 +591,8 @@ add_executable(Lore
         include/overseer/MemoryAgent.h
         src/overseer/OverseerBottomPanel.cpp
         include/overseer/OverseerBottomPanel.h
+        include/assistant/AssistantShell.h
+        src/assistant/AssistantShell.cpp
 )
 
 add_dependencies(Lore

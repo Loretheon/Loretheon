@@ -9,13 +9,13 @@ class QLabel;
 class QLineEdit;
 class QListWidget;
 class QPushButton;
+class QStackedWidget;
 class QTextBrowser;
 class QTimer;
 
 class InferenceService;
 class RetrievalLoop;
 class SearchService;
-class TextBrowser;
 
 // The @Lore mode. By default shows an LLM-generated answer at the top
 // of the page, with the retrieved sources underneath. A toggle reveals
@@ -61,11 +61,12 @@ private:
 
   QLineEdit *m_query = nullptr;
 
+  QStackedWidget *m_resultStack = nullptr;
   QTextBrowser *m_answer = nullptr;
-  QLabel *m_status = nullptr;
+  QListWidget *m_results = nullptr;
 
   QCheckBox *m_plainToggle = nullptr;
-  QListWidget *m_results = nullptr;
+  QLabel *m_status = nullptr;
 
   QTimer *m_debounce = nullptr;
 

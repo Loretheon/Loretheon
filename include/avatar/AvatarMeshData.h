@@ -6,6 +6,8 @@
 #include <QString>
 #include <QStringList>
 #include <QVector>
+#include <QVector3D>
+#include <QVector4D>
 #include <cstdint>
 
 struct AvatarPrimitive {
@@ -43,16 +45,12 @@ struct AvatarSkin {
   }
 };
 
-// One decoded texture, kept as its encoded bytes. The loader does not
-// decode. The renderer builds a QImage from bytes at upload time.
 struct AvatarTexture {
   QString name;
   QString mimeType;
   QByteArray bytes;
 };
 
-// One glTF material, flattened. baseColorTextureIndex is an index
-// into AvatarMeshData::textures, or -1.
 struct AvatarMaterial {
   QString name;
   int baseColorTextureIndex = -1;
@@ -70,6 +68,10 @@ struct AvatarMeshData {
   int faceMeshIndex = -1;
 
   QHash<QString, int> faceMorphNameToIndex;
+
+  QVector3D boundsMin;
+  QVector3D boundsMax;
+  QVector3D boundsCenter;
 
   int totalPrimitives() const {
     int n = 0;

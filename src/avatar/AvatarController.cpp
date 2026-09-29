@@ -457,55 +457,6 @@ void AvatarController::applyViseme(const QString &viseme) {
 
       m_visemeWeights[static_cast<size_t>(w.morphIndex)] = w.weight;
     }
-
-    static int counter = 0;
-
-    if (++counter % 60 == 0 &&
-        (viseme == QStringLiteral("aa") ||
-         viseme == QStringLiteral("E") ||
-         viseme == QStringLiteral("O") ||
-         viseme == QStringLiteral("U"))) {
-      float jaw = 0.0f;
-      float vOpen = 0.0f;
-      float mouthUp = 0.0f;
-      float dropLower = 0.0f;
-
-      if (m_meshData.faceMorphNameToIndex.contains("Jaw_Open")) {
-        const int idx = m_meshData.faceMorphNameToIndex.value("Jaw_Open");
-        if (idx >= 0 && idx < static_cast<int>(m_visemeWeights.size())) {
-          jaw = m_visemeWeights[static_cast<size_t>(idx)];
-        }
-      }
-
-      if (m_meshData.faceMorphNameToIndex.contains("V_Open")) {
-        const int idx = m_meshData.faceMorphNameToIndex.value("V_Open");
-        if (idx >= 0 && idx < static_cast<int>(m_visemeWeights.size())) {
-          vOpen = m_visemeWeights[static_cast<size_t>(idx)];
-        }
-      }
-
-      if (m_meshData.faceMorphNameToIndex.contains("Mouth_Up")) {
-        const int idx = m_meshData.faceMorphNameToIndex.value("Mouth_Up");
-        if (idx >= 0 && idx < static_cast<int>(m_visemeWeights.size())) {
-          mouthUp = m_visemeWeights[static_cast<size_t>(idx)];
-        }
-      }
-
-      if (m_meshData.faceMorphNameToIndex.contains("Mouth_Drop_Lower")) {
-        const int idx =
-            m_meshData.faceMorphNameToIndex.value("Mouth_Drop_Lower");
-        if (idx >= 0 && idx < static_cast<int>(m_visemeWeights.size())) {
-          dropLower = m_visemeWeights[static_cast<size_t>(idx)];
-        }
-      }
-
-      qDebug() << "[AvatarController] viseme" << viseme
-               << "jaw" << jaw
-               << "V_Open" << vOpen
-               << "Mouth_Up" << mouthUp
-               << "Drop_Lower" << dropLower
-               << "gain" << m_visemeGain;
-    }
   }
 
   pushFaceWeights();

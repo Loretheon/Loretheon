@@ -1,6 +1,7 @@
 #include "MainWindow.h"
 
 #include "../../include/assistant/LoreAssistant.h"
+#include "../../include/assistant/AssistantShell.h"
 #include "../../include/avatar/AvatarConfig.h"
 #include "../../include/avatar/AvatarWidget.h"
 #include "../../include/file/FileSystemView.h"
@@ -21,8 +22,6 @@
 #include "../../include/voice/SpeechController.h"
 #include "../../include/voice/SpeechPanel.h"
 #include "../../include/voice/VoiceCommandRegistry.h"
-#include "AssistantIcon.h"
-#include "AssistantWidget.h"
 #include "AutoHideDock.h"
 #include "ChatWidget.h"
 #include "CustomTitleBar.h"
@@ -33,6 +32,7 @@
 #include "LlmSettingsPanel.h"
 #include "NotificationService.h"
 #include "OverseerPage.h"
+#include "OverseerSessionManager.h"
 #include "Settings.h"
 #include "SettingsDialog.h"
 #include "TextEdit.h"
@@ -43,33 +43,29 @@
 #include "app/QfPaths.h"
 #include "inference/InferenceService.h"
 #include "ui/ModelDialog.h"
-#include "OverseerSessionManager.h"
-#include <QDir>
-#include <QDirIterator>
-#include <QStandardPaths>
-#include <QAction>
 #include <QApplication>
 #include <QCloseEvent>
 #include <QDir>
+#include <QDirIterator>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QHBoxLayout>
 #include <QIcon>
 #include <QMessageBox>
-#include <QMouseEvent>
 #include <QPalette>
 #include <QProgressDialog>
 #include <QRegularExpression>
 #include <QResizeEvent>
 #include <QScreen>
 #include <QSettings>
+#include <QShortcut>
 #include <QStackedWidget>
+#include <QStandardPaths>
 #include <QStatusBar>
 #include <QTextCursor>
 #include <QThreadPool>
 #include <QTimer>
-#include <QUrl>
 #include <QVBoxLayout>
 #include <QWidget>
 
@@ -80,16 +76,10 @@ namespace {
 constexpr auto NormalThemeKey = "theme";
 constexpr auto OverseerThemeKey = "overseer/theme";
 constexpr auto ModeKey = "ui/mode";
-constexpr auto AvatarVisibleKey = "avatar/visible";
-
-constexpr auto AvatarSizeKey = "avatar/size";
-constexpr auto AvatarOffsetKey = "avatar/offset";
 
 constexpr int ImportConcurrency = 4;
 
 const AvatarConfig kAvatarConfig{};
-
-constexpr double kMinVisibleFraction = 0.35;
 
 InferenceService::LlmConfig configuredLlm() {
   InferenceService::LlmConfig config;
@@ -155,22 +145,6 @@ MainWindow::~MainWindow() {
   if (m_assistant) {
     m_assistant->stop();
   }
-
-  if (m_assistantWidget) {
-    m_assistantWidget->hide();
-  }
-
-  if (m_assistantIcon) {
-    m_assistantIcon->hide();
-    delete m_assistantIcon;
-    m_assistantIcon = nullptr;
-  }
-
-  if (m_avatar) {
-    m_avatar->close();
-    delete m_avatar;
-    m_avatar = nullptr;
-  }
 }
 
 MainWindow::MainWindow() {
@@ -194,6 +168,7 @@ MainWindow::MainWindow() {
   m_editSession = new EditSession(nullptr, this);
 
   m_editSession->setInferenceService(m_inferenceService);
+
   if (!loadAllThemes()) {
     QMessageBox::critical(
         this, tr("Theme load failure"),
@@ -209,29 +184,38 @@ MainWindow::MainWindow() {
   buildSpeechLayer();
   buildSearchLayer();
 
+  // ---- workspace: title bar + the three working modes ----
+
   m_centralStack = new QStackedWidget(this);
   m_centralStack->addWidget(m_normalPage);
   m_centralStack->addWidget(m_overseerPage);
   m_centralStack->addWidget(m_searchPage);
 
-  auto *centralWidget = new QWidget(this);
-  m_mainLayout = new QVBoxLayout(centralWidget);
-  m_mainLayout->setContentsMargins(0, 0, 0, 0);
-  m_mainLayout->setSpacing(0);
+  m_workspacePage = new QWidget(this);
+  auto *workspaceLayout = new QVBoxLayout(m_workspacePage);
+  workspaceLayout->setContentsMargins(0, 0, 0, 0);
+  workspaceLayout->setSpacing(0);
 
   createCustomTitleBar();
-  m_mainLayout->addWidget(m_titleBar);
+  workspaceLayout->addWidget(m_titleBar);
+  workspaceLayout->addWidget(m_centralStack, 1);
 
-  m_mainLayout->addWidget(m_centralStack);
+  // ---- assistant shell: avatar, prompt, no chrome ----
 
-  setCentralWidget(centralWidget);
+  buildAssistantShell();
+
+  // ---- the top-level shell stack ----
+
+  m_shellStack = new QStackedWidget(this);
+  m_shellStack->addWidget(m_assistantShellPage);
+  m_shellStack->addWidget(m_workspacePage);
+
+  setCentralWidget(m_shellStack);
 
   m_toastStack = new ToastStack(this);
   NotificationService::instance().setToastHost(m_toastStack);
 
   wireTitleBar();
-
-  createAvatarOverlay();
 
   {
     LoreAssistant::Config config;
@@ -251,88 +235,14 @@ MainWindow::MainWindow() {
     m_assistant = new LoreAssistant(config, this);
     m_assistant->start();
 
-    m_assistantWidget = new AssistantWidget(nullptr);
-    m_assistantIcon = new AssistantIcon(nullptr);
+    m_assistantShell->setAssistant(m_assistant);
+    m_assistantShell->setSpeechController(m_speechController);
 
-    m_assistantWidget->setAssistant(m_assistant);
-    m_assistantWidget->setSpeechController(m_speechController);
-
-    connect(m_assistantWidget, &AssistantWidget::messageSubmitted,
+    connect(m_assistantShell, &AssistantShell::messageSubmitted,
             this, &MainWindow::onAssistantMessageSubmitted);
 
-    connect(m_assistantWidget, &AssistantWidget::abortRequested,
-            m_assistant, &LoreAssistant::abortAll);
-
-    connect(m_assistantIcon, &AssistantIcon::clicked,
-            this, &MainWindow::onAssistantIconClicked);
-
-    connect(m_assistant, &LoreAssistant::assistantReplyStarted,
-            m_assistantWidget, &AssistantWidget::onAssistantReplyStarted);
-
-    connect(m_assistant, &LoreAssistant::assistantChunk,
-            m_assistantWidget,
-            [this](const QString &nodeId, const QString &text) {
-              if (m_assistantWidget) {
-                m_assistantWidget->appendAssistantChunk(nodeId, text);
-              }
-            });
-
-    connect(m_assistant, &LoreAssistant::jobCreated,
-            m_assistantWidget,
-            [this](const QString &jobId, const QString &nodeId,
-                   ChatNode::Kind kind, const QString &title,
-                   const QString &detail) {
-              if (m_assistantWidget) {
-                m_assistantWidget->beginJob(nodeId, kind, title, detail,
-                                            jobId);
-              }
-            });
-
-    connect(m_assistant, &LoreAssistant::jobCompleted,
-            m_assistantWidget,
-            [this](const QString &jobId, const QString &result) {
-              if (!m_assistantWidget) {
-                return;
-              }
-
-              const QString nodeId =
-                  m_assistantWidget->jobIdFor(jobId);
-
-              if (!nodeId.isEmpty()) {
-                m_assistantWidget->setJobResult(nodeId, result);
-              }
-            });
-
-    connect(m_assistant, &LoreAssistant::jobFailed,
-            m_assistantWidget,
-            [this](const QString &jobId, const QString &error) {
-              if (!m_assistantWidget) {
-                return;
-              }
-
-              const QString nodeId =
-                  m_assistantWidget->jobIdFor(jobId);
-
-              if (!nodeId.isEmpty()) {
-                m_assistantWidget->setJobError(nodeId, error);
-              }
-            });
-
-    connect(m_assistant, &LoreAssistant::statusMessage,
-            m_assistantWidget, &AssistantWidget::appendStatusMessage);
-
-    connect(m_assistant, &LoreAssistant::statusChanged,
-            m_assistantWidget, &AssistantWidget::setStatus);
-
-    connect(m_assistant, &LoreAssistant::assistantTurnFinished,
-            m_assistantWidget,
-            [this](const QString &nodeId) {
-              Q_UNUSED(nodeId);
-
-              if (m_assistantWidget) {
-                m_assistantWidget->setBusy(false);
-              }
-            });
+    connect(m_assistantShell, &AssistantShell::dismissed,
+            this, &MainWindow::leaveAssistantShell);
   }
 
   connect(m_inferenceService, &InferenceService::ttsReady, this,
@@ -386,10 +296,6 @@ MainWindow::MainWindow() {
   applyNormalTheme(m_currentNormalTheme);
   applyOverseerTheme(m_currentOverseerTheme);
 
-  ThemeRegistry::instance().setActiveTheme(
-      m_centralStack->currentIndex() == 1 ? m_currentOverseerTheme
-                                          : m_currentNormalTheme);
-
   setWindowTitle(tr("Lore"));
   setMinimumSize(800, 800);
 
@@ -397,19 +303,51 @@ MainWindow::MainWindow() {
   if (screen)
     setGeometry(screen->availableGeometry());
 
-  positionAvatarOverlay();
+  setShell(Shell::Assistant);
 
-  const bool avatarVisible =
-      settings.value(AvatarVisibleKey, true).toBool();
+  m_escapeShortcut = new QShortcut(QKeySequence(Qt::Key_Escape), this);
+  m_escapeShortcut->setContext(Qt::ApplicationShortcut);
+  connect(m_escapeShortcut, &QShortcut::activated, this,
+          &MainWindow::leaveAssistantShell);
 
-  if (m_avatar) {
-    m_avatar->setVisible(avatarVisible);
-    m_avatarPlaced = avatarVisible;
+  m_summonShortcut = new QShortcut(
+      QKeySequence(Qt::CTRL | Qt::Key_Space), this);
+  m_summonShortcut->setContext(Qt::ApplicationShortcut);
+  connect(m_summonShortcut, &QShortcut::activated, this,
+          &MainWindow::enterAssistantShell);
+}
+
+void MainWindow::buildAssistantShell() {
+  m_assistantShell = new AssistantShell(this);
+
+  m_avatar = new AvatarWidget(m_assistantShell);
+  m_avatar->applyConfig(kAvatarConfig);
+  m_avatar->setModel(QStringLiteral("qrc:/avatar/ccbase/Lore.glb"));
+
+  m_assistantShell->setAvatar(m_avatar);
+
+  m_assistantShellPage = m_assistantShell;
+}
+
+void MainWindow::setShell(Shell shell) {
+  if (!m_shellStack)
+    return;
+
+  m_shell = shell;
+  m_shellStack->setCurrentIndex(static_cast<int>(shell));
+
+  if (shell == Shell::Assistant) {
+    if (m_assistantShell)
+      m_assistantShell->focusPrompt();
   }
+}
 
-  if (m_titleBar) {
-    m_titleBar->setAvatarVisible(avatarVisible);
-  }
+void MainWindow::enterAssistantShell() {
+  setShell(Shell::Assistant);
+}
+
+void MainWindow::leaveAssistantShell() {
+  setShell(Shell::Workspace);
 }
 
 void MainWindow::createCustomTitleBar() {
@@ -475,8 +413,7 @@ void MainWindow::wireTitleBar() {
   cb.modeSearch   = [this]() { setMode(Mode::Search); };
 
   cb.toggleSpeech = [this]() { onToggleSpeechPanel(); };
-  cb.toggleAvatar = [this]() { onToggleAvatar(); };
-  cb.talkToLore   = [this]() { onAssistantIconClicked(); };
+  cb.talkToLore   = [this]() { enterAssistantShell(); };
 
   cb.openSettings    = [this]() { openSettings(); };
   cb.openLlmSettings = [this]() { openLlmSettings(); };
@@ -501,71 +438,6 @@ void MainWindow::wireTitleBar() {
       ThemeRegistry::instance().selectableNames(), m_currentNormalTheme);
   m_titleBar->setOverseerThemes(
       ThemeRegistry::instance().selectableNames(), m_currentOverseerTheme);
-}
-
-void MainWindow::createAvatarOverlay() {
-  m_avatar = new AvatarWidget(nullptr);
-
-  m_avatar->setWindowFlags(Qt::Tool |
-                           Qt::FramelessWindowHint |
-                           Qt::NoDropShadowWindowHint |
-                           Qt::WindowStaysOnTopHint |
-                           Qt::WindowDoesNotAcceptFocus);
-
-  m_avatar->setAttribute(Qt::WA_TranslucentBackground, true);
-
-  m_avatar->applyConfig(kAvatarConfig);
-
-  QSettings settings;
-
-  QSize storedSize =
-      settings.value(AvatarSizeKey, kAvatarConfig.widgetSize).toSize();
-
-  if (storedSize.width() < kAvatarConfig.minSize.width() ||
-      storedSize.height() < kAvatarConfig.minSize.height() ||
-      storedSize.width() > kAvatarConfig.maxSize.width() ||
-      storedSize.height() > kAvatarConfig.maxSize.height()) {
-    storedSize = kAvatarConfig.widgetSize;
-  }
-
-  m_avatar->resize(storedSize);
-  m_avatar->setResizable(true);
-
-  m_avatar->setModel(QStringLiteral("qrc:/avatar/ccbase/Lore.glb"));
-}
-
-void MainWindow::positionAvatarOverlay() {
-  if (!m_avatar) {
-    return;
-  }
-
-  if (m_avatarPlaced) {
-    return;
-  }
-
-  const QRect frame = frameGeometry();
-
-  const int margin = kAvatarConfig.margin;
-
-  const QPoint topLeft(frame.right() - m_avatar->width() - margin,
-                       frame.bottom() - m_avatar->height() - margin);
-
-  m_avatar->move(topLeft);
-
-  m_avatarPlaced = true;
-
-  if (isVisible() && !isMinimized()) {
-    m_avatar->show();
-    m_avatar->raise();
-  }
-}
-
-void MainWindow::positionAssistantIcon() {
-  if (!m_assistantIcon) {
-    return;
-  }
-
-  m_assistantIcon->anchorToScreen();
 }
 
 bool MainWindow::loadThemeFromResource(const QString &name) {
@@ -705,18 +577,23 @@ void MainWindow::applyNormalTheme(const QString &name) {
   m_normalPage->setStyleSheet(combined);
   m_normalPage->setPalette(paletteForTokens(tokens));
 
+  if (m_searchPage) {
+    m_searchPage->setStyleSheet(combined);
+    m_searchPage->setPalette(paletteForTokens(tokens));
+  }
+
+  if (m_assistantShell) {
+    m_assistantShell->setStyleSheet(combined);
+    m_assistantShell->setPalette(paletteForTokens(tokens));
+    m_assistantShell->setThemeTokens(tokens);
+  }
+
   if (m_documentArea)
     m_documentArea->setThemeTokens(tokens);
 
   if (m_titleBar) {
     m_titleBar->setStyleSheet(combined);
     m_titleBar->setPalette(paletteForTokens(tokens));
-  }
-
-  if (m_assistantWidget) {
-    m_assistantWidget->setStyleSheet(combined);
-    m_assistantWidget->setPalette(paletteForTokens(tokens));
-    m_assistantWidget->setThemeTokens(tokens);
   }
 
   m_currentNormalTheme = name;
@@ -755,10 +632,10 @@ void MainWindow::applyOverseerTheme(const QString &name) {
     m_titleBar->setPalette(paletteForTokens(tokens));
   }
 
-  if (m_assistantWidget) {
-    m_assistantWidget->setStyleSheet(combined);
-    m_assistantWidget->setPalette(paletteForTokens(tokens));
-    m_assistantWidget->setThemeTokens(tokens);
+  if (m_assistantShell) {
+    m_assistantShell->setStyleSheet(combined);
+    m_assistantShell->setPalette(paletteForTokens(tokens));
+    m_assistantShell->setThemeTokens(tokens);
   }
 
   m_currentOverseerTheme = name;
@@ -1218,14 +1095,6 @@ void MainWindow::closeEvent(QCloseEvent *event) {
     }
   }
 
-  if (m_assistantWidget && m_assistantWidget->isOpen()) {
-    m_assistantWidget->close();
-  }
-
-  if (m_avatar) {
-    m_avatar->close();
-  }
-
   QSettings settings;
   if (m_centralStack) {
     settings.setValue(ModeKey, m_centralStack->currentIndex());
@@ -1236,10 +1105,6 @@ void MainWindow::closeEvent(QCloseEvent *event) {
 
 void MainWindow::showEvent(QShowEvent *event) {
   QMainWindow::showEvent(event);
-
-  if (m_avatar && !m_avatarPlaced) {
-    positionAvatarOverlay();
-  }
 }
 
 void MainWindow::resizeEvent(QResizeEvent *event) {
@@ -1252,37 +1117,6 @@ void MainWindow::moveEvent(QMoveEvent *event) {
 
 void MainWindow::changeEvent(QEvent *event) {
   QMainWindow::changeEvent(event);
-
-  if (event->type() != QEvent::WindowStateChange) {
-    return;
-  }
-
-  const bool minimized = isMinimized();
-
-  if (m_avatar) {
-    QSettings settings;
-    const bool userWantsAvatar =
-        settings.value(AvatarVisibleKey, true).toBool();
-
-    if (minimized) {
-      m_avatar->hide();
-    } else if (userWantsAvatar) {
-      m_avatar->show();
-      m_avatar->raise();
-    }
-  }
-
-  if (minimized) {
-    if (m_assistantIcon) {
-      m_assistantIcon->anchorToScreen();
-      m_assistantIcon->show();
-      m_assistantIcon->raise();
-    }
-  } else {
-    if (m_assistantIcon) {
-      m_assistantIcon->hide();
-    }
-  }
 }
 
 bool MainWindow::confirmDiscardChanges(const QString &areaName) {
@@ -1985,45 +1819,13 @@ void MainWindow::onSearchOpenRequested(const QString &filePath,
 }
 
 void MainWindow::onAssistantMessageSubmitted(const QString &text) {
-  if (!m_assistant || !m_assistantWidget) {
+  if (!m_assistant || !m_assistantShell) {
     return;
   }
 
-  m_assistantWidget->setBusy(true);
+  m_assistantShell->setBusy(true);
   m_assistant->handleUserMessage(text);
 }
-
-void MainWindow::onAssistantIconClicked() {
-  if (!m_assistantWidget) {
-    return;
-  }
-
-  m_assistantWidget->toggle();
-}
-
-void MainWindow::onToggleAvatar() {
-  if (!m_avatar) {
-    return;
-  }
-
-  const bool nowVisible = !m_avatar->isVisible();
-
-  m_avatar->setVisible(nowVisible);
-
-  if (nowVisible && !m_avatarPlaced) {
-    positionAvatarOverlay();
-  } else if (nowVisible) {
-    m_avatar->raise();
-  }
-
-  if (m_titleBar) {
-    m_titleBar->setAvatarVisible(nowVisible);
-  }
-
-  QSettings settings;
-  settings.setValue(AvatarVisibleKey, nowVisible);
-}
-
 void MainWindow::onDocumentSaved(TextDocument *document) {
   if (!document || !m_scopeIndex) {
     return;

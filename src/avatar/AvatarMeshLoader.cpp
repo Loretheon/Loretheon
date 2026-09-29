@@ -444,7 +444,6 @@ bool loadImageDataNoOp(tinygltf::Image *image, const int /*imageIndex*/,
 bool AvatarMeshLoader::load(const QString &path, AvatarMeshData &out,
                             QString *error) {
 
-
   auto fail = [&](const QString &reason) {
     if (error) {
       *error = reason;
@@ -493,7 +492,6 @@ bool AvatarMeshLoader::load(const QString &path, AvatarMeshData &out,
     return fail(QStringLiteral("tinygltf failed to parse %1: %2")
                     .arg(path, QString::fromStdString(err)));
   }
-
 
   if (model.meshes.empty()) {
     return fail(QStringLiteral("GLB has no meshes: %1").arg(path));
@@ -750,6 +748,42 @@ bool AvatarMeshLoader::load(const QString &path, AvatarMeshData &out,
       break;
     }
   }
+
+  // -----------------------------------------------------------------
+  // Bounding box. Tells us where the model actually sits in model
+  // space, so the camera can be aimed correctly.
+  // -----------------------------------------------------------------
+
+  float minX = 1e30f, minY = 1e30f, minZ = 1e30f;
+  float maxX = -1e30f, maxY = -1e30f, maxZ = -1e30f;
+
+  for (const AvatarMesh &m : out.meshes) {
+    for (const AvatarPrimitive &p : m.primitives) {
+      for (int i = 0; i + 2 < p.positions.size(); i += 3) {
+        const float x = p.positions[i + 0];
+        const float y = p.positions[i + 1];
+        const float z = p.positions[i + 2];
+
+        minX = std::min(minX, x);
+        minY = std::min(minY, y);
+        minZ = std::min(minZ, z);
+
+        maxX = std::max(maxX, x);
+        maxY = std::max(maxY, y);
+        maxZ = std::max(maxZ, z);
+      }
+    }
+  }
+
+  out.boundsMin = QVector3D(minX, minY, minZ);
+  out.boundsMax = QVector3D(maxX, maxY, maxZ);
+  out.boundsCenter = (out.boundsMin + out.boundsMax) * 0.5f;
+
+  qDebug() << "[AvatarMeshLoader] bounds:"
+           << "min" << out.boundsMin
+           << "max" << out.boundsMax
+           << "center" << out.boundsCenter
+           << "size" << (out.boundsMax - out.boundsMin);
 
   qDebug() << "[AvatarMeshLoader] Loaded" << out.meshes.size()
            << "meshes," << out.totalPrimitives() << "primitives,"

@@ -129,7 +129,7 @@ private:
   float m_cameraFov = 45.0f;
 
   float m_targetX = 0.0f;
-  float m_targetY = 0.85f;
+  float m_targetY = 0.853f;
   float m_targetZ = 0.01f;
 
   float m_modelScale = 1.0f;
@@ -137,12 +137,12 @@ private:
   float m_modelPitch = 0.0f;
   float m_modelRoll = 0.0f;
 
-  float m_defaultCameraDistance = 5.4f;
+  float m_defaultCameraDistance = 2.42f;
   float m_defaultCameraYaw = 0.0f;
   float m_defaultCameraPitch = 0.0f;
-  float m_defaultTargetX = 1.44f;
-  float m_defaultTargetY = 2.05f;
-  float m_defaultTargetZ = 1.03f;
+  float m_defaultTargetX = 0.0f;
+  float m_defaultTargetY = 0.853f;
+  float m_defaultTargetZ = 0.01f;
 
   QTimer *m_frameTimer = nullptr;
 

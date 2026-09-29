@@ -8,10 +8,12 @@ Item {
     property real facing: 0.0
     property bool resizable: false
 
-    readonly property int cornerGrip: 16
-    readonly property int edgeGrip: 8
+    readonly property int cornerGrip: 18
+    readonly property int edgeGrip: 10
 
     readonly property real dragThreshold: 4.0
+
+    readonly property real referenceAspect: 1.0
 
     function setViseme(shape) {
     }
@@ -19,19 +21,30 @@ Item {
     function playMotion(name) {
     }
 
+    Rectangle {
+        anchors.fill: parent
+        color: "transparent"
+    }
+
     AvatarSurface {
         id: surface
-        anchors.fill: parent
+
         objectName: "avatarSurface"
 
-        cameraDistance: 0.45
+        readonly property real aspect: 1.0
+
+        width: Math.min(parent.width, parent.height * aspect)
+        height: width / aspect
+        anchors.centerIn: parent
+
+        cameraDistance: 2.42
         cameraYaw: 0.0
         cameraPitch: 0.0
         cameraFov: 45.0
 
-        targetX: 0.05
-        targetY: 1.56
-        targetZ: 0.01
+        targetX: 0.0
+        targetY: 0.853
+        targetZ: 0.010
 
         modelScale: 1.0
         modelYaw: 0.0
@@ -115,11 +128,15 @@ Item {
         y: 0
         width: root.width - 2 * root.cornerGrip
         height: root.edgeGrip
-        color: topEdgeHover.hovered ? "#ffffff28" : "transparent"
+        color: topEdgeHover.hovered ? "#3a7bd544" : "transparent"
 
         HoverHandler {
             id: topEdgeHover
             cursorShape: Qt.SizeAllCursor
+        }
+
+        Behavior on color {
+            ColorAnimation { duration: 120 }
         }
     }
 
@@ -130,11 +147,15 @@ Item {
         y: root.height - root.edgeGrip
         width: root.width - 2 * root.cornerGrip
         height: root.edgeGrip
-        color: bottomEdgeHover.hovered ? "#ffffff28" : "transparent"
+        color: bottomEdgeHover.hovered ? "#3a7bd544" : "transparent"
 
         HoverHandler {
             id: bottomEdgeHover
             cursorShape: Qt.SizeAllCursor
+        }
+
+        Behavior on color {
+            ColorAnimation { duration: 120 }
         }
     }
 
@@ -145,11 +166,15 @@ Item {
         y: root.cornerGrip
         width: root.edgeGrip
         height: root.height - 2 * root.cornerGrip
-        color: leftEdgeHover.hovered ? "#ffffff28" : "transparent"
+        color: leftEdgeHover.hovered ? "#3a7bd544" : "transparent"
 
         HoverHandler {
             id: leftEdgeHover
             cursorShape: Qt.SizeAllCursor
+        }
+
+        Behavior on color {
+            ColorAnimation { duration: 120 }
         }
     }
 
@@ -160,11 +185,15 @@ Item {
         y: root.cornerGrip
         width: root.edgeGrip
         height: root.height - 2 * root.cornerGrip
-        color: rightEdgeHover.hovered ? "#ffffff28" : "transparent"
+        color: rightEdgeHover.hovered ? "#3a7bd544" : "transparent"
 
         HoverHandler {
             id: rightEdgeHover
             cursorShape: Qt.SizeAllCursor
+        }
+
+        Behavior on color {
+            ColorAnimation { duration: 120 }
         }
     }
 
@@ -187,7 +216,7 @@ Item {
                 : root.height - root.cornerGrip
             width: root.cornerGrip
             height: root.cornerGrip
-            color: cornerHover.hovered ? "#ffffff20" : "transparent"
+            color: cornerHover.hovered ? "#3a7bd566" : "transparent"
 
             HoverHandler {
                 id: cornerHover
@@ -195,35 +224,10 @@ Item {
                     ? Qt.SizeFDiagCursor
                     : Qt.SizeBDiagCursor
             }
-        }
-    }
 
-    Rectangle {
-        anchors.top: parent.top
-        anchors.left: parent.left
-        anchors.margins: 4
-
-        width: infoText.implicitWidth + 12
-        height: infoText.implicitHeight + 8
-
-        color: "#c0000000"
-        radius: 4
-        z: 200
-
-        Text {
-            id: infoText
-            anchors.centerIn: parent
-
-            color: "#ffffff"
-            font.pixelSize: 11
-            font.family: "monospace"
-
-            text: "dist " + surface.cameraDistance.toFixed(2)
-                + "  yaw " + surface.cameraYaw.toFixed(1)
-                + "  pit " + surface.cameraPitch.toFixed(1)
-                + "\ntgt " + surface.targetX.toFixed(2)
-                + ", " + surface.targetY.toFixed(2)
-                + ", " + surface.targetZ.toFixed(2)
+            Behavior on color {
+                ColorAnimation { duration: 120 }
+            }
         }
     }
 }

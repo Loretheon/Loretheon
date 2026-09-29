@@ -3,12 +3,11 @@
 #include "../../include/avatar/AvatarRenderer.h"
 
 #include <QDebug>
+#include <QOpenGLFunctions>
 #include <QQuickWindow>
 
 AvatarRenderNode::AvatarRenderNode(QQuickWindow *window)
-    : m_renderer(new AvatarRenderer()) {
-  Q_UNUSED(window);
-}
+    : m_renderer(new AvatarRenderer()), m_window(window) {}
 
 AvatarRenderNode::~AvatarRenderNode() { delete m_renderer; }
 
@@ -30,6 +29,14 @@ void AvatarRenderNode::setMorphWeights(const std::vector<float> &weights) {
 
 void AvatarRenderNode::setViewProjection(const QMatrix4x4 &vp) {
   m_viewProjection = vp;
+}
+
+void AvatarRenderNode::setItemOrigin(const QPointF &origin) {
+  m_itemOrigin = origin;
+}
+
+void AvatarRenderNode::setItemSize(const QSizeF &size) {
+  m_itemSize = size;
 }
 
 void AvatarRenderNode::render(const RenderState *state) {
@@ -58,6 +65,17 @@ void AvatarRenderNode::render(const RenderState *state) {
     m_morphDirty = false;
   }
 
+  if (m_window && m_itemSize.isValid()) {
+    const qreal dpr = m_window->devicePixelRatio();
+
+    const int vw = qRound(m_itemSize.width() * dpr);
+    const int vh = qRound(m_itemSize.height() * dpr);
+
+    if (vw > 0 && vh > 0) {
+      glViewport(0, 0, vw, vh);
+    }
+  }
+
   m_renderer->render(m_viewProjection);
 }
 
@@ -70,5 +88,5 @@ void AvatarRenderNode::releaseResources() {
 }
 
 QSGRenderNode::StateFlags AvatarRenderNode::changedStates() const {
-  return DepthState | CullState | BlendState | ViewportState;
+  return ViewportState;
 }

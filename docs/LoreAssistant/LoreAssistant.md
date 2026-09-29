@@ -1,11 +1,32 @@
 # The Assistant
 
-The assistant is a persistent character named Lore who lives in the
-corner of the main window. She is not a chat panel. She watches what
-the user does, speaks, listens, and remembers across sessions.
+The assistant is a persistent character named Lore. She is not a
+chat panel. She watches what the user does, speaks, listens, and
+remembers across sessions.
 
 She is owned by `LoreAssistant`, which is constructed once by
 `MainWindow` and lives for the duration of the application.
+
+`LoreAssistant` has no visible surface of its own. Its screen is
+`AssistantShell`, a full-window page with no window chrome and no
+close control. The shell is the assistant's entire presence: a
+quiet header, a chat view, a mind map, and a composer.
+
+## Two shells
+
+The application has two top-level screens, stacked in `MainWindow`:
+
+    AssistantShell   the assistant
+    WorkspacePage    Normal, Overseer, Search
+
+The application opens on the assistant shell. `Escape` leaves it and
+lands in the workspace. `Ctrl+Space` returns. There is no button on
+either screen for crossing between them. The shell is not a mode of
+the workspace; the workspace is not a mode of the shell. They are
+peers.
+
+The keyboard is the entire navigation. `Escape` from the shell, any
+keyboard shortcut from the workspace. Nothing else.
 
 ## What owns what
 
@@ -26,6 +47,12 @@ She is owned by `LoreAssistant`, which is constructed once by
 for the assistant's lifetime. This is deliberate: the assistant does
 not reach into `MainWindow`.
 
+`AssistantShell` owns the visible tree of the conversation — a
+`ChatTree` of `ChatNode`s, rendered as `ChatNodeWidget`s inside a
+scroll area. The shell is the only widget that subscribes to
+`LoreAssistant`'s reply, job, and status signals. `MainWindow` wires
+the shell and the assistant together and then steps out of the way.
+
 ## What happens on startup
 
 `MainWindow` constructs the avatar first, so the `AvatarWidget`
@@ -33,9 +60,10 @@ pointer is valid. It then constructs `LoreAssistant` with a `Config`
 that carries the inference service, the avatar, the document manager,
 the document area, the search service, the Overseer session manager,
 the note promoter, the scope index, the notes root, and the assistant
-root path. Then it calls `start()`.
+root path. It hands the assistant to `AssistantShell`, hands the
+speech controller to the shell as well, and calls `start()`.
 
-`start()` does six things:
+`start()` does five things:
 
 1. Creates the assistant root directory if it does not exist.
 2. Loads the profile. Missing profile files are created with defaults.
@@ -134,14 +162,50 @@ or with the global abort button.
 `abortJob` cancels a single job and marks it `Cancelled`. `abortAll`
 cancels every non-terminal job and aborts the current turn.
 
-## The widget
+## The shell
 
-`AssistantWidget` is a top-level window with two tabs: Chat and Mind.
+`AssistantShell` is a single page, laid out top to bottom:
 
-The Chat tab renders the conversation as a tree. A user message is a
-root node. An assistant reply is a root node. Every job, status, and
-error the reply produces is a child of that reply node, indented and
-collapsed by default.
+    header    Lore              status              policy
+    tabs      Chat | Mind
+    body      chat scroll       | mind map
+    composer  dictate live read | input | abort | send
+
+The header is quiet: the name in small letterspaced caps on the
+left, a short status line, a policy dropdown on the right. The
+policy dropdown chooses how background results arrive — pasted into
+the chat, fed into the next turn's prompt, appended to the next user
+message, or chosen automatically.
+
+The tabs switch the body between the chat view and the mind map.
+The composer is a single rounded input with the speech controls on
+the left, the message field in the middle, and Send on the right.
+
+A 96-pixel avatar floats in the top-right of the shell, outside the
+layout. It is not part of the conversation.
+
+## The chat
+
+The chat view renders the conversation as a flat sequence of
+message cards, centred and capped at a readable column width. Each
+card is a `ChatNodeWidget` bound to one `ChatNode` in the tree.
+
+A user message is a card with a filled background. An assistant
+reply is a card with a lighter background. Job, status, and error
+nodes produced during a reply are children of that reply and appear
+as nested cards under it, opened and closed by a small arrow rail
+on the right.
+
+The tree is not a document tree. It is a simple parent/child model
+backed by `ChatTree`. A reply can have many children; a child can
+have children of its own. Every node is addressable by id and
+updated in place as its state changes.
+
+When the tree is empty, a hero block appears at the top of the chat
+with a one-line title and a one-line description. It disappears the
+first time a message is sent.
+
+## The mind map
 
 The Mind tab renders the assistant's own files as a nested graph:
 `identity.md`, `user.md`, `self.md`, and everything under
@@ -169,3 +233,9 @@ it is small.
 The assistant can write to the profile through `remember_fact`. There
 is no UI to edit the profile files directly yet. The user can open
 them in the editor.
+
+The chat tree is lost when the application closes. Only the
+assistant's own summaries survive, in the memory tree. A session
+that wants to reload its chat would need a serializer for
+`ChatTree`, and a place to write it — the natural choice is a sidecar
+next to the session memory file.

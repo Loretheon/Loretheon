@@ -266,6 +266,7 @@ bool AvatarRenderer::uploadTextures(const AvatarMeshData &meshData) {
 
   return true;
 }
+
 bool AvatarRenderer::compileShaders() {
   const GLuint vertexId = glCreateShader(GL_VERTEX_SHADER);
   const GLuint fragmentId = glCreateShader(GL_FRAGMENT_SHADER);
@@ -363,22 +364,6 @@ bool AvatarRenderer::uploadMesh(const AvatarMesh &mesh, GpuMesh &out,
           meshData.materials.at(prim.materialIndex).baseColorTextureIndex;
     }
 
-    if (mesh.name == QStringLiteral("CC_Base_Body")) {
-      qDebug() << "[AvatarRenderer] body prim:"
-               << "materialIndex" << prim.materialIndex
-               << "materialName"
-               << (prim.materialIndex >= 0 &&
-                   prim.materialIndex < meshData.materials.size()
-                       ? meshData.materials.at(prim.materialIndex).name
-                       : QStringLiteral("(none)"))
-               << "textureIndex" << gpuPrim.baseColorTextureIndex
-               << "textureName"
-               << (gpuPrim.baseColorTextureIndex >= 0 &&
-                   gpuPrim.baseColorTextureIndex < meshData.textures.size()
-                       ? meshData.textures.at(gpuPrim.baseColorTextureIndex).name
-                       : QStringLiteral("(none)"));
-    }
-
     QByteArray interleaved;
     interleaved.resize(vertexCount * kInterleavedStride);
 
@@ -405,30 +390,6 @@ bool AvatarRenderer::uploadMesh(const AvatarMesh &mesh, GpuMesh &out,
 
       if (prim.uvs.size() >= uvBase + 2) {
         std::memcpy(base + 36, &prim.uvs[uvBase], 8);
-      }
-    }
-
-    // Diagnostic: print the first 8 UVs as packed, for the head
-    // primitive only. Values outside 0..1 mean the loader read a
-    // non-float accessor without normalizing. Identical values mean
-    // the accessor was not read at all.
-    if (mesh.name == QStringLiteral("CC_Base_Body") &&
-        captureMorphSource) {
-      qDebug() << "[AvatarRenderer] head UVs as packed:";
-
-      const auto *bytes =
-          reinterpret_cast<const unsigned char *>(interleaved.constData());
-
-      for (int i = 0; i < qMin(8, vertexCount); ++i) {
-        const unsigned char *base = bytes + i * kInterleavedStride;
-
-        float u = 0.0f;
-        float v = 0.0f;
-
-        std::memcpy(&u, base + 36, 4);
-        std::memcpy(&v, base + 40, 4);
-
-        qDebug() << "  v" << i << "uv" << u << v;
       }
     }
 
@@ -628,16 +589,13 @@ void AvatarRenderer::render(const QMatrix4x4 &viewProjection) {
   glUniformMatrix4fv(m_uViewProj, 1, GL_FALSE,
                      viewProjection.constData());
 
-  // Texture unit 0 is the skin matrix buffer (samplerBuffer).
   glActiveTexture(GL_TEXTURE0);
   glBindTexture(GL_TEXTURE_BUFFER, m_skinTexture);
   glUniform1i(m_uSkinBuffer, 0);
 
-  // Texture unit 1 is the base color texture (sampler2D).
   glActiveTexture(GL_TEXTURE1);
   glUniform1i(m_uBaseColor, 1);
 
-  int meshCounter = 0;
   int primitiveCounter = 0;
   int texturedCounter = 0;
 
@@ -645,11 +603,6 @@ void AvatarRenderer::render(const QMatrix4x4 &viewProjection) {
     const QVector4D fallback = colorForMesh(mesh.name);
 
     for (const GpuPrimitive &prim : mesh.primitives) {
-      // Decide the color multiplier and the texture binding. A
-      // primitive with a base color texture uses the texture for
-      // color and sets uColor to white. One without uses the flat
-      // fallback color and samples the 1x1 white texture, which is a
-      // no-op multiply.
       QVector4D color = fallback;
       GLuint texture = m_whiteTexture;
 
@@ -673,8 +626,6 @@ void AvatarRenderer::render(const QMatrix4x4 &viewProjection) {
 
       ++primitiveCounter;
     }
-
-    ++meshCounter;
   }
 
   glActiveTexture(GL_TEXTURE1);

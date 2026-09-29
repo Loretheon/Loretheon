@@ -6,11 +6,13 @@
 
 #include <QCheckBox>
 #include <QFileInfo>
+#include <QHBoxLayout>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
 #include <QRegularExpression>
+#include <QStackedWidget>
 #include <QTextBrowser>
 #include <QTimer>
 #include <QVBoxLayout>
@@ -37,29 +39,51 @@ SearchPage::SearchPage(SearchService *search,
   m_answer = new QTextBrowser(this);
   m_answer->setObjectName(QStringLiteral("searchAnswer"));
   m_answer->setOpenExternalLinks(true);
-
-  m_plainToggle = new QCheckBox(tr("Show raw results"), this);
-  m_plainToggle->setObjectName(QStringLiteral("searchPlainToggle"));
-  m_plainToggle->setChecked(false);
+  m_answer->setFrameShape(QFrame::NoFrame);
 
   m_results = new QListWidget(this);
   m_results->setObjectName(QStringLiteral("searchResults"));
   m_results->setAlternatingRowColors(true);
   m_results->setWordWrap(true);
-  m_results->setVisible(false);
+  m_results->setFrameShape(QFrame::NoFrame);
+
+  m_plainToggle = new QCheckBox(tr("Show raw results"), this);
+  m_plainToggle->setObjectName(QStringLiteral("searchPlainToggle"));
+  m_plainToggle->setChecked(false);
 
   m_status = new QLabel(this);
   m_status->setObjectName(QStringLiteral("searchStatus"));
   m_status->setWordWrap(true);
 
-  auto *layout = new QVBoxLayout(this);
-  layout->setContentsMargins(80, 40, 80, 24);
-  layout->setSpacing(12);
-  layout->addWidget(m_query);
-  layout->addWidget(m_answer, 1);
-  layout->addWidget(m_plainToggle);
-  layout->addWidget(m_results, 1);
-  layout->addWidget(m_status);
+  auto *outer = new QVBoxLayout(this);
+  outer->setContentsMargins(48, 32, 48, 20);
+  outer->setSpacing(0);
+
+  outer->addWidget(m_query, 0);
+  outer->addSpacing(16);
+
+  // The answer and the plain list share the same slot. Only one is
+  // visible at a time, toggled by m_plainToggle. A stacked widget
+  // means the layout never has to know which one is showing.
+  m_resultStack = new QStackedWidget(this);
+  m_resultStack->addWidget(m_answer);
+  m_resultStack->addWidget(m_results);
+
+  outer->addWidget(m_resultStack, 1);
+  outer->addSpacing(8);
+
+  // A single footer row: the toggle on the left, the status on the
+  // right. The status is the page's only source of progress feedback
+  // during a streaming answer, so it belongs next to the control that
+  // changes the view, not under it.
+  auto *footer = new QHBoxLayout;
+  footer->setContentsMargins(0, 0, 0, 0);
+  footer->setSpacing(12);
+  footer->addWidget(m_plainToggle, 0);
+  footer->addStretch(1);
+  footer->addWidget(m_status, 0);
+
+  outer->addLayout(footer);
 
   m_debounce = new QTimer(this);
   m_debounce->setSingleShot(true);
@@ -171,8 +195,8 @@ void SearchPage::runPlainSearch() {
 }
 
 void SearchPage::onTogglePlainList(bool enabled) {
-  m_results->setVisible(enabled);
-  m_answer->setVisible(!enabled);
+  if (m_resultStack)
+    m_resultStack->setCurrentIndex(enabled ? 1 : 0);
 
   if (enabled) {
     runPlainSearch();
