@@ -12,6 +12,7 @@ class ChatNodeWidget;
 class LoreAssistant;
 class MindMapScene;
 class MindMapView;
+class OverseerSessionManager;
 class SpeechController;
 
 class QComboBox;
@@ -34,6 +35,7 @@ public:
 
   void setAssistant(LoreAssistant *assistant);
   void setSpeechController(SpeechController *speech);
+  void setOverseerManager(OverseerSessionManager *manager);
 
   void setAvatar(AvatarWidget *avatar);
   AvatarWidget *avatar() const { return m_avatar; }
@@ -46,6 +48,8 @@ public:
 
   void setBusy(bool busy);
   bool isBusy() const { return m_busy; }
+
+  void refreshMindMap();
 
 signals:
   void messageSubmitted(const QString &text);
@@ -81,6 +85,7 @@ private slots:
   void onJobFailed(const QString &jobId, const QString &error);
   void onStatusMessage(const QString &text);
   void onStatusChanged(const QString &status);
+  void onOverseerSessionListChanged();
 
 private:
   void buildUi();
@@ -102,6 +107,7 @@ private:
   LoreAssistant *m_assistant = nullptr;
   SpeechController *m_speech = nullptr;
   AvatarWidget *m_avatar = nullptr;
+  OverseerSessionManager *m_overseer = nullptr;
 
   ChatTree *m_tree = nullptr;
 

@@ -325,10 +325,10 @@ void MainWindow::buildAssistantShell() {
   m_avatar->setModel(QStringLiteral("qrc:/avatar/julia/julia.glb"));
 
   m_assistantShell->setAvatar(m_avatar);
+  m_assistantShell->setOverseerManager(m_overseerSessionManager);
 
   m_assistantShellPage = m_assistantShell;
 }
-
 void MainWindow::setShell(Shell shell) {
   if (!m_shellStack)
     return;

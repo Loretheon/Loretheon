@@ -5,6 +5,7 @@
 #include "../../include/assistant/MindMapScene.h"
 #include "../../include/assistant/MindMapView.h"
 #include "../../include/avatar/AvatarWidget.h"
+#include "../../include/overseer/OverseerSessionManager.h"
 #include "../../include/voice/SpeechController.h"
 
 #include <QComboBox>
@@ -22,6 +23,7 @@
 #include <QShowEvent>
 #include <QStyle>
 #include <QTabWidget>
+#include <QTimer>
 #include <QToolButton>
 #include <QVBoxLayout>
 
@@ -136,6 +138,23 @@ void AssistantShell::setSpeechController(SpeechController *speech) {
   onSpeechStateChanged();
 }
 
+void AssistantShell::setOverseerManager(OverseerSessionManager *manager) {
+  if (m_overseer) {
+    disconnect(m_overseer, nullptr, this, nullptr);
+  }
+
+  m_overseer = manager;
+
+  if (m_mindScene) {
+    m_mindScene->setOverseerManager(manager);
+  }
+
+  if (m_overseer) {
+    connect(m_overseer, &OverseerSessionManager::sessionListChanged,
+            this, &AssistantShell::onOverseerSessionListChanged);
+  }
+}
+
 void AssistantShell::setAvatar(AvatarWidget *avatar) {
   if (m_avatar == avatar) {
     return;
@@ -151,9 +170,8 @@ void AssistantShell::setAvatar(AvatarWidget *avatar) {
   m_avatar->setAttribute(Qt::WA_TranslucentBackground, true);
   m_avatar->setResizable(true);
 
-  const QSize storedSize = m_avatar->defaultSize();
-
-  m_avatar->resize(storedSize);
+  const int side = m_avatar->defaultSize().width();
+  m_avatar->resize(side, side);
   m_avatar->show();
   m_avatar->raise();
 
@@ -304,9 +322,26 @@ QWidget *AssistantShell::buildMindTab() {
   auto *page = new QWidget(m_tabs);
 
   m_mindScene = new MindMapScene(this);
+  m_mindScene->setOverseerManager(m_overseer);
+
   m_mindView = new MindMapView(m_mindScene, page);
   m_mindView->setObjectName(QStringLiteral("assistantShellMindView"));
   m_mindView->setFocusPolicy(Qt::NoFocus);
+
+  connect(m_mindView, &MindMapView::openRequested, this,
+          [this](const QString &path) {
+            Q_UNUSED(path);
+          });
+
+  connect(m_mindView, &MindMapView::sessionOpenRequested, this,
+          [this](const QString &name) {
+            if (m_overseer) {
+              m_overseer->openSession(name);
+            }
+          });
+
+  connect(m_mindView, &MindMapView::refreshRequested, this,
+          &AssistantShell::refreshMindMap);
 
   auto *layout = new QVBoxLayout(page);
   layout->setContentsMargins(0, 0, 0, 0);
@@ -424,13 +459,19 @@ void AssistantShell::placeAvatarOnce() {
     return;
   }
 
-  const int x = (width() - m_avatar->width()) / 2;
-  const int y = (height() - m_avatar->height()) / 2;
+  QTimer::singleShot(0, this, [this]() {
+    if (!m_avatar || m_avatarPlaced) {
+      return;
+    }
 
-  m_avatar->move(x, y);
-  m_avatar->raise();
+    const int x = (width() - m_avatar->width()) / 2;
+    const int y = (height() - m_avatar->height()) / 2;
 
-  m_avatarPlaced = true;
+    m_avatar->move(x, y);
+    m_avatar->raise();
+
+    m_avatarPlaced = true;
+  });
 }
 
 void AssistantShell::updateHeroVisibility() {
@@ -586,7 +627,11 @@ void AssistantShell::onPolicyChanged(int index) {
 }
 
 void AssistantShell::onTabChanged(int index) {
-  if (index != 1 || !m_mindScene || !m_mindView || !m_assistant) {
+  if (index != 1) {
+    return;
+  }
+
+  if (!m_mindScene || !m_mindView || !m_assistant) {
     return;
   }
 
@@ -596,7 +641,34 @@ void AssistantShell::onTabChanged(int index) {
     return;
   }
 
-  m_mindScene->build(root);
+  if (m_mindScene->assistantRoot() != root) {
+    m_mindScene->setAssistantRoot(root);
+    m_mindScene->build();
+    m_mindView->refresh();
+  }
+}
+
+void AssistantShell::onOverseerSessionListChanged() {
+  if (!m_tabs || m_tabs->currentIndex() != 1) {
+    return;
+  }
+
+  refreshMindMap();
+}
+
+void AssistantShell::refreshMindMap() {
+  if (!m_mindScene || !m_mindView || !m_assistant) {
+    return;
+  }
+
+  const QString root = m_assistant->rootPath();
+
+  if (root.isEmpty()) {
+    return;
+  }
+
+  m_mindScene->setAssistantRoot(root);
+  m_mindScene->refresh();
   m_mindView->refresh();
 }
 

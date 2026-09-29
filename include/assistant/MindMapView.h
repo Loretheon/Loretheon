@@ -1,8 +1,8 @@
 #pragma once
 
 #include <QGraphicsView>
+#include <QPoint>
 #include <QPointF>
-#include <QTimer>
 
 class MindMapScene;
 class MindMapNode;
@@ -15,35 +15,33 @@ public:
 
   void refresh();
 
+  signals:
+    void openRequested(const QString &path);
+  void sessionOpenRequested(const QString &sessionName);
+  void refreshRequested();
+
 protected:
   void mouseMoveEvent(QMouseEvent *event) override;
+  void mousePressEvent(QMouseEvent *event) override;
+  void mouseReleaseEvent(QMouseEvent *event) override;
   void leaveEvent(QEvent *event) override;
   void wheelEvent(QWheelEvent *event) override;
   void resizeEvent(QResizeEvent *event) override;
-
-private slots:
-  void onEdgeTimer();
-  void onNodeHovered(MindMapNode *node);
+  void drawBackground(QPainter *painter, const QRectF &rect) override;
+  void contextMenuEvent(QContextMenuEvent *event) override;
 
 private:
-  enum class Edge { None, Left, Right };
-
-  Edge edgeForPosition(const QPointF &pos) const;
-
-  void setEdge(Edge edge);
-  void applyFocus(MindMapNode *node);
+  void applyHover(MindMapNode *node);
 
   MindMapScene *m_scene = nullptr;
 
-  QTimer *m_edgeTimer = nullptr;
-
-  Edge m_pendingEdge = Edge::None;
-  Edge m_activeEdge = Edge::None;
-
   MindMapNode *m_hovered = nullptr;
+  MindMapNode *m_dragging = nullptr;
+
+  bool m_panning = false;
+  QPoint m_panStart;
+
+  QPointF m_dragOffset;
 
   int m_zoomStep = 0;
-
-  static constexpr int kEdgeBandPx = 48;
-  static constexpr int kEdgeDelayMs = 220;
 };

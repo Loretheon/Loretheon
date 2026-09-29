@@ -181,8 +181,16 @@ The tabs switch the body between the chat view and the mind map.
 The composer is a single rounded input with the speech controls on
 the left, the message field in the middle, and Send on the right.
 
-A 96-pixel avatar floats in the top-right of the shell, outside the
-layout. It is not part of the conversation.
+A 96-pixel avatar floats in the shell, outside the layout. It is
+not part of the conversation. Its position and its size are the
+user's. Left-drag orbits the camera. Right-drag moves the widget
+itself. Scroll resizes the widget around its centre, clamped to the
+configured min and max. Resize handles at the corners and edges of
+the widget do the same with a corner-drag. The widget is always
+square, so the render viewport's aspect ratio and the projection's
+aspect ratio stay in agreement. No position or size is persisted
+between sessions; the widget starts centred on the shell and at its
+default size every time.
 
 ## The chat
 
@@ -207,12 +215,57 @@ first time a message is sent.
 
 ## The mind map
 
-The Mind tab renders the assistant's own files as a nested graph:
-`identity.md`, `user.md`, `self.md`, and everything under
-`memories/`. Topics expand to show the facts they contain. The graph
-is navigated by cursor position, not clicks: hovering a node focuses
-its subtree, and hovering near the left or right edge of the view
-zooms the visible depth out or in.
+The Mind tab renders what the assistant knows as a graph. Three
+hubs sit around a central root:
+
+    Profile     identity.md, user.md, self.md
+    Memory      topics under memories/topics, sessions under
+                memories/sessions
+    Overseer    one node per session in OverseerSessionManager,
+                each carrying the session description
+
+Profile files render as full markdown cards. They use the same
+renderer as the rest of the application: the node holds a
+`QTextDocument`, sizes itself from the document's extent, and draws
+via the document layout. The markdown goes through `setMarkdown`,
+then through `setHtml` so the theme's stylesheet applies. The card
+grows as tall as its content needs.
+
+Memory topics expand to show their facts. Each fact is a small
+node carrying its timestamp header and its text. Sessions render as
+single-line nodes with their title and first paragraph.
+
+Edges are cubic beziers between parent and child anchors, drawn in
+the scene's foreground so they sit under the nodes. Cross-links —
+file-to-file references discovered by scanning `[[...]]` patterns
+in the body — draw as dashed arcs between peers, not as part of the
+tree.
+
+Layout is a force-directed simulation. Every node repels every
+other; every edge is a spring. The simulation runs on a timer,
+cools by displacement limiting, and settles. Positions are written
+to `memories/.mindmap.json` on settle. On subsequent opens, the
+cached positions are loaded and pinned, and only new nodes get a
+short incremental settle. The graph is spatially stable across
+sessions: it is a map, not a re-simulation.
+
+Hover focuses a branch — the hovered node's path to the root and
+its subtree stay bright, everything else dims. Click opens the
+underlying file, or opens the Overseer session if the node is an
+Overseer session. Drag any node to pin it in place; the position is
+written to the cache on release. Drag empty space to pan. Scroll to
+zoom under the cursor. Right-click shows a small menu: Refresh,
+Re-layout, Fit to view.
+
+Refresh rebuilds the node set from disk, keeps the pinned positions
+of nodes that still exist, seeds new nodes near their parents,
+settles just the new ones, and saves. Re-layout clears all pins,
+re-seeds from the hub geometry, and runs the full simulation.
+
+The graph reads the assistant root when the tab is opened. It is
+rebuilt when the Overseer session list changes, when the user asks
+for a refresh from the context menu, and when `LoreAssistant`
+signals that the knowledge tree has changed.
 
 ## The prompt
 
@@ -224,15 +277,15 @@ which the user can rewrite.
 
 ## What is not built yet
 
-The mind map reads the assistant root at the moment the Mind tab is
-opened. It does not watch for changes. If a profile file is edited
-outside the application the graph is stale until the tab is
-reopened. A `QFileSystemWatcher` on the assistant root is the fix and
-it is small.
+The mind map watches the assistant root only on tab open and on the
+explicit refresh action. A `QFileSystemWatcher` on the assistant
+root would make external edits appear without a rebuild. It is
+small and it is not wired.
 
-The assistant can write to the profile through `remember_fact`. There
-is no UI to edit the profile files directly yet. The user can open
-them in the editor.
+The mind map is a viewer. The profile files, the memory topics, the
+sessions, and the Overseer descriptions are all editable as plain
+files, but the graph does not offer an inline editor. Editing a
+node is editing its file through the editor, then refreshing.
 
 The chat tree is lost when the application closes. Only the
 assistant's own summaries survive, in the memory tree. A session
