@@ -51,6 +51,8 @@ public:
   OverseerSessionList *sessionListPanel() const { return m_sessionListPanel; }
   OverseerSidePanel *sidePanel() const { return m_sidePanel; }
   TranscriptPanel *transcriptPanel() const { return m_transcriptPanel; }
+  AutomationStrip *automationStrip() const { return m_automationStrip; }
+  QLabel *sessionHeader() const { return m_sessionHeader; }
   TranscriptStore *transcriptStore() const;
 
   ConductorQueue *queue() const;
@@ -80,6 +82,10 @@ public slots:
   void addOverviewReference(const QString &path);
   void addOverviewReferences(const QStringList &paths);
 
+  // Called by OverseerPage when the composer's depth spin changes.
+  // Mirrors what used to happen when OverseerWidget owned the spin.
+  void onToolCallDepthChanged(int value);
+
 signals:
   void fileWritten(const QString &absolutePath);
   void fileOpenRequested(const QString &absolutePath);
@@ -100,11 +106,15 @@ signals:
   // A short status line for the page to show in its status area.
   void statusMessage(const QString &text, int timeoutMs);
 
+  // Emitted whenever the enabled state of the composer should change,
+  // so OverseerPage can propagate it to the bottom panel without
+  // OverseerWidget holding a pointer to the composer.
+  void composerEnabledChanged(bool enabled);
+
 private slots:
   void onSessionSelected(const QString &name);
   void onSessionCleared();
   void onNewSessionRequested();
-  void onToolCallDepthChanged(int value);
 
   void onProposalAccepted(const QString &key, const QString &scope);
   void onProposalRejected(const QString &key);
@@ -147,9 +157,6 @@ private:
   AutomationStrip *m_automationStrip = nullptr;
 
   QLabel *m_sessionHeader = nullptr;
-  QLineEdit *m_input = nullptr;
-  QPushButton *m_sendButton = nullptr;
-  QSpinBox *m_toolCallDepthSpin = nullptr;
 
   QSplitter *m_centerSplitter = nullptr;
 

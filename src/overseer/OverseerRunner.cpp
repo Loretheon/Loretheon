@@ -1315,6 +1315,49 @@ OverseerRunner::DispatchPlan OverseerRunner::parseAction(
   return plan;
 }
 
+QString OverseerRunner::displayLabelForAction(
+    const QJsonObject &action) const {
+  const QString kind = action.value(QStringLiteral("action")).toString();
+
+  if (kind == QStringLiteral("spawn_file_agent") ||
+      kind == QStringLiteral("spawn_scoped_edit") ||
+      kind == QStringLiteral("route_to_worker")) {
+    const QString instruction =
+        action.value(QStringLiteral("instruction")).toString().trimmed();
+    if (!instruction.isEmpty())
+      return instruction.simplified();
+      }
+
+  if (kind == QStringLiteral("propose_memory")) {
+    const QString fact =
+        action.value(QStringLiteral("fact")).toString().trimmed();
+    if (!fact.isEmpty())
+      return tr("Remember: %1").arg(fact.simplified());
+
+    const QString replaces =
+        action.value(QStringLiteral("replaces")).toString().trimmed();
+    if (!replaces.isEmpty())
+      return tr("Forget: %1").arg(replaces);
+  }
+
+  if (kind == QStringLiteral("answer")) {
+    const QString text =
+        action.value(QStringLiteral("text")).toString().trimmed();
+    if (!text.isEmpty())
+      return text.simplified();
+  }
+
+  if (kind == QStringLiteral("reject")) {
+    const QString reason =
+        action.value(QStringLiteral("reason")).toString().trimmed();
+    if (!reason.isEmpty())
+      return tr("Reject: %1").arg(reason.simplified());
+  }
+
+  return tr("Subtask");
+}
+
+
 OverseerRunner::DispatchPlan OverseerRunner::decideDispatch(
     const QString &requestId, const QJsonObject &decision) const {
   const QString kind = decision.value(QStringLiteral("action")).toString();
@@ -1500,21 +1543,17 @@ void OverseerRunner::applyRoutingDecision(const QString &requestId,
 
     for (const QJsonObject &action : plan.fanOutActions) {
       QJsonObject copy = action;
-
-      // Depends_on on sub-actions is no longer read. The batch's
-      // top-level "order" array carries the graph. Strip any stray
-      // depends_on so a sub-action cannot introduce an unresolved
-      // index reference.
       copy.remove(QStringLiteral("depends_on"));
 
-      const QString childText =
+      const QString actionJson =
           QString::fromUtf8(QJsonDocument(copy).toJson(QJsonDocument::Compact));
 
+      const QString label = displayLabelForAction(copy);
+
       const QString childId =
-          m_queue->enqueueChild(childText, requestId, origin);
+          m_queue->enqueueChild(label, actionJson, requestId, origin);
 
       m_dependencies.addNode(childId);
-
       childIds.append(childId);
     }
 

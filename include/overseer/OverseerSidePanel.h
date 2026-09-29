@@ -9,7 +9,8 @@ class OverviewPanel;
 class MemoryProposalCard;
 class OverseerSession;
 
-class QTabWidget;
+class QComboBox;
+class QStackedWidget;
 class QTextEdit;
 class QScrollArea;
 class QVBoxLayout;
@@ -21,16 +22,12 @@ class OverseerSidePanel : public QWidget {
 public:
   explicit OverseerSidePanel(QWidget *parent = nullptr);
 
-  // Load the panels from a session. Passing nullptr clears them. Used
-  // when the Overseer view switches sessions.
   void setSession(OverseerSession *session);
 
-  // Populate the "User actions" tab with the current pending actions.
-  // Clears and rebuilds the content each call. Passing an empty list
-  // shows the empty-state label.
   void setPendingActions(const QList<OverseerRunner::PendingAction> &actions);
 
-  QTabWidget *tabs() const { return m_tabs; }
+  QComboBox *sectionPicker() const { return m_picker; }
+  QStackedWidget *sectionStack() const { return m_stack; }
 
   MemoryPanel *memoryPanel() const { return m_memoryPanel; }
   MemoryPanel *sessionMemoryPanel() const { return m_sessionMemoryPanel; }
@@ -44,22 +41,20 @@ public:
   QLabel *userActionsEmptyLabel() const { return m_userActionsEmptyLabel; }
 
 signals:
-  // Forwarded from the memory proposal cards built into the user
-  // actions tab. OverseerWidget wires these to the same slots the
-  // transcript panel's signals already use, so both views drive the
-  // same runner code path.
   void memoryProposalAccepted(const QString &key, const QString &scope);
   void memoryProposalRejected(const QString &key);
 
-  // Edit plan actions.
   void editPlanOpenRequested(const QString &planId);
   void editPlanApplyRequested(const QString &planId);
   void editPlanCancelRequested(const QString &planId);
 
 private:
   void clearUserActionCards();
+  void rebuildSectionPicker();
 
-  QTabWidget *m_tabs = nullptr;
+  QComboBox *m_picker = nullptr;
+  QStackedWidget *m_stack = nullptr;
+
   MemoryPanel *m_memoryPanel = nullptr;
   MemoryPanel *m_sessionMemoryPanel = nullptr;
   OverviewPanel *m_overviewPanel = nullptr;
@@ -70,4 +65,7 @@ private:
   QWidget *m_userActionsContent = nullptr;
   QVBoxLayout *m_userActionsLayout = nullptr;
   QLabel *m_userActionsEmptyLabel = nullptr;
+
+  int m_userActionsIndex = -1;
+  int m_userActionsCount = 0;
 };

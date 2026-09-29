@@ -16,55 +16,37 @@
 
 #include <QInputDialog>
 #include <QLabel>
-#include <QLineEdit>
 #include <QMessageBox>
-#include <QPushButton>
-#include <QSpinBox>
-#include <QToolButton>
 #include <QVBoxLayout>
 
 OverseerWidget::OverseerWidget(OverseerSessionManager *manager,
                                QWidget *parent)
     : QWidget(parent), m_manager(manager) {
   m_sessionListPanel = new OverseerSessionList(this);
-  m_transcriptPanel = new TranscriptPanel(nullptr, this);
+  m_transcriptPanel = new TranscriptPanel(nullptr, nullptr);
   m_sidePanel = new OverseerSidePanel(this);
 
-  auto *centerPanel = new QWidget(this);
-  auto *centerLayout = new QVBoxLayout(centerPanel);
-  centerLayout->setContentsMargins(6, 6, 6, 6);
-  centerLayout->setSpacing(6);
+  // The session header and the automation strip are created here but
+  // laid out by OverseerPage, inside the bottom dock. This widget
+  // keeps the pointers so it can keep updating them; it does not own
+  // their geometry.
+  m_sessionHeader = new QLabel(tr("No session"), nullptr);
+  {
+    QFont headerFont = m_sessionHeader->font();
+    headerFont.setBold(true);
+    m_sessionHeader->setFont(headerFont);
+  }
 
-  m_sessionHeader = new QLabel(tr("No session"), centerPanel);
-  QFont headerFont = m_sessionHeader->font();
-  headerFont.setBold(true);
-  m_sessionHeader->setFont(headerFont);
-  centerLayout->addWidget(m_sessionHeader);
-
-  m_automationStrip = new AutomationStrip(centerPanel);
+  m_automationStrip = new AutomationStrip(nullptr);
   m_automationStrip->setEnabledState(false);
-  centerLayout->addWidget(m_automationStrip);
 
-  auto *inputRow = new QHBoxLayout;
-  m_input = new QLineEdit(centerPanel);
-  m_input->setPlaceholderText(tr("Describe a task…"));
-  m_sendButton = new QPushButton(tr("Send"), centerPanel);
-
-  auto *depthLabel = new QLabel(tr("Tool depth:"), centerPanel);
-  m_toolCallDepthSpin = new QSpinBox(centerPanel);
-  m_toolCallDepthSpin->setRange(1, 100000);
-  m_toolCallDepthSpin->setValue(Settings::getOverseerToolCallDepthLimit());
-
-  inputRow->addWidget(m_input, 1);
-  inputRow->addWidget(m_sendButton);
-  inputRow->addSpacing(12);
-  inputRow->addWidget(depthLabel);
-  inputRow->addWidget(m_toolCallDepthSpin);
-  centerLayout->addLayout(inputRow);
-
+  // The OverseerWidget itself now has no centre column. Everything
+  // that used to be there (session header, automation strip, composer)
+  // has moved into the bottom dock. This widget is a thin aggregator
+  // whose only job is to hold the pieces and to route runner signals.
   auto *rootLayout = new QVBoxLayout(this);
   rootLayout->setContentsMargins(0, 0, 0, 0);
-  rootLayout->addWidget(centerPanel);
+  rootLayout->setSpacing(0);
 
   connect(m_sessionListPanel, &OverseerSessionList::newSessionRequested, this,
           &OverseerWidget::onNewSessionRequested);
@@ -77,30 +59,6 @@ OverseerWidget::OverseerWidget(OverseerSessionManager *manager,
 
   connect(m_automationStrip, &AutomationStrip::settingsChanged, this,
           &OverseerWidget::onAutomationSettingsChanged);
-
-  connect(m_sendButton, &QPushButton::clicked, this, [this]() {
-    const QString text = m_input->text().trimmed();
-
-    if (text.isEmpty())
-      return;
-
-    m_input->clear();
-    submitRequest(text);
-  });
-
-  connect(m_input, &QLineEdit::returnPressed, this, [this]() {
-    const QString text = m_input->text().trimmed();
-
-    if (text.isEmpty())
-      return;
-
-    m_input->clear();
-    submitRequest(text);
-  });
-
-  connect(m_toolCallDepthSpin,
-          QOverload<int>::of(&QSpinBox::valueChanged), this,
-          &OverseerWidget::onToolCallDepthChanged);
 
   connect(m_transcriptPanel, &TranscriptPanel::memoryProposalAccepted, this,
           &OverseerWidget::onProposalAccepted);
@@ -151,8 +109,7 @@ OverseerWidget::OverseerWidget(OverseerSessionManager *manager,
 
   rebuildSessionList();
 
-  m_input->setEnabled(false);
-  m_sendButton->setEnabled(false);
+  emit composerEnabledChanged(false);
 }
 
 OverseerWidget::~OverseerWidget() = default;
@@ -248,10 +205,12 @@ void OverseerWidget::bindToRunner(OverseerRunner *runner) {
   if (m_workstation)
     m_boundRunner->setWorkstation(m_workstation);
 
-  m_sessionHeader->setText(tr("Session: %1").arg(m_boundRunner->sessionName()));
+  if (m_sessionHeader) {
+    m_sessionHeader->setText(
+        tr("Session: %1").arg(m_boundRunner->sessionName()));
+  }
 
-  m_input->setEnabled(true);
-  m_sendButton->setEnabled(true);
+  emit composerEnabledChanged(true);
 
   // Populate the side panel from the runner's current state before
   // the runner has a chance to emit more changes.
@@ -311,15 +270,15 @@ void OverseerWidget::onSessionCleared() {
     m_sidePanel->setPendingActions({});
   }
 
-  m_sessionHeader->setText(tr("No session"));
+  if (m_sessionHeader)
+    m_sessionHeader->setText(tr("No session"));
 
   if (m_automationStrip) {
     m_automationStrip->setSettings(SessionSettings());
     m_automationStrip->setEnabledState(false);
   }
 
-  m_input->setEnabled(false);
-  m_sendButton->setEnabled(false);
+  emit composerEnabledChanged(false);
 
   emit runnerBound(nullptr);
 }
@@ -527,12 +486,8 @@ void OverseerWidget::focusPlanInTranscript(const QString &planId) {
   if (planId.isEmpty())
     return;
 
-  if (m_sidePanel)
-    m_sidePanel->tabs()->setCurrentIndex(4); // Tools; UI does not
-                                            // guarantee ordering, but
-                                            // the transcript is not a
-                                            // side-panel tab, so leave
-                                            // the tab selection alone.
+  if (m_sidePanel && m_sidePanel->sectionPicker())
+    m_sidePanel->sectionPicker()->setCurrentIndex(4);
 
   Q_UNUSED(planId);
 }

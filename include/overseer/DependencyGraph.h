@@ -10,7 +10,14 @@
 // An edge from A to B means B must complete before A starts.
 //
 // The file is human-editable. The parser accepts a minimal subset of
-// DOT: "digraph { a -> b; c -> d; }" with optional comments.
+// DOT: "digraph { a -> b; c -> d; }" with optional quotes around
+// node names and optional comments.
+//
+// Only strings that look like request ids (hex plus dashes, 8-64
+// characters) are accepted as nodes. Anything else in the file — a
+// hand-edited annotation, a stale blob written by an earlier version
+// of the runner — is silently dropped on load. This keeps the graph
+// renderer from having to cope with arbitrary garbage.
 class DependencyGraph {
 public:
   void setPath(const QString &path);
@@ -34,6 +41,11 @@ public:
   QStringList ready(const QSet<QString> &doneIds) const;
 
   bool hasCycle() const;
+
+  // True when the string looks like a request id: hex characters and
+  // dashes, 8 to 64 characters, nothing else. Used both to validate
+  // input to addNode/addEdge and to filter the dot file on load.
+  static bool looksLikeRequestId(const QString &candidate);
 
 private:
   QString m_path;

@@ -840,7 +840,8 @@ QToolButton#titleBarAvatar:hover {
     color: @text;
 }
 
-QWidget#autoHideStripLeft, QWidget#autoHideStripRight {
+QWidget#autoHideStripLeft, QWidget#autoHideStripRight,
+QWidget#autoHideStripTop, QWidget#autoHideStripBottom {
     background-color: @surface0;
     border: none;
 }
@@ -853,13 +854,10 @@ QWidget#autoHideStripRight {
     border-left: 1px solid @divider;
 }
 
-QWidget#autoHideStripGrip {
-    background-color: @text-subtle;
-    border-radius: 2px;
+QWidget#autoHideStripTop {
+    border-bottom: 1px solid @divider;
 }
 
-QWidget#autoHideStripLeft:hover QWidget#autoHideStripGrip,
-QWidget#autoHideStripRight:hover QWidget#autoHideStripGrip {
-    background-color: @accent;
+QWidget#autoHideStripBottom {
+    border-top: 1px solid @divider;
 }
-

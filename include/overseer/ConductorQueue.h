@@ -20,6 +20,12 @@ public:
   QString enqueueChild(const QString &text, const QString &parentId,
                        Origin origin);
 
+  QString enqueueChild(const QString &text,
+                     const QString &actionJson,
+                     const QString &parentId,
+                     Origin origin);
+
+
   bool remove(const QString &id);
 
   QStringList removeChildren(const QString &parentId);

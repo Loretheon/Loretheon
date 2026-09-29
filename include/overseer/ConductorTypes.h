@@ -11,7 +11,19 @@ enum class Origin {
 
 struct ConductorRequest {
   QString id;
+
+  // Human-readable description shown on the board. For a user request
+  // this is the text the user typed. For a child spawned by a fan-out
+  // it is a short label derived from the action, not the action's raw
+  // JSON.
   QString text;
+
+  // Raw pre-decided action JSON, empty for user requests. When set,
+  // the conductor routes the request by parsing this instead of
+  // re-asking the model. text and actionJson carry the same task in
+  // two forms: one for humans, one for the router.
+  QString actionJson;
+
   QDateTime queuedAt;
 
   Origin origin = Origin::User;

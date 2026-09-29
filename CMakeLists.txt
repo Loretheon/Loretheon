@@ -593,6 +593,8 @@ add_executable(Lore
         include/app/CustomTitleBar.h
         src/overseer/MemoryAgent.cpp
         include/overseer/MemoryAgent.h
+        src/overseer/OverseerBottomPanel.cpp
+        include/overseer/OverseerBottomPanel.h
 )
 
 add_dependencies(Lore

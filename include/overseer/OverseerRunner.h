@@ -202,6 +202,8 @@ private:
   DispatchPlan parseAction(const QString &requestId,
                            const QJsonObject &action) const;
 
+  QString displayLabelForAction(const QJsonObject &action) const;
+  
   static bool isPreDecidedAction(const QString &text);
 
   void recordEdges(const QString &requestId,

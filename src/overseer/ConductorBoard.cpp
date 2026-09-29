@@ -12,20 +12,15 @@
 #include "ThemeRegistry.h"
 #include "ThemeTokens.h"
 
-#include <QDir>
 #include <QEvent>
-#include <QFile>
 #include <QFileInfo>
 #include <QHBoxLayout>
-#include <QJsonArray>
-#include <QJsonDocument>
-#include <QJsonObject>
 #include <QLabel>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QSet>
-#include <QSplitter>
 #include <QStackedWidget>
+#include <QTabWidget>
 #include <QVBoxLayout>
 
 namespace {
@@ -58,20 +53,26 @@ QString dotEscape(const QString &in) {
   return out;
 }
 
-QString shortId(const QString &id) {
-  return id.left(8);
-}
-
-constexpr auto SplitterStateFilename = "conductor_splitter.json";
-
 } // namespace
 
 ConductorBoard::ConductorBoard(QWidget *parent) : QWidget(parent) {
-  setObjectName(QStringLiteral("conducConductorBoardtorBoard"));
+  setObjectName(QStringLiteral("conductorBoard"));
 
   m_stack = new QStackedWidget(this);
 
-  m_conductorBoard = buildConductorBoard();
+  m_conductorBoard = new QWidget(this);
+  auto *boardLayout = new QVBoxLayout(m_conductorBoard);
+  boardLayout->setContentsMargins(0, 0, 0, 0);
+  boardLayout->setSpacing(0);
+
+  m_tabs = new QTabWidget(m_conductorBoard);
+  m_tabs->setDocumentMode(true);
+
+  m_tabs->addTab(buildGraphTab(), tr("Graph"));
+  m_tabs->addTab(buildKanbanTab(), tr("Kanban"));
+
+  boardLayout->addWidget(m_tabs, 1);
+
   m_stack->addWidget(m_conductorBoard);
 
   auto *root = new QVBoxLayout(this);
@@ -111,119 +112,33 @@ void ConductorBoard::setRoster(ConductorRoster *roster) {
 
   if (m_roster) {
     connect(m_roster, &ConductorRoster::changed, this,
-            [this]() { rebuildRosterView(); });
+            [this]() { rebuild(); });
   }
 
-  rebuildRosterView();
+  rebuild();
 }
 
 void ConductorBoard::setDependencies(DependencyGraph *graph) {
   m_dependencies = graph;
-  rebuildGraphView();
   renderDependencyGraph();
 }
 
 void ConductorBoard::setSessionFolder(const QString &folder) {
-  if (m_sessionFolder == folder)
-    return;
-
   m_sessionFolder = folder;
-  loadSplitterState();
 }
 
-QString ConductorBoard::splitterStatePath() const {
-  if (m_sessionFolder.isEmpty())
-    return {};
+QWidget *ConductorBoard::buildGraphTab() {
+  m_graphPanel = new QWidget(this);
+  m_graphPanel->setObjectName(QStringLiteral("conductorGraphPanel"));
 
-  return QDir(m_sessionFolder)
-      .filePath(QString::fromLatin1(SplitterStateFilename));
-}
-
-QWidget *ConductorBoard::buildConductorBoard() {
-  auto *page = new QWidget(this);
-
-  auto *layout = new QVBoxLayout(page);
-  layout->setContentsMargins(0, 0, 0, 0);
-  layout->setSpacing(4);
-
-  m_graphLabel = new QLabel(tr("(no dependencies)"), page);
-  m_graphLabel->setObjectName(QStringLiteral("conductorGraphLabel"));
-  m_graphLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
-  m_graphLabel->setWordWrap(true);
-  layout->addWidget(m_graphLabel);
-
-  m_rosterLabel = new QLabel(tr("(no workers)"), page);
-  m_rosterLabel->setObjectName(QStringLiteral("conductorRosterLabel"));
-  m_rosterLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
-  m_rosterLabel->setWordWrap(true);
-  layout->addWidget(m_rosterLabel);
-
-  // Vertical splitter: dependency graph on top, kanban below. The
-  // user can drag the handle to give either side more room.
-  m_boardSplitter = new QSplitter(Qt::Vertical, page);
-  m_boardSplitter->setChildrenCollapsible(false);
-  m_boardSplitter->setHandleWidth(6);
-
-  m_graphPanel = buildGraphPanel();
-  m_graphPanel->setMinimumHeight(80);
-  m_boardSplitter->addWidget(m_graphPanel);
-
-  auto *scroll = new QScrollArea(page);
-  scroll->setWidgetResizable(true);
-  scroll->setFrameShape(QFrame::NoFrame);
-
-  auto *host = new QWidget(scroll);
-
-  auto *row = new QHBoxLayout(host);
-  row->setContentsMargins(8, 8, 8, 8);
-  row->setSpacing(8);
-
-  for (const ColumnSpec &spec : columnSpecs()) {
-    auto *column = new QWidget(host);
-    column->setObjectName(QStringLiteral("conductorColumn"));
-    column->setProperty("columnKey", spec.key);
-    column->setMinimumWidth(220);
-
-    auto *columnLayout = new QVBoxLayout(column);
-    columnLayout->setContentsMargins(8, 8, 8, 8);
-    columnLayout->setSpacing(6);
-
-    auto *header = new QLabel(spec.title, column);
-    QFont bold = header->font();
-    bold.setBold(true);
-    header->setFont(bold);
-    columnLayout->addWidget(header);
-
-    columnLayout->addStretch(1);
-
-    row->addWidget(column);
-  }
-
-  scroll->setWidget(host);
-
-  m_boardSplitter->addWidget(scroll);
-
-  m_boardSplitter->setStretchFactor(0, 2);
-  m_boardSplitter->setStretchFactor(1, 3);
-  m_boardSplitter->setSizes({240, 360});
-
-  layout->addWidget(m_boardSplitter, 1);
-
-  return page;
-}
-
-QWidget *ConductorBoard::buildGraphPanel() {
-  auto *panel = new QWidget(this);
-  panel->setObjectName(QStringLiteral("conductorGraphPanel"));
-
-  auto *layout = new QVBoxLayout(panel);
+  auto *layout = new QVBoxLayout(m_graphPanel);
   layout->setContentsMargins(0, 0, 0, 0);
   layout->setSpacing(0);
 
-  m_graphToolbar = new DiagramToolbar(panel);
+  m_graphToolbar = new DiagramToolbar(m_graphPanel);
   layout->addWidget(m_graphToolbar);
 
-  m_graphView = new DiagramView(panel);
+  m_graphView = new DiagramView(m_graphPanel);
   m_graphView->setMinimumHeight(80);
   layout->addWidget(m_graphView, 1);
 
@@ -279,75 +194,51 @@ QWidget *ConductorBoard::buildGraphPanel() {
   m_graphToolbar->setActionsEnabled(false);
   m_graphToolbar->setZoom(1.0);
 
-  return panel;
+  return m_graphPanel;
 }
 
-void ConductorBoard::loadSplitterState() {
-  if (!m_boardSplitter)
-    return;
+QWidget *ConductorBoard::buildKanbanTab() {
+  m_kanbanScroll = new QScrollArea(this);
+  m_kanbanScroll->setWidgetResizable(true);
+  m_kanbanScroll->setFrameShape(QFrame::NoFrame);
 
-  const QString path = splitterStatePath();
+  auto *host = new QWidget(m_kanbanScroll);
 
-  if (path.isEmpty() || !QFileInfo::exists(path))
-    return;
+  auto *row = new QHBoxLayout(host);
+  row->setContentsMargins(8, 8, 8, 8);
+  row->setSpacing(8);
 
-  QFile file(path);
+  for (const ColumnSpec &spec : columnSpecs()) {
+    auto *column = new QWidget(host);
+    column->setObjectName(QStringLiteral("conductorColumn"));
+    column->setProperty("columnKey", spec.key);
+    column->setMinimumWidth(220);
 
-  if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
-    return;
+    auto *columnLayout = new QVBoxLayout(column);
+    columnLayout->setContentsMargins(8, 8, 8, 8);
+    columnLayout->setSpacing(6);
 
-  const QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
+    auto *header = new QLabel(spec.title, column);
+    QFont bold = header->font();
+    bold.setBold(true);
+    header->setFont(bold);
+    columnLayout->addWidget(header);
 
-  if (!doc.isObject())
-    return;
+    columnLayout->addStretch(1);
 
-  const QJsonArray arr = doc.object().value(QStringLiteral("sizes")).toArray();
+    row->addWidget(column);
+  }
 
-  QList<int> sizes;
+  m_kanbanScroll->setWidget(host);
 
-  for (const QJsonValue &v : arr)
-    sizes.append(v.toInt());
-
-  if (sizes.size() == m_boardSplitter->count())
-    m_boardSplitter->setSizes(sizes);
-}
-
-void ConductorBoard::saveSplitterState() const {
-  if (!m_boardSplitter)
-    return;
-
-  const QString path = splitterStatePath();
-
-  if (path.isEmpty())
-    return;
-
-  QJsonArray arr;
-
-  for (int size : m_boardSplitter->sizes())
-    arr.append(size);
-
-  QJsonObject obj;
-  obj.insert(QStringLiteral("sizes"), arr);
-
-  QFile file(path);
-
-  if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate |
-                 QIODevice::Text))
-    return;
-
-  file.write(QJsonDocument(obj).toJson(QJsonDocument::Indented));
+  return m_kanbanScroll;
 }
 
 void ConductorBoard::rebuild() {
-  if (!m_queue || !m_conductorBoard)
+  if (!m_queue || !m_kanbanScroll)
     return;
 
-  auto *scroll = m_conductorBoard->findChild<QScrollArea *>();
-
-  if (!scroll)
-    return;
-
-  auto *host = scroll->widget();
+  auto *host = m_kanbanScroll->widget();
 
   if (!host)
     return;
@@ -368,10 +259,6 @@ void ConductorBoard::rebuild() {
     if (!columnLayout)
       continue;
 
-    // Remove every card. Layout is [header, card..., stretch]. Take
-    // everything between the header and the trailing stretch, detach
-    // the widget from its parent immediately so the layout item does
-    // not linger, then let deleteLater reap it.
     while (columnLayout->count() > 2) {
       QLayoutItem *item = columnLayout->takeAt(1);
 
@@ -426,7 +313,7 @@ void ConductorBoard::rebuild() {
         QStringList blockers;
 
         for (const QString &b : req.blockedOn)
-          blockers.append(b.left(8));
+          blockers.append(nodeLabelFor(b));
 
         auto *blocked = new QLabel(
             tr("Waiting on %1").arg(blockers.join(QStringLiteral(", "))),
@@ -460,6 +347,14 @@ void ConductorBoard::rebuild() {
         reason->setStyleSheet(
             QStringLiteral("color: %1;").arg(tokens.textMuted.name()));
         cardLayout->addWidget(reason);
+      }
+
+      if (!req.workerId.isEmpty()) {
+        auto *worker = new QLabel(workerLabelFor(req.workerId), card);
+        worker->setWordWrap(true);
+        worker->setStyleSheet(
+            QStringLiteral("color: %1;").arg(tokens.textSubtle.name()));
+        cardLayout->addWidget(worker);
       }
 
       auto *actions = new QHBoxLayout;
@@ -515,97 +410,14 @@ void ConductorBoard::rebuild() {
     }
   }
 
-  rebuildGraphView();
-  rebuildRosterView();
   renderDependencyGraph();
-}
-
-void ConductorBoard::rebuildGraphView() {
-  if (!m_graphLabel)
-    return;
-
-  if (!m_dependencies) {
-    m_graphLabel->setText(tr("(no dependency graph)"));
-    return;
-  }
-
-  const QStringList nodes = m_dependencies->nodes();
-
-  if (nodes.isEmpty()) {
-    m_graphLabel->setText(tr("(no dependencies)"));
-    return;
-  }
-
-  QString out = tr("Dependencies: ");
-
-  int shown = 0;
-
-  for (const QString &node : nodes) {
-    const QStringList deps = m_dependencies->edgesTo(node);
-
-    if (deps.isEmpty())
-      continue;
-
-    if (shown > 0)
-      out += QStringLiteral("; ");
-
-    out += QStringLiteral("%1 ← %2").arg(node, deps.join(QStringLiteral(", ")));
-
-    ++shown;
-
-    if (shown >= 5) {
-      out += QStringLiteral(" …");
-      break;
-    }
-  }
-
-  if (shown == 0)
-    out = tr("(no edges)");
-
-  m_graphLabel->setText(out);
-}
-
-void ConductorBoard::rebuildRosterView() {
-  if (!m_rosterLabel)
-    return;
-
-  if (!m_roster) {
-    m_rosterLabel->setText(tr("(no roster)"));
-    return;
-  }
-
-  const QVector<ConductorWorker> workers = m_roster->all();
-
-  if (workers.isEmpty()) {
-    m_rosterLabel->setText(tr("(no workers)"));
-    return;
-  }
-
-  QString out = tr("Workers: ");
-
-  QStringList parts;
-
-  for (const ConductorWorker &w : workers) {
-    if (w.type == QStringLiteral("file")) {
-      parts.append(QStringLiteral("%1 (%2, q%3)")
-                       .arg(w.id, w.domain)
-                       .arg(w.queueDepth));
-    } else {
-      parts.append(QStringLiteral("%1 (%2)")
-                       .arg(w.id, QFileInfo(w.file).fileName()));
-    }
-  }
-
-  out += parts.join(QStringLiteral(", "));
-
-  m_rosterLabel->setText(out);
 }
 
 QString ConductorBoard::nodeLabelFor(const QString &requestId) const {
   if (m_queue) {
     const ConductorRequest req = m_queue->byId(requestId);
 
-    if (!req.id.isEmpty() && !req.text.isEmpty()) {
+    if (!req.text.isEmpty()) {
       QString label = req.text.simplified();
 
       if (label.size() > 48)
@@ -615,7 +427,29 @@ QString ConductorBoard::nodeLabelFor(const QString &requestId) const {
     }
   }
 
-  return shortId(requestId);
+  return tr("(unlabelled)");
+}
+
+QString ConductorBoard::workerLabelFor(const QString &workerId) const {
+  if (workerId.isEmpty())
+    return {};
+
+  if (m_roster) {
+    const ConductorWorker w = m_roster->byId(workerId);
+
+    if (!w.id.isEmpty()) {
+      if (w.type == QStringLiteral("file")) {
+        return w.domain.isEmpty() ? tr("worker") : w.domain;
+      }
+
+      const QString file = QFileInfo(w.file).fileName();
+
+      if (!file.isEmpty())
+        return file;
+    }
+  }
+
+  return tr("worker");
 }
 
 QString ConductorBoard::buildDependencyDot() const {
@@ -642,8 +476,8 @@ QString ConductorBoard::buildDependencyDot() const {
 
     declared.insert(id);
 
-    dot += QStringLiteral("  \"%1\" [label=\"%2\\n(%3)\"];\n")
-               .arg(id, dotEscape(nodeLabelFor(id)), shortId(id));
+    dot += QStringLiteral("  \"%1\" [label=\"%2\"];\n")
+               .arg(id, dotEscape(nodeLabelFor(id)));
   };
 
   for (const QString &node : nodes) {
@@ -751,7 +585,8 @@ QWidget *ConductorBoard::buildDetailPanel(const QString &requestId) {
   layout->addWidget(stateLabel);
 
   if (!req.workerId.isEmpty()) {
-    auto *worker = new QLabel(tr("Worker: %1").arg(req.workerId), panel);
+    auto *worker = new QLabel(
+        tr("Worker: %1").arg(workerLabelFor(req.workerId)), panel);
     layout->addWidget(worker);
   }
 

@@ -3,7 +3,7 @@
 #include "../../include/ui/AutoHideDock.h"
 #include "../../include/ui/DockReservation.h"
 #include "ConductorBoard.h"
-#include "ConductorDock.h"
+#include "OverseerBottomPanel.h"
 #include "OverseerSession.h"
 #include "OverseerSessionList.h"
 #include "OverseerSidePanel.h"
@@ -12,7 +12,6 @@
 #include "OverviewPanel.h"
 #include "PathUtils.h"
 #include "TextEdit.h"
-#include "ToastStack.h"
 #include "TranscriptPanel.h"
 #include "Workstation.h"
 #include "WorkstationBar.h"
@@ -38,7 +37,11 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QHBoxLayout>
+#include <QLabel>
+#include <QLineEdit>
 #include <QMessageBox>
+#include <QPushButton>
+#include <QSpinBox>
 #include <QSplitter>
 #include <QToolButton>
 #include <QVBoxLayout>
@@ -75,70 +78,43 @@ OverseerPage::OverseerPage(InferenceService *inferenceService,
   m_documentArea->hide();
 
   m_fileWidget = new FileWidget(this);
-
-  // The tree is session-scoped.  Until a session is chosen it has no
-  // meaningful root, so we hide it and only reveal it once
-  // reloadSession() has set a valid output folder.
   m_fileWidget->setVisible(false);
 
-  // The conductor dock. It lives on top of the page, not inside any
-  // layout, and slides down from the top when triggered.
-  //
-  // The dock's queue, roster, and dependency graph are bound below,
-  // in onRunnerBound(). At construction time no runner is bound yet,
-  // so we deliberately do NOT push m_overseer->queue() here — that
-  // returns nullptr and would leave the board permanently wired to a
-  // null queue.
-  m_conductorDock = new ConductorDock(this);
+  // ----- top dock: the conductor board -----
 
-  connect(m_conductorDock->board(), &ConductorBoard::removeRequested,
-        m_overseer, &OverseerWidget::removeFailedRequest);
+  m_conductorBoard = new ConductorBoard(this);
 
-  connect(m_conductorDock->board(), &ConductorBoard::retryRequested,
-          m_overseer, &OverseerWidget::retryRequest);
+  connect(m_conductorBoard, &ConductorBoard::removeRequested, m_overseer,
+          &OverseerWidget::removeFailedRequest);
 
-  connect(m_conductorDock->board(), &ConductorBoard::skipRequested,
-          m_overseer, &OverseerWidget::skipRequest);
+  connect(m_conductorBoard, &ConductorBoard::retryRequested, m_overseer,
+          &OverseerWidget::retryRequest);
 
-  m_dockTrigger = new QToolButton(this);
-  m_dockTrigger->setObjectName(QStringLiteral("conductorDockTrigger"));
-  m_dockTrigger->setText(tr("Conductor"));
-  m_dockTrigger->setToolButtonStyle(Qt::ToolButtonTextOnly);
-  m_dockTrigger->setAutoRaise(true);
+  connect(m_conductorBoard, &ConductorBoard::skipRequested, m_overseer,
+          &OverseerWidget::skipRequest);
 
-  connect(m_dockTrigger, &QToolButton::clicked, m_conductorDock,
-          &ConductorDock::toggle);
+  m_topDock = new AutoHideDock(AutoHideDock::Edge::Top,
+                               QStringLiteral("overseer/top"), this);
+  m_topDock->setContent(m_conductorBoard);
 
-  connect(m_conductorDock, &ConductorDock::opened, this, [this]() {
-    if (m_dockTrigger)
-      m_dockTrigger->setText(tr("Conductor ▲"));
-  });
-
-  connect(m_conductorDock, &ConductorDock::closed, this, [this]() {
-    if (m_dockTrigger)
-      m_dockTrigger->setText(tr("Conductor"));
-  });
-
-  // Re-bind the dock to the runner's queue, roster, and dependency
-  // graph every time the bound runner changes. Without this the board
-  // would keep whatever pointer it was given at construction time,
-  // which is always null.
   connect(m_overseer, &OverseerWidget::runnerBound, this,
           [this](OverseerRunner *runner) {
-            if (!m_conductorDock)
+            if (!m_conductorBoard)
               return;
 
             if (!runner) {
-              m_conductorDock->setQueue(nullptr);
-              m_conductorDock->setRoster(nullptr);
-              m_conductorDock->setDependencies(nullptr);
+              m_conductorBoard->setQueue(nullptr);
+              m_conductorBoard->setRoster(nullptr);
+              m_conductorBoard->setDependencies(nullptr);
               return;
             }
 
-            m_conductorDock->setQueue(runner->queue());
-            m_conductorDock->setRoster(runner->roster());
-            m_conductorDock->setDependencies(runner->dependencies());
+            m_conductorBoard->setQueue(runner->queue());
+            m_conductorBoard->setRoster(runner->roster());
+            m_conductorBoard->setDependencies(runner->dependencies());
           });
+
+  // ----- left dock: session list + file tree -----
 
   connect(m_overseer->sessionListPanel(),
           &OverseerSessionList::sessionSelected, this,
@@ -186,6 +162,8 @@ OverseerPage::OverseerPage(InferenceService *inferenceService,
 
   connect(m_documentManager, &DocumentManager::documentChanged, this,
           [this](TextDocument *) { onDocumentChanged(); });
+
+  // ----- workstation and page signalling -----
 
   connect(m_overseer, &OverseerWidget::fileWritten, this,
           [this](const QString &absolutePath) {
@@ -353,6 +331,8 @@ OverseerPage::OverseerPage(InferenceService *inferenceService,
     });
   }
 
+  // ----- left dock content -----
+
   auto *leftContent = new QWidget(this);
   auto *leftLayout = new QVBoxLayout(leftContent);
   leftLayout->setContentsMargins(0, 0, 0, 0);
@@ -362,15 +342,15 @@ OverseerPage::OverseerPage(InferenceService *inferenceService,
   leftSplitter->addWidget(m_overseer->sessionListPanel());
   leftSplitter->addWidget(m_fileWidget);
 
-  // Remember the splitter so we can collapse the tree's row when the
-  // tree is hidden, so the session list takes the full column height
-  // instead of leaving a gap.
   m_leftSplitter = leftSplitter;
 
   leftLayout->addWidget(leftSplitter);
 
-  m_leftDock = new AutoHideDock(AutoHideDock::Edge::Left, QStringLiteral("overseer/dock"));
+  m_leftDock = new AutoHideDock(AutoHideDock::Edge::Left,
+                                QStringLiteral("overseer/left"), this);
   m_leftDock->setContent(leftContent);
+
+  // ----- right dock: side panel -----
 
   auto *rightContent = new QWidget(this);
   auto *rightLayout = new QVBoxLayout(rightContent);
@@ -379,23 +359,84 @@ OverseerPage::OverseerPage(InferenceService *inferenceService,
 
   rightLayout->addWidget(m_overseer->sidePanel());
 
-  m_rightDock = new AutoHideDock(AutoHideDock::Edge::Right, QStringLiteral("overseer/dock"));
+  m_rightDock = new AutoHideDock(AutoHideDock::Edge::Right,
+                                 QStringLiteral("overseer/right"), this);
   m_rightDock->setContent(rightContent);
 
-  // The tree drives the left dock's width; the side panel drives the
-  // right dock's width. The dock is the single authority on its own
-  // width, and the DockReservation follows via dockWidthChanged.
+  // ----- bottom dock: the whole interaction surface -----
+
+  m_bottomPanel = new OverseerBottomPanel(this);
+
+  m_bottomPanel->setSessionHeader(m_overseer->sessionHeader());
+  m_bottomPanel->setAutomationStrip(m_overseer->automationStrip());
+
+  auto *transcriptPanel = m_overseer->transcriptPanel();
+  transcriptPanel->setDockOrientation(Qt::Horizontal);
+  m_bottomPanel->setTranscriptPanel(transcriptPanel);
+
+  // The composer controls are owned by the bottom panel. Wire them
+  // straight through to OverseerWidget's slots.
+  m_bottomPanel->depthSpin()->setValue(
+      Settings::getOverseerToolCallDepthLimit());
+
+  connect(m_bottomPanel->sendButton(), &QPushButton::clicked, this, [this]() {
+    const QString text = m_bottomPanel->input()->text().trimmed();
+
+    if (text.isEmpty())
+      return;
+
+    m_bottomPanel->input()->clear();
+    m_overseer->submitRequest(text);
+  });
+
+  connect(m_bottomPanel->input(), &QLineEdit::returnPressed, this, [this]() {
+    const QString text = m_bottomPanel->input()->text().trimmed();
+
+    if (text.isEmpty())
+      return;
+
+    m_bottomPanel->input()->clear();
+    m_overseer->submitRequest(text);
+  });
+
+  connect(m_bottomPanel->depthSpin(),
+          QOverload<int>::of(&QSpinBox::valueChanged), m_overseer,
+          &OverseerWidget::onToolCallDepthChanged);
+
+  connect(m_overseer, &OverseerWidget::composerEnabledChanged, this,
+          [this](bool enabled) {
+            if (m_bottomPanel)
+              m_bottomPanel->setComposerEnabled(enabled);
+          });
+
+  m_bottomPanel->setComposerEnabled(false);
+
+  m_bottomDock = new AutoHideDock(AutoHideDock::Edge::Bottom,
+                                  QStringLiteral("overseer/bottom"), this);
+  m_bottomDock->setContent(m_bottomPanel);
+
+  // Preferred lengths. The tree drives the left dock, the side panel
+  // drives the right dock. The top and bottom docks both take 40% of
+  // the page height.
   if (auto *view = m_fileWidget->view()) {
     connect(view, &FileSystemView::preferredContentWidthChanged,
             m_leftDock, [this](int width) {
-              m_leftDock->setPreferredContentWidth(width);
-              m_leftDock->fitToContentWidth();
+              m_leftDock->setPreferredContentLength(width);
+              m_leftDock->fitToContentLength();
             });
   }
 
-  m_rightDock->setPreferredContentWidth(
+  m_rightDock->setPreferredContentLength(
       std::max(m_overseer->sidePanel()->sizeHint().width(),
                m_overseer->sidePanel()->minimumSizeHint().width()));
+
+  const int pageHeight = std::max(400, height());
+  const int stripHeight = pageHeight * 2 / 5;
+
+  m_topDock->setPreferredContentLength(stripHeight);
+  m_bottomDock->setPreferredContentLength(stripHeight);
+
+  // ----- centre column -----
 
   auto *workstationColumn = new QWidget(this);
   auto *workstationLayout = new QVBoxLayout(workstationColumn);
@@ -409,17 +450,9 @@ OverseerPage::OverseerPage(InferenceService *inferenceService,
   auto *centerColumn = new QSplitter(Qt::Vertical, this);
   centerColumn->addWidget(workstationColumn);
 
-  auto *transcriptWrapper = new QWidget(this);
-  auto *transcriptLayout = new QVBoxLayout(transcriptWrapper);
-  transcriptLayout->setContentsMargins(0, 0, 0, 0);
-  transcriptLayout->setSpacing(0);
-  transcriptLayout->addWidget(m_overseer->transcriptPanel(), 1);
-  transcriptLayout->addWidget(m_overseer, 0);
-
-  centerColumn->addWidget(transcriptWrapper);
-  centerColumn->setStretchFactor(0, 3);
-  centerColumn->setStretchFactor(1, 1);
-
+  // The centre column now holds only the workstation. The Overseer's
+  // interaction surface has moved into the bottom dock. A thin trigger
+  // row stays at the top of the centre column to open the conductor.
   auto *centerHost = new QWidget(this);
   auto *centerHostLayout = new QVBoxLayout(centerHost);
   centerHostLayout->setContentsMargins(0, 0, 0, 0);
@@ -430,14 +463,17 @@ OverseerPage::OverseerPage(InferenceService *inferenceService,
   auto *triggerLayout = new QHBoxLayout(triggerRow);
   triggerLayout->setContentsMargins(6, 2, 6, 2);
   triggerLayout->setSpacing(6);
-  triggerLayout->addWidget(m_dockTrigger);
   triggerLayout->addStretch(1);
 
   centerHostLayout->addWidget(triggerRow);
   centerHostLayout->addWidget(centerColumn, 1);
 
+  // ----- reservations and layout -----
+
   auto *leftReservation = new DockReservation(m_leftDock, this);
   auto *rightReservation = new DockReservation(m_rightDock, this);
+  auto *topReservation = new DockReservation(m_topDock, this);
+  auto *bottomReservation = new DockReservation(m_bottomDock, this);
 
   auto *columns = new QWidget(this);
   auto *columnsLayout = new QHBoxLayout(columns);
@@ -450,15 +486,23 @@ OverseerPage::OverseerPage(InferenceService *inferenceService,
 
   auto *root = new QVBoxLayout(this);
   root->setContentsMargins(0, 0, 0, 0);
-  root->addWidget(columns);
+  root->setSpacing(0);
 
-  // Open both docks at their content-derived widths before the first
-  // paint.
-  m_leftDock->fitToContentWidth();
-  m_leftDock->showDock();
+  root->addWidget(topReservation, 0);
+  root->addWidget(columns, 1);
+  root->addWidget(bottomReservation, 0);
 
-  m_rightDock->fitToContentWidth();
-  m_rightDock->showDock();
+  m_leftDock->fitToContentLength();
+  m_leftDock->hideDock();
+
+  m_rightDock->fitToContentLength();
+  m_rightDock->hideDock();
+
+  m_topDock->fitToContentLength();
+  m_topDock->hideDock();
+
+  m_bottomDock->fitToContentLength();
+  m_bottomDock->hideDock();
 
   migrateLegacyLayoutFiles();
 }
@@ -552,15 +596,14 @@ void OverseerPage::onSessionCleared() {
   m_currentSessionName.clear();
   m_currentOutputFolder.clear();
 
-  if (m_conductorDock)
-    m_conductorDock->setSessionFolder(QString());
+  if (m_conductorBoard)
+    m_conductorBoard->setSessionFolder(QString());
 
   if (m_workstation)
     m_workstation->closeAll();
 
   closeAllSessionDocuments();
 
-  // The tree has no meaningful root without a session.
   updateFileTreeVisibility();
 
   emit dirtyChanged(false);
@@ -588,8 +631,8 @@ void OverseerPage::reloadSession(const QString &name) {
   m_currentSessionName = name;
   m_currentOutputFolder = session->outputPath();
 
-  if (m_conductorDock)
-    m_conductorDock->setSessionFolder(session->folderPath());
+  if (m_conductorBoard)
+    m_conductorBoard->setSessionFolder(session->folderPath());
 
   if (m_workstation) {
     m_workstation->setOutputFolder(m_currentOutputFolder);
@@ -600,7 +643,6 @@ void OverseerPage::reloadSession(const QString &name) {
     m_fileWidget->setRootPath(m_currentOutputFolder);
   }
 
-  // The tree has a valid root now, so it is safe to reveal.
   updateFileTreeVisibility();
 
   session->deleteLater();
@@ -615,14 +657,10 @@ void OverseerPage::updateFileTreeVisibility() {
   if (m_fileWidget)
     m_fileWidget->setVisible(hasSession);
 
-  // Collapse the tree's pane in the vertical splitter when hidden, so
-  // the session list occupies the full height of the left column
-  // instead of leaving an empty gap below it.
   if (m_leftSplitter && m_leftSplitter->count() == 2) {
     QList<int> sizes = m_leftSplitter->sizes();
 
     if (hasSession) {
-      // Restore a sensible split: roughly 40% list, 60% tree.
       const int total = sizes.value(0, 0) + sizes.value(1, 0);
       const int basis = total > 0 ? total
                                   : m_leftSplitter->height();

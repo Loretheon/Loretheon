@@ -12,9 +12,14 @@
 #include <QTextStream>
 #include <QVBoxLayout>
 
+#include <algorithm>
+
 namespace {
 
 constexpr auto ProseEndMarker = "## Accepted proposals";
+
+constexpr int kMinimumPanelWidth = 380;
+constexpr int kPreferredPanelWidth = 520;
 
 } // namespace
 
@@ -65,6 +70,16 @@ MemoryPanel::MemoryPanel(QWidget *parent) : QWidget(parent) {
 
   connect(m_proseEdit, &QPlainTextEdit::textChanged, this,
           &MemoryPanel::onProseEdited);
+}
+
+QSize MemoryPanel::sizeHint() const {
+  return QSize(kPreferredPanelWidth,
+               std::max(240, QWidget::sizeHint().height()));
+}
+
+QSize MemoryPanel::minimumSizeHint() const {
+  return QSize(kMinimumPanelWidth,
+               std::max(160, QWidget::minimumSizeHint().height()));
 }
 
 QString MemoryPanel::prose() const {

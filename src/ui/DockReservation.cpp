@@ -13,10 +13,14 @@ DockReservation::DockReservation(AutoHideDock *dock, QWidget *parent)
 
   if (m_dock) {
     m_dock->setParent(this);
-    m_dock->setFixedWidth(AutoHideDock::StripWidth);
+
+    if (m_dock->orientation() == Qt::Horizontal)
+      m_dock->setFixedWidth(AutoHideDock::StripWidth);
+    else
+      m_dock->setFixedHeight(AutoHideDock::StripWidth);
   }
 
-  m_animation = new QPropertyAnimation(this, "reservedWidth", this);
+  m_animation = new QPropertyAnimation(this, "reservedLength", this);
   m_animation->setDuration(AutoHideDock::SlideDurationMs);
   m_animation->setEasingCurve(QEasingCurve::InOutCubic);
 
@@ -24,41 +28,59 @@ DockReservation::DockReservation(AutoHideDock *dock, QWidget *parent)
     connect(m_dock, &AutoHideDock::expandedChanged, this,
             [this](bool) { syncToDockState(true); });
 
-    connect(m_dock, &AutoHideDock::dockWidthChanged, this,
+    connect(m_dock, &AutoHideDock::dockLengthChanged, this,
             [this](int) { syncToDockState(true); });
   }
 
   syncToDockState(false);
 }
 
-void DockReservation::setReservedWidth(int width) {
-  const int target = std::max(AutoHideDock::StripWidth, width);
+void DockReservation::applyLength(int length) {
+  const int target = std::max(AutoHideDock::StripWidth, length);
 
-  if (m_currentWidth == target)
+  m_currentLength = target;
+
+  if (!m_dock) {
+    setFixedWidth(target);
     return;
+  }
 
-  m_currentWidth = target;
-
-  setFixedWidth(target);
-
-  if (m_dock)
+  if (m_dock->orientation() == Qt::Horizontal) {
+    setFixedWidth(target);
+    setMinimumHeight(0);
+    setMaximumHeight(QWIDGETSIZE_MAX);
     m_dock->setFixedWidth(target);
+  } else {
+    setFixedHeight(target);
+    setMinimumWidth(0);
+    setMaximumWidth(QWIDGETSIZE_MAX);
+    m_dock->setFixedHeight(target);
+  }
 }
 
-void DockReservation::animateToWidth(int width, bool animated) {
-  const int target = std::max(AutoHideDock::StripWidth, width);
+void DockReservation::setReservedLength(int length) {
+  const int target = std::max(AutoHideDock::StripWidth, length);
 
-  if (m_currentWidth == target)
+  if (m_currentLength == target)
+    return;
+
+  applyLength(target);
+}
+
+void DockReservation::animateToLength(int length, bool animated) {
+  const int target = std::max(AutoHideDock::StripWidth, length);
+
+  if (m_currentLength == target)
     return;
 
   if (animated) {
     m_animation->stop();
-    m_animation->setStartValue(m_currentWidth);
+    m_animation->setStartValue(m_currentLength);
     m_animation->setEndValue(target);
     m_animation->start();
   } else {
     m_animation->stop();
-    setReservedWidth(target);
+    setReservedLength(target);
   }
 }
 
@@ -68,10 +90,10 @@ void DockReservation::syncToDockState(bool animated) {
 
   const int target =
       m_dock->isExpanded()
-          ? std::max(AutoHideDock::MinDockWidth, m_dock->dockWidth())
+          ? std::max(AutoHideDock::MinDockLength, m_dock->dockLength())
           : AutoHideDock::StripWidth;
 
-  animateToWidth(target, animated);
+  animateToLength(target, animated);
 }
 
 void DockReservation::resizeEvent(QResizeEvent *event) {

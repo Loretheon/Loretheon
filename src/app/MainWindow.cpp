@@ -922,20 +922,15 @@ void MainWindow::buildNormalPage() {
   rowLayout->addWidget(m_documentArea, 1);
   rowLayout->addWidget(m_chatReservation, 0);
 
-  // The tree's own preferred content width is the authority for the
-  // dock's natural width. fullContentWidth() deliberately counts
-  // hidden columns, so feeding max(preferred, full) here would latch
-  // the dock to a value wider than the visible tree needs, and the
-  // dock would then refuse to shrink back.
   if (auto *view = m_fileWidget->view()) {
     connect(view, &FileSystemView::preferredContentWidthChanged,
             m_fileTreeDock, [this](int width) {
-              m_fileTreeDock->setPreferredContentWidth(width);
-              m_fileTreeDock->fitToContentWidth();
+              m_fileTreeDock->setPreferredContentLength(width);
+              m_fileTreeDock->fitToContentLength();
             });
   }
 
-  m_chatDock->setPreferredContentWidth(
+  m_chatDock->setPreferredContentLength(
       std::max(m_chatWidget->sizeHint().width(),
                m_chatWidget->minimumSizeHint().width()));
 
@@ -953,8 +948,8 @@ void MainWindow::buildNormalPage() {
     if (auto *view = m_fileWidget->view()) {
       const int measured = view->measuredContentWidth();
       if (measured > 0) {
-        m_fileTreeDock->setPreferredContentWidth(measured);
-        m_fileTreeDock->fitToContentWidth();
+        m_fileTreeDock->setPreferredContentLength(measured);
+        m_fileTreeDock->fitToContentLength();
       }
     }
 
@@ -962,8 +957,8 @@ void MainWindow::buildNormalPage() {
       const int target =
           std::max(m_chatWidget->sizeHint().width(),
                    m_chatWidget->minimumSizeHint().width());
-      m_chatDock->setPreferredContentWidth(target);
-      m_chatDock->fitToContentWidth();
+      m_chatDock->setPreferredContentLength(target);
+      m_chatDock->fitToContentLength();
     }
   });
 }

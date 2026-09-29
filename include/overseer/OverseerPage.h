@@ -9,15 +9,16 @@ class OverseerSessionManager;
 class FileWidget;
 class AutoHideDock;
 class ChatWidget;
+class ConductorBoard;
 class DocumentArea;
 class DocumentManager;
 class EditSession;
 class InferenceService;
+class OverseerBottomPanel;
 class OverseerWidget;
 class Workstation;
 class TextDocument;
 class TextEdit;
-class ConductorDock;
 class QSplitter;
 class QStackedWidget;
 
@@ -43,6 +44,7 @@ public:
   bool saveAll();
   void discardAll();
   FileWidget *fileWidget() const { return m_fileWidget; }
+
 public slots:
   void stageFileInSession(const QString &absolutePath);
 
@@ -65,13 +67,8 @@ private:
   void closeAllSessionDocuments();
   void migrateLegacyLayoutFiles();
 
-  // Show or hide the session-scoped file tree, and collapse or restore
-  // its pane in the left splitter accordingly.  The tree has no
-  // meaningful root before a session is chosen, so it stays hidden.
   void updateFileTreeVisibility();
 
-  ConductorDock *m_conductorDock = nullptr;
-  QToolButton *m_dockTrigger = nullptr;
   InferenceService *m_inferenceService = nullptr;
   EditSession *m_editSession = nullptr;
   OverseerSessionManager *m_manager = nullptr;
@@ -82,14 +79,18 @@ private:
   DocumentArea *m_documentArea = nullptr;
   FileWidget *m_fileWidget = nullptr;
 
+  // The conductor board, hosted in the top dock.
+  ConductorBoard *m_conductorBoard = nullptr;
+
+  // The whole bottom interaction surface, hosted in the bottom dock.
+  OverseerBottomPanel *m_bottomPanel = nullptr;
+
   AutoHideDock *m_leftDock = nullptr;
   AutoHideDock *m_rightDock = nullptr;
+  AutoHideDock *m_topDock = nullptr;
+  AutoHideDock *m_bottomDock = nullptr;
 
   QSplitter *m_mainSplitter = nullptr;
-
-  // The vertical splitter that holds the session list above the file
-  // tree in the left dock.  We keep a pointer so updateFileTreeVisibility
-  // can collapse the tree's pane when the tree is hidden.
   QSplitter *m_leftSplitter = nullptr;
 
   QString m_currentSessionName;

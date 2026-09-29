@@ -9,9 +9,9 @@ class DiagramDocument;
 class DiagramToolbar;
 class DiagramView;
 class GraphvizRenderer;
-class QLabel;
-class QSplitter;
+class QScrollArea;
 class QStackedWidget;
+class QTabWidget;
 class QVBoxLayout;
 
 class ConductorBoard : public QWidget {
@@ -24,12 +24,10 @@ public:
   void setRoster(ConductorRoster *roster);
   void setDependencies(DependencyGraph *graph);
 
-  // The session folder used to persist splitter geometry and the
-  // generated kanban export. Empty means do not persist.
   void setSessionFolder(const QString &folder);
 
-signals:
-  void cancelRequested(const QString &requestId);
+  signals:
+    void cancelRequested(const QString &requestId);
   void removeRequested(const QString &requestId);
   void retryRequested(const QString &requestId);
   void skipRequested(const QString &requestId);
@@ -43,19 +41,14 @@ private slots:
   void popDetail();
 
 private:
-  QWidget *buildConductorBoard();
-  QWidget *buildGraphPanel();
+  QWidget *buildKanbanTab();
+  QWidget *buildGraphTab();
   QWidget *buildDetailPanel(const QString &requestId);
-  void rebuildGraphView();
-  void rebuildRosterView();
 
   void renderDependencyGraph();
   QString buildDependencyDot() const;
   QString nodeLabelFor(const QString &requestId) const;
-
-  void loadSplitterState();
-  void saveSplitterState() const;
-  QString splitterStatePath() const;
+  QString workerLabelFor(const QString &workerId) const;
 
   ConductorQueue *m_queue = nullptr;
   ConductorRoster *m_roster = nullptr;
@@ -66,12 +59,9 @@ private:
   QStackedWidget *m_stack = nullptr;
   QWidget *m_conductorBoard = nullptr;
 
-  // Vertical splitter between the dependency graph (top) and the
-  // kanban scroll area (bottom).
-  QSplitter *m_boardSplitter = nullptr;
+  QTabWidget *m_tabs = nullptr;
 
-  QLabel *m_graphLabel = nullptr;
-  QLabel *m_rosterLabel = nullptr;
+  QScrollArea *m_kanbanScroll = nullptr;
 
   QWidget *m_graphPanel = nullptr;
   DiagramView *m_graphView = nullptr;

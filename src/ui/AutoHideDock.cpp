@@ -1,8 +1,10 @@
 #include "AutoHideDock.h"
 
 #include <QCursor>
+#include <QContextMenuEvent>
 #include <QEnterEvent>
 #include <QEvent>
+#include <QMenu>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QResizeEvent>
@@ -12,11 +14,76 @@
 
 #include <algorithm>
 
+namespace {
+bool isHorizontal(AutoHideDock::Edge edge) {
+  return edge == AutoHideDock::Edge::Left ||
+         edge == AutoHideDock::Edge::Right;
+}
+
+bool isLeading(AutoHideDock::Edge edge) {
+  return edge == AutoHideDock::Edge::Left ||
+         edge == AutoHideDock::Edge::Top;
+}
+
+const char *edgeName(AutoHideDock::Edge edge) {
+  switch (edge) {
+  case AutoHideDock::Edge::Left:
+    return "Left";
+  case AutoHideDock::Edge::Right:
+    return "Right";
+  case AutoHideDock::Edge::Top:
+    return "Top";
+  case AutoHideDock::Edge::Bottom:
+    return "Bottom";
+  }
+  return "Left";
+}
+
+// The small widget that lives inside the strip. A short bar whose
+// colour reflects the pin state. Unpinned is the theme's muted text,
+// pinned is the theme's error colour. Purely decorative; the context
+// menu is what actually toggles pin state.
+class ChevronGrip : public QWidget {
+public:
+  explicit ChevronGrip(Qt::Orientation orientation, QWidget *parent = nullptr)
+      : QWidget(parent), m_orientation(orientation) {
+    setAttribute(Qt::WA_TransparentForMouseEvents, true);
+    setFixedSize(m_orientation == Qt::Horizontal ? QSize(4, 28)
+                                                 : QSize(28, 4));
+  }
+
+  void setLocked(bool locked) {
+    if (m_locked == locked)
+      return;
+    m_locked = locked;
+    update();
+  }
+
+protected:
+  void paintEvent(QPaintEvent *) override {
+    QPainter p(this);
+    p.setRenderHint(QPainter::Antialiasing, true);
+
+    QColor c = m_locked ? QColor("#CC79A7") : QColor("#7A96B4");
+
+    p.setPen(Qt::NoPen);
+    p.setBrush(c);
+
+    if (m_orientation == Qt::Horizontal)
+      p.drawRoundedRect(rect(), 1, 1);
+    else
+      p.drawRoundedRect(rect(), 1, 1);
+  }
+
+private:
+  Qt::Orientation m_orientation;
+  bool m_locked = false;
+};
+}
 AutoHideDock::AutoHideDock(Edge edge, const QString &settingsPrefix,
                            QWidget *parent)
     : QWidget(parent), m_edge(edge), m_settingsPrefix(settingsPrefix) {
-  setObjectName(edge == Edge::Left ? QStringLiteral("autoHideDockLeft")
-                                   : QStringLiteral("autoHideDockRight"));
+  setObjectName(QStringLiteral("autoHideDock%1").arg(QLatin1String(edgeName(edge))));
 
   setAttribute(Qt::WA_StyledBackground, true);
   setMouseTracking(true);
@@ -28,88 +95,125 @@ AutoHideDock::AutoHideDock(Edge edge, const QString &settingsPrefix,
   m_hideTimer->setInterval(kDefaultHideDelayMs);
 
   connect(m_hideTimer, &QTimer::timeout, this, [this]() {
-    if (m_pinned)
+    if (m_pin != Pin::None)
       return;
 
     if (mouseIsOverDock() || mouseIsOverStrip())
       return;
 
-    // If the user is currently dragging the handle, do not collapse.
     if (m_resizing)
       return;
 
     hideDock();
   });
 
-  // The strip is only shown when the dock is collapsed. When the dock
-  // is expanded, the drag handle is drawn directly on the dock body.
   m_strip = new QWidget(this);
   m_strip->setObjectName(
-      m_edge == Edge::Left ? QStringLiteral("autoHideStripLeft")
-                           : QStringLiteral("autoHideStripRight"));
+      QStringLiteral("autoHideStrip%1").arg(QLatin1String(edgeName(edge))));
   m_strip->setAttribute(Qt::WA_StyledBackground, true);
   m_strip->setMouseTracking(true);
+  m_strip->setCursor(Qt::PointingHandCursor);
+  m_strip->setContextMenuPolicy(Qt::CustomContextMenu);
   m_strip->installEventFilter(this);
 
-  m_stripChevron = new QWidget(m_strip);
+  m_stripChevron = new ChevronGrip(orientation(), m_strip);
   m_stripChevron->setObjectName(QStringLiteral("autoHideStripGrip"));
-  m_stripChevron->setAttribute(Qt::WA_StyledBackground, true);
-  m_stripChevron->setAttribute(Qt::WA_TransparentForMouseEvents, true);
-  m_stripChevron->setFixedSize(4, 28);
 
   auto *stripLayout = new QVBoxLayout(m_strip);
   stripLayout->setContentsMargins(0, 0, 0, 0);
   stripLayout->setSpacing(0);
   stripLayout->addStretch(1);
-  stripLayout->addWidget(m_stripChevron, 0, Qt::AlignHCenter);
+  stripLayout->addWidget(m_stripChevron, 0, Qt::AlignCenter);
   stripLayout->addStretch(1);
 
+  connect(m_strip, &QWidget::customContextMenuRequested, this,
+          [this](const QPoint &pos) {
+            showStripContextMenu(m_strip->mapToGlobal(pos));
+          });
+
+  connect(this, &AutoHideDock::pinChanged, this,
+          [this](Pin) { refreshStripVisuals(); });
+
   updateStripGeometry();
+  refreshStripVisuals();
   m_strip->setVisible(!m_expanded);
 }
 
-QString AutoHideDock::widthSettingsKey() const {
+Qt::Orientation AutoHideDock::orientation() const {
+  return isHorizontal(m_edge) ? Qt::Horizontal : Qt::Vertical;
+}
+
+QString AutoHideDock::lengthSettingsKey() const {
   return m_settingsPrefix +
-         (m_edge == Edge::Left ? QStringLiteral("/widthLeft")
-                               : QStringLiteral("/widthRight"));
+         QStringLiteral("/length%1").arg(QLatin1String(edgeName(m_edge)));
 }
 
 QString AutoHideDock::overrideSettingsKey() const {
   return m_settingsPrefix +
-         (m_edge == Edge::Left ? QStringLiteral("/widthOverrideLeft")
-                               : QStringLiteral("/widthOverrideRight"));
+         QStringLiteral("/lengthOverride%1").arg(QLatin1String(edgeName(m_edge)));
+}
+
+QString AutoHideDock::pinSettingsKey() const {
+  return m_settingsPrefix +
+         QStringLiteral("/pin%1").arg(QLatin1String(edgeName(m_edge)));
 }
 
 QString AutoHideDock::expandedSettingsKey() const {
   return m_settingsPrefix +
-         (m_edge == Edge::Left ? QStringLiteral("/expandedLeft")
-                               : QStringLiteral("/expandedRight"));
+         QStringLiteral("/expanded%1").arg(QLatin1String(edgeName(m_edge)));
 }
 
 void AutoHideDock::loadPersistedState() {
   QSettings settings;
 
-  int stored = settings.value(widthSettingsKey(), 0).toInt();
+  int stored = settings.value(lengthSettingsKey(), 0).toInt();
 
   if (stored <= 0)
     stored = 280;
 
-  m_dockWidth = std::clamp(stored, MinDockWidth, m_maxDockWidth);
+  m_dockLength = std::clamp(stored, MinDockLength, m_maxDockLength);
 
-  m_userOverrideWidth =
+  m_userOverrideLength =
       settings.value(overrideSettingsKey(), false).toBool();
+
+  const int pinInt = settings.value(pinSettingsKey(), 0).toInt();
+
+  switch (pinInt) {
+  case 1:
+    m_pin = Pin::Open;
+    break;
+  case 2:
+    m_pin = Pin::Closed;
+    break;
+  default:
+    m_pin = Pin::None;
+    break;
+  }
 
   m_expanded = settings.value(expandedSettingsKey(), true).toBool();
 }
 
-void AutoHideDock::persistWidth() {
+void AutoHideDock::persistLength() {
   QSettings settings;
-  settings.setValue(widthSettingsKey(), m_dockWidth);
+  settings.setValue(lengthSettingsKey(), m_dockLength);
 }
 
 void AutoHideDock::persistOverride() {
   QSettings settings;
-  settings.setValue(overrideSettingsKey(), m_userOverrideWidth);
+  settings.setValue(overrideSettingsKey(), m_userOverrideLength);
+}
+
+void AutoHideDock::persistPin() {
+  QSettings settings;
+
+  int value = 0;
+
+  if (m_pin == Pin::Open)
+    value = 1;
+  else if (m_pin == Pin::Closed)
+    value = 2;
+
+  settings.setValue(pinSettingsKey(), value);
 }
 
 void AutoHideDock::persistExpanded() {
@@ -117,81 +221,69 @@ void AutoHideDock::persistExpanded() {
   settings.setValue(expandedSettingsKey(), m_expanded);
 }
 
-void AutoHideDock::setMaxDockWidth(int width) {
-  int clamped = std::max(MinDockWidth, width);
+void AutoHideDock::setMaxDockLength(int length) {
+  int clamped = std::max(MinDockLength, length);
 
-  // Once the natural width is established it is also the ceiling.
-  // No caller may widen the dock past what the content asked for.
-  if (m_naturalWidth > 0)
-    clamped = std::min(clamped, m_naturalWidth);
+  if (m_naturalLength > 0)
+    clamped = std::min(clamped, m_naturalLength);
 
-  if (m_maxDockWidth == clamped)
+  if (m_maxDockLength == clamped)
     return;
 
-  m_maxDockWidth = clamped;
+  m_maxDockLength = clamped;
 
-  if (m_dockWidth > m_maxDockWidth)
-    setDockWidth(m_maxDockWidth);
+  if (m_dockLength > m_maxDockLength)
+    setDockLength(m_maxDockLength);
 }
 
-void AutoHideDock::setDockWidth(int width) {
-  const int clamped = std::clamp(width, MinDockWidth, m_maxDockWidth);
+void AutoHideDock::setDockLength(int length) {
+  const int clamped = std::clamp(length, MinDockLength, m_maxDockLength);
 
-  if (m_dockWidth == clamped)
+  if (m_dockLength == clamped)
     return;
 
-  m_dockWidth = clamped;
+  m_dockLength = clamped;
 
-  persistWidth();
+  persistLength();
 
-  emit dockWidthChanged(m_dockWidth);
+  emit dockLengthChanged(m_dockLength);
 
   if (m_expanded)
     updateGeometry();
 }
 
-void AutoHideDock::setPreferredContentWidth(int width) {
-  if (width <= 0) {
-    m_preferredContentWidth = 0;
+void AutoHideDock::setPreferredContentLength(int length) {
+  if (length <= 0) {
+    m_preferredContentLength = 0;
     return;
   }
 
-  m_preferredContentWidth = width;
+  m_preferredContentLength = length;
 }
 
-void AutoHideDock::fitToContentWidth() {
-  if (m_userOverrideWidth)
+void AutoHideDock::fitToContentLength() {
+  if (m_userOverrideLength)
     return;
 
-  if (m_preferredContentWidth <= 0)
+  if (m_preferredContentLength <= 0)
     return;
 
-  // Re-derive the natural width from the current content
-  // measurement. The tree's reported width is not monotonic (it
-  // grows when a subtree is expanded and shrinks when the widest
-  // entry is removed or renamed), so a one-shot latch pins the dock
-  // to whichever measurement happened to arrive first — usually the
-  // fully-expanded one from expandAllAndMeasure().
-  m_naturalWidth = m_preferredContentWidth;
+  m_naturalLength = m_preferredContentLength;
 
-  setMaxDockWidth(m_naturalWidth);
-  setDockWidth(m_naturalWidth);
+  setMaxDockLength(m_naturalLength);
+  setDockLength(m_naturalLength);
 }
 
-void AutoHideDock::clearUserOverrideWidth() {
-  if (!m_userOverrideWidth)
+void AutoHideDock::clearUserOverrideLength() {
+  if (!m_userOverrideLength)
     return;
 
-  m_userOverrideWidth = false;
-
-  // Forget the latched natural width so the next fit re-derives it
-  // from the current content measurement instead of re-applying a
-  // stale value.
-  m_naturalWidth = 0;
+  m_userOverrideLength = false;
+  m_naturalLength = 0;
 
   persistOverride();
 
-  fitToContentWidth();
+  fitToContentLength();
 }
 
 void AutoHideDock::setContent(QWidget *content) {
@@ -215,29 +307,36 @@ void AutoHideDock::setContent(QWidget *content) {
   }
 
   updateStripGeometry();
+
+  if (m_strip)
+    m_strip->raise();
 }
 
-void AutoHideDock::setPinned(bool pinned) {
-  if (m_pinned == pinned)
+void AutoHideDock::setPin(Pin pin) {
+  if (m_pin == pin)
     return;
 
-  m_pinned = pinned;
+  m_pin = pin;
 
-  emit pinnedChanged(pinned);
+  persistPin();
 
-  if (m_pinned) {
+  emit pinChanged(m_pin);
+
+  if (m_pin == Pin::Open) {
     cancelHide();
-    showDock();
+    showDockImmediate();
   } else {
-    if (!mouseIsOverDock() && !mouseIsOverStrip())
-      scheduleHide();
+    hideDockImmediate();
   }
-}
 
-void AutoHideDock::togglePinned() { setPinned(!m_pinned); }
+  refreshStripVisuals();
+}
 
 void AutoHideDock::showDock() {
   if (m_expanded)
+    return;
+
+  if (m_pin == Pin::Closed)
     return;
 
   m_expanded = true;
@@ -256,7 +355,7 @@ void AutoHideDock::hideDock() {
   if (!m_expanded)
     return;
 
-  if (m_pinned)
+  if (m_pin == Pin::Open)
     return;
 
   m_expanded = false;
@@ -278,6 +377,9 @@ void AutoHideDock::showDockImmediate() {
   if (m_expanded)
     return;
 
+  if (m_pin == Pin::Closed)
+    return;
+
   m_expanded = true;
 
   persistExpanded();
@@ -292,9 +394,6 @@ void AutoHideDock::showDockImmediate() {
 
 void AutoHideDock::hideDockImmediate() {
   if (!m_expanded)
-    return;
-
-  if (m_pinned)
     return;
 
   m_expanded = false;
@@ -313,7 +412,7 @@ void AutoHideDock::hideDockImmediate() {
 }
 
 void AutoHideDock::scheduleHide() {
-  if (m_pinned)
+  if (m_pin != Pin::None)
     return;
 
   m_hideTimer->start();
@@ -353,10 +452,15 @@ bool AutoHideDock::mouseIsOverResizeHandle(const QPoint &localPos) const {
   if (!m_expanded)
     return false;
 
-  if (m_edge == Edge::Left) {
-    return localPos.x() >= width() - ResizeHandleWidth;
+  const bool leading = isLeading(m_edge);
+
+  if (orientation() == Qt::Horizontal) {
+    return leading ? localPos.x() >= width() - ResizeHandleWidth
+                   : localPos.x() <= ResizeHandleWidth;
   }
-  return localPos.x() <= ResizeHandleWidth;
+
+  return leading ? localPos.y() >= height() - ResizeHandleWidth
+                 : localPos.y() <= ResizeHandleWidth;
 }
 
 void AutoHideDock::enterEvent(QEnterEvent *event) {
@@ -367,7 +471,7 @@ void AutoHideDock::enterEvent(QEnterEvent *event) {
 void AutoHideDock::leaveEvent(QEvent *event) {
   Q_UNUSED(event);
 
-  if (m_pinned)
+  if (m_pin == Pin::Open)
     return;
 
   m_hoveringHandle = false;
@@ -389,14 +493,25 @@ void AutoHideDock::updateContentGeometry() {
 
   const QRect r = rect();
 
-  if (m_edge == Edge::Left) {
-    m_content->setGeometry(r.left(), r.top(),
-                           std::max(0, r.width() - ResizeHandleWidth),
-                           r.height());
+  if (orientation() == Qt::Horizontal) {
+    if (m_edge == Edge::Left) {
+      m_content->setGeometry(r.left(), r.top(),
+                             std::max(0, r.width() - ResizeHandleWidth),
+                             r.height());
+    } else {
+      m_content->setGeometry(r.left() + ResizeHandleWidth, r.top(),
+                             std::max(0, r.width() - ResizeHandleWidth),
+                             r.height());
+    }
+    return;
+  }
+
+  if (m_edge == Edge::Top) {
+    m_content->setGeometry(r.left(), r.top(), r.width(),
+                           std::max(0, r.height() - ResizeHandleWidth));
   } else {
-    m_content->setGeometry(r.left() + ResizeHandleWidth, r.top(),
-                           std::max(0, r.width() - ResizeHandleWidth),
-                           r.height());
+    m_content->setGeometry(r.left(), r.top() + ResizeHandleWidth, r.width(),
+                           std::max(0, r.height() - ResizeHandleWidth));
   }
 }
 
@@ -405,19 +520,22 @@ void AutoHideDock::mouseMoveEvent(QMouseEvent *event) {
     return;
 
   if (m_resizing) {
-    const int globalX = event->globalPosition().toPoint().x();
-    const int delta = globalX - m_resizeStartGlobalX;
+    const int globalPos = (orientation() == Qt::Horizontal)
+                              ? event->globalPosition().toPoint().x()
+                              : event->globalPosition().toPoint().y();
 
-    const int newWidth = (m_edge == Edge::Left)
-                             ? m_resizeStartWidth + delta
-                             : m_resizeStartWidth - delta;
+    const int delta = globalPos - m_resizeStartGlobalPos;
 
-    if (!m_userOverrideWidth) {
-      m_userOverrideWidth = true;
+    const int newLength = isLeading(m_edge)
+                              ? m_resizeStartLength + delta
+                              : m_resizeStartLength - delta;
+
+    if (!m_userOverrideLength) {
+      m_userOverrideLength = true;
       persistOverride();
     }
 
-    setDockWidth(newWidth);
+    setDockLength(newLength);
     return;
   }
 
@@ -450,8 +568,10 @@ void AutoHideDock::mousePressEvent(QMouseEvent *event) {
   cancelHide();
 
   m_resizing = true;
-  m_resizeStartWidth = m_dockWidth;
-  m_resizeStartGlobalX = event->globalPosition().toPoint().x();
+  m_resizeStartLength = m_dockLength;
+  m_resizeStartGlobalPos = (orientation() == Qt::Horizontal)
+                               ? event->globalPosition().toPoint().x()
+                               : event->globalPosition().toPoint().y();
 }
 
 void AutoHideDock::mouseReleaseEvent(QMouseEvent *event) {
@@ -459,9 +579,17 @@ void AutoHideDock::mouseReleaseEvent(QMouseEvent *event) {
 
   if (m_resizing) {
     m_resizing = false;
-    persistWidth();
+    persistLength();
     updateCursor(mapFromGlobal(QCursor::pos()));
   }
+}
+
+void AutoHideDock::contextMenuEvent(QContextMenuEvent *event) {
+  if (!event)
+    return;
+
+  showStripContextMenu(event->globalPos());
+  event->accept();
 }
 
 void AutoHideDock::paintEvent(QPaintEvent *event) {
@@ -470,27 +598,38 @@ void AutoHideDock::paintEvent(QPaintEvent *event) {
   if (!m_expanded)
     return;
 
-  // Draw the resize affordance directly on the dock body. The strip
-  // widget is only present when the dock is collapsed, so we need a
-  // separate visual cue for the expanded state.
   QPainter painter(this);
   painter.setRenderHint(QPainter::Antialiasing, true);
 
-  const int barWidth = 2;
-  const int barHeight = 28;
+  const int barThickness = 2;
+  const int barRun = 28;
 
-  const int x = (m_edge == Edge::Left)
-                    ? width() - (ResizeHandleWidth / 2) - (barWidth / 2)
-                    : (ResizeHandleWidth / 2) - (barWidth / 2);
+  QRect grip;
 
-  const int y = (height() - barHeight) / 2;
+  if (orientation() == Qt::Horizontal) {
+    const int x = (m_edge == Edge::Left)
+                      ? width() - (ResizeHandleWidth / 2) - (barThickness / 2)
+                      : (ResizeHandleWidth / 2) - (barThickness / 2);
+
+    const int y = (height() - barRun) / 2;
+
+    grip = QRect(x, y, barThickness, barRun);
+  } else {
+    const int y = (m_edge == Edge::Top)
+                      ? height() - (ResizeHandleWidth / 2) - (barThickness / 2)
+                      : (ResizeHandleWidth / 2) - (barThickness / 2);
+
+    const int x = (width() - barRun) / 2;
+
+    grip = QRect(x, y, barRun, barThickness);
+  }
 
   QColor colour = palette().color(QPalette::Mid);
   colour.setAlpha(m_hoveringHandle ? 200 : 90);
 
   painter.setPen(Qt::NoPen);
   painter.setBrush(colour);
-  painter.drawRoundedRect(QRect(x, y, barWidth, barHeight), 1, 1);
+  painter.drawRoundedRect(grip, 1, 1);
 }
 
 void AutoHideDock::updateCursor(const QPoint &pos) {
@@ -500,33 +639,125 @@ void AutoHideDock::updateCursor(const QPoint &pos) {
   }
 
   if (mouseIsOverResizeHandle(pos)) {
-    setCursor(Qt::SizeHorCursor);
+    setCursor(orientation() == Qt::Horizontal ? Qt::SizeHorCursor
+                                              : Qt::SizeVerCursor);
   } else {
     unsetCursor();
+  }
+}
+
+void AutoHideDock::refreshStripVisuals() {
+  if (!m_strip)
+    return;
+
+  switch (m_pin) {
+  case Pin::Open:
+    m_strip->setToolTip(tr("Pinned open. Right-click to change."));
+    break;
+  case Pin::Closed:
+    m_strip->setToolTip(tr("Pinned closed. Right-click to change."));
+    break;
+  case Pin::None:
+    m_strip->setToolTip(tr("Click to open, right-click to pin."));
+    break;
+  }
+
+  auto *grip = static_cast<ChevronGrip *>(m_stripChevron);
+
+  if (grip)
+    grip->setLocked(m_pin != Pin::None);
+
+  m_strip->update();
+}
+
+void AutoHideDock::showStripContextMenu(const QPoint &globalPos) {
+  QMenu menu;
+
+  QAction *pinOpen = menu.addAction(tr("Pin open"));
+  pinOpen->setCheckable(true);
+  pinOpen->setChecked(m_pin == Pin::Open);
+
+  QAction *pinClosed = menu.addAction(tr("Pin closed"));
+  pinClosed->setCheckable(true);
+  pinClosed->setChecked(m_pin == Pin::Closed);
+
+  QAction *unpin = menu.addAction(tr("Unpin"));
+  unpin->setCheckable(true);
+  unpin->setChecked(m_pin == Pin::None);
+
+  menu.addSeparator();
+
+  QAction *fit = menu.addAction(tr("Fit to content"));
+  fit->setEnabled(!m_userOverrideLength && m_preferredContentLength > 0);
+
+  QAction *reset = menu.addAction(tr("Reset length"));
+  reset->setEnabled(m_userOverrideLength);
+
+  QAction *chosen = menu.exec(globalPos);
+
+  if (!chosen)
+    return;
+
+  if (chosen == pinOpen) {
+    setPin(Pin::Open);
+    return;
+  }
+
+  if (chosen == pinClosed) {
+    setPin(Pin::Closed);
+    return;
+  }
+
+  if (chosen == unpin) {
+    setPin(Pin::None);
+    return;
+  }
+
+  if (chosen == fit) {
+    fitToContentLength();
+    return;
+  }
+
+  if (chosen == reset) {
+    clearUserOverrideLength();
+    return;
   }
 }
 
 bool AutoHideDock::eventFilter(QObject *watched, QEvent *event) {
   if (watched == m_strip) {
     if (event->type() == QEvent::Enter) {
+      m_hoveringStrip = true;
+      m_strip->update();
+
       cancelHide();
-      showDock();
+
+      if (m_pin != Pin::Closed)
+        showDock();
+
       return false;
     }
 
     if (event->type() == QEvent::Leave) {
-      if (!m_pinned && !mouseIsOverDock())
+      m_hoveringStrip = false;
+      m_strip->update();
+
+      if (m_pin == Pin::None && !mouseIsOverDock())
         scheduleHide();
+
       return false;
     }
   }
 
   if (watched == m_content) {
     if (event->type() == QEvent::LayoutRequest) {
-      const int hint = m_content->sizeHint().width();
+      const int hint = (orientation() == Qt::Horizontal)
+                           ? m_content->sizeHint().width()
+                           : m_content->sizeHint().height();
+
       if (hint > 0) {
-        setPreferredContentWidth(hint);
-        fitToContentWidth();
+        setPreferredContentLength(hint);
+        fitToContentLength();
       }
     }
   }
@@ -538,10 +769,15 @@ void AutoHideDock::updateStripGeometry() {
   if (!m_strip)
     return;
 
-  const int w = StripWidth;
-  const int h = height();
-
-  const int x = (m_edge == Edge::Left) ? 0 : std::max(0, width() - w);
-
-  m_strip->setGeometry(x, 0, w, h);
+  if (orientation() == Qt::Horizontal) {
+    const int w = StripWidth;
+    const int h = height();
+    const int x = (m_edge == Edge::Left) ? 0 : std::max(0, width() - w);
+    m_strip->setGeometry(x, 0, w, h);
+  } else {
+    const int w = width();
+    const int h = StripWidth;
+    const int y = (m_edge == Edge::Top) ? 0 : std::max(0, height() - h);
+    m_strip->setGeometry(0, y, w, h);
+  }
 }

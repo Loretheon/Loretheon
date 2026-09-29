@@ -49,6 +49,29 @@ QString ConductorQueue::enqueueChild(const QString &text,
   return req.id;
 }
 
+QString ConductorQueue::enqueueChild(const QString &text,
+                                     const QString &actionJson,
+                                     const QString &parentId,
+                                     Origin origin) {
+  ConductorRequest req;
+  req.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+  req.text = text;
+  req.actionJson = actionJson;
+  req.queuedAt = QDateTime::currentDateTime();
+  req.state = QStringLiteral("inbox");
+  req.parentId = parentId;
+  req.origin = origin;
+
+  m_requests.append(req);
+
+  save();
+
+  emit requestAdded(req.id);
+
+  return req.id;
+}
+
+
 bool ConductorQueue::remove(const QString &id) {
   for (int i = 0; i < m_requests.size(); ++i) {
     if (m_requests.at(i).id != id)
@@ -317,6 +340,7 @@ void ConductorQueue::load() {
     ConductorRequest req;
     req.id = obj.value(QStringLiteral("id")).toString();
     req.text = obj.value(QStringLiteral("text")).toString();
+    req.actionJson = obj.value(QStringLiteral("actionJson")).toString();
     req.queuedAt = QDateTime::fromString(
         obj.value(QStringLiteral("queuedAt")).toString(), Qt::ISODateWithMs);
     req.state =
@@ -360,6 +384,7 @@ void ConductorQueue::save() {
     QJsonObject obj;
     obj.insert(QStringLiteral("id"), req.id);
     obj.insert(QStringLiteral("text"), req.text);
+    obj.insert(QStringLiteral("actionJson"), req.actionJson);
     obj.insert(QStringLiteral("queuedAt"),
                req.queuedAt.toString(Qt::ISODateWithMs));
     obj.insert(QStringLiteral("state"), req.state);
