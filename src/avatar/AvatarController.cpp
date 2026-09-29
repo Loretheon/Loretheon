@@ -91,6 +91,11 @@ void AvatarController::setSurface(AvatarSurface *surface) {
   m_surface = surface;
 }
 
+void AvatarController::setMeshData(const AvatarMeshData &meshData) {
+  m_meshData = meshData;
+  m_meshDataValid = true;
+}
+
 void AvatarController::setBlinkEnabled(bool enabled) {
   m_blinkEnabled = enabled;
 
@@ -124,14 +129,12 @@ bool AvatarController::loadArchives(const QString &skeletonPath,
   const QString dirPath = normalizeResourcePath(clipDir);
   const QString skelPath = normalizeResourcePath(skeletonPath);
 
-  {
-    QDir dir(dirPath);
+  QDir dir(dirPath);
 
-    if (!dir.exists()) {
-      qWarning() << "[AvatarController] Resource directory does not exist:"
-                 << dirPath;
-      return false;
-    }
+  if (!dir.exists()) {
+    qWarning() << "[AvatarController] Resource directory does not exist:"
+               << dirPath;
+    return false;
   }
 
   {
@@ -179,12 +182,6 @@ bool AvatarController::loadArchives(const QString &skeletonPath,
   m_localTransforms.resize(m_skeleton.num_joints());
   m_modelSpaceMatrices.resize(m_skeleton.num_joints());
 
-  qDebug() << "[AvatarController] Scratch buffers sized to"
-           << m_localTransforms.size() << "transforms and"
-           << m_modelSpaceMatrices.size() << "matrices.";
-
-  QDir dir(dirPath);
-
   const QStringList clipFiles =
       dir.entryList(QStringList{QStringLiteral("*.ozz")},
                     QDir::Files | QDir::Readable, QDir::Name);
@@ -224,11 +221,6 @@ bool AvatarController::loadArchives(const QString &skeletonPath,
 
     qDebug() << "[AvatarController] Loaded clip:" << name
              << "duration:" << animation->duration() << "s";
-  }
-
-  if (m_clips.isEmpty()) {
-    qWarning() << "[AvatarController] No clips loaded.";
-    return false;
   }
 
   qDebug() << "[AvatarController] Archives loaded:"
@@ -353,28 +345,28 @@ void AvatarController::buildMorphData() {
         QString::fromLatin1(name), -1);
   };
 
-  m_blinkLeftIndex = indexOf("Eye_Blink_L");
-  m_blinkRightIndex = indexOf("Eye_Blink_R");
+  m_blinkLeftIndex = indexOf("eyeBlinkLeft");
+  m_blinkRightIndex = indexOf("eyeBlinkRight");
 
-  m_browInnerLeft = indexOf("Brow_Raise_Inner_L");
-  m_browInnerRight = indexOf("Brow_Raise_Inner_R");
-  m_browOuterLeft = indexOf("Brow_Raise_Outer_L");
-  m_browOuterRight = indexOf("Brow_Raise_Outer_R");
-  m_cheekRaiseLeft = indexOf("Cheek_Raise_L");
-  m_cheekRaiseRight = indexOf("Cheek_Raise_R");
-  m_eyeSquintLeft = indexOf("Eye_Squint_L");
-  m_eyeSquintRight = indexOf("Eye_Squint_R");
-  m_mouthSmileLeft = indexOf("Mouth_Smile_L");
-  m_mouthSmileRight = indexOf("Mouth_Smile_R");
+  m_browInnerLeft = indexOf("browInnerUp");
+  m_browInnerRight = indexOf("browInnerUp");
+  m_browOuterLeft = indexOf("browOuterUpLeft");
+  m_browOuterRight = indexOf("browOuterUpRight");
+  m_cheekRaiseLeft = indexOf("cheekSquintLeft");
+  m_cheekRaiseRight = indexOf("cheekSquintRight");
+  m_eyeSquintLeft = indexOf("eyeSquintLeft");
+  m_eyeSquintRight = indexOf("eyeSquintRight");
+  m_mouthSmileLeft = indexOf("mouthSmileLeft");
+  m_mouthSmileRight = indexOf("mouthSmileRight");
 
-  m_gazeLeftL = indexOf("Eye_L_Look_L");
-  m_gazeLeftR = indexOf("Eye_R_Look_L");
-  m_gazeRightL = indexOf("Eye_L_Look_R");
-  m_gazeRightR = indexOf("Eye_R_Look_R");
-  m_gazeUpL = indexOf("Eye_L_Look_Up");
-  m_gazeUpR = indexOf("Eye_R_Look_Up");
-  m_gazeDownL = indexOf("Eye_L_Look_Down");
-  m_gazeDownR = indexOf("Eye_R_Look_Down");
+  m_gazeLeftL = indexOf("eyeLookOutLeft");
+  m_gazeLeftR = indexOf("eyeLookInRight");
+  m_gazeRightL = indexOf("eyeLookInLeft");
+  m_gazeRightR = indexOf("eyeLookOutRight");
+  m_gazeUpL = indexOf("eyeLookUpLeft");
+  m_gazeUpR = indexOf("eyeLookUpRight");
+  m_gazeDownL = indexOf("eyeLookDownLeft");
+  m_gazeDownR = indexOf("eyeLookDownRight");
 
   qDebug() << "[AvatarController] Morph data:"
            << m_meshData.faceMorphNameToIndex.size() << "named targets,"
@@ -388,11 +380,8 @@ void AvatarController::buildMorphData() {
 }
 
 void AvatarController::start() {
-  QString error;
-
-  if (!AvatarMeshLoader::load(QStringLiteral(":/avatar/ccbase/Lore.glb"),
-                              m_meshData, &error)) {
-    qWarning() << "[AvatarController] Mesh load failed:" << error;
+  if (!m_meshDataValid) {
+    qWarning() << "[AvatarController] start() called without mesh data.";
     return;
   }
 
@@ -655,34 +644,22 @@ void AvatarController::updateGaze(int dtMs) {
 
 void AvatarController::updateExpression(int dtMs) {
   constexpr float kRestingSquint = 0.15f;
-  constexpr float kBaseSmile = 0.30f;
+  constexpr float kBaseSmile = 0.0f;
 
-  float browTarget = 0.12f;
-  float cheekTarget = 0.18f;
+  float browTarget = 0.10f;
+  float cheekTarget = 0.10f;
   float squintTarget = kRestingSquint;
   float smileTarget = kBaseSmile;
 
   if (m_speaking) {
-    browTarget = 0.28f;
-    cheekTarget = 0.35f;
-    smileTarget = kBaseSmile + 0.25f;
+    browTarget = 0.15f;
+    cheekTarget = 0.12f;
 
     if (m_lastViseme == QStringLiteral("aa") ||
         m_lastViseme == QStringLiteral("O") ||
         m_lastViseme == QStringLiteral("E")) {
-      browTarget += 0.22f;
-      cheekTarget += 0.30f;
-    }
-
-    if (m_lastViseme == QStringLiteral("I") ||
-        m_lastViseme == QStringLiteral("E")) {
-      cheekTarget += 0.28f;
-      smileTarget += 0.20f;
-    }
-
-    if (m_lastViseme == QStringLiteral("O") ||
-        m_lastViseme == QStringLiteral("U")) {
-      cheekTarget += 0.18f;
+      browTarget += 0.10f;
+      cheekTarget += 0.10f;
     }
 
     if (m_lastViseme == QStringLiteral("SS") ||
@@ -690,25 +667,14 @@ void AvatarController::updateExpression(int dtMs) {
         m_lastViseme == QStringLiteral("PP") ||
         m_lastViseme == QStringLiteral("FF") ||
         m_lastViseme == QStringLiteral("TH")) {
-      squintTarget += 0.12f;
-      browTarget -= 0.04f;
-    }
-
-    if (m_lastViseme == QStringLiteral("RR")) {
-      browTarget += 0.15f;
-    }
-
-    if (m_lastViseme == QStringLiteral("DD") ||
-        m_lastViseme == QStringLiteral("kk") ||
-        m_lastViseme == QStringLiteral("CH")) {
-      browTarget += 0.08f;
+      squintTarget += 0.10f;
     }
   }
 
-  browTarget = qBound(0.0f, browTarget, 0.70f);
-  cheekTarget = qBound(0.0f, cheekTarget, 0.80f);
-  squintTarget = qBound(0.0f, squintTarget, 0.60f);
-  smileTarget = qBound(0.0f, smileTarget, 0.60f);
+  browTarget = qBound(0.0f, browTarget, 0.60f);
+  cheekTarget = qBound(0.0f, cheekTarget, 0.60f);
+  squintTarget = qBound(0.0f, squintTarget, 0.50f);
+  smileTarget = qBound(0.0f, smileTarget, 0.50f);
 
   m_browTarget = browTarget;
   m_cheekTarget = cheekTarget;

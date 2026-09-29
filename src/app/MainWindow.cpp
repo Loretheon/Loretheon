@@ -322,7 +322,7 @@ void MainWindow::buildAssistantShell() {
 
   m_avatar = new AvatarWidget(m_assistantShell);
   m_avatar->applyConfig(kAvatarConfig);
-  m_avatar->setModel(QStringLiteral("qrc:/avatar/ccbase/Lore.glb"));
+  m_avatar->setModel(QStringLiteral("qrc:/avatar/julia/julia.glb"));
 
   m_assistantShell->setAvatar(m_avatar);
 

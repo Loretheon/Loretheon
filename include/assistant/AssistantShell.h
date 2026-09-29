@@ -83,8 +83,6 @@ private slots:
   void onStatusChanged(const QString &status);
 
 private:
-  QPoint m_avatarOffset;
-  bool m_avatarOffsetSaved = false;
   void buildUi();
   QWidget *buildHeader();
   QWidget *buildChatTab();
@@ -98,7 +96,7 @@ private:
   void updateWidget(const QString &nodeId);
   void scrollToBottom();
 
-  void repositionAvatar();
+  void placeAvatarOnce();
   void updateHeroVisibility();
 
   LoreAssistant *m_assistant = nullptr;
@@ -137,6 +135,8 @@ private:
   QString m_activeReplyNode;
 
   bool m_busy = false;
+
+  bool m_avatarPlaced = false;
 
   ThemeTokens m_tokens;
 };

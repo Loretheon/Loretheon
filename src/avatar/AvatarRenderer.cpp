@@ -80,29 +80,35 @@ void main() {
 )";
 
 QVector4D colorForMesh(const QString &name) {
-  if (name == QStringLiteral("CC_Base_Body")) {
+  if (name.contains(QStringLiteral("Head"), Qt::CaseInsensitive)) {
     return QVector4D(0.85f, 0.65f, 0.55f, 1.0f);
   }
-  if (name == QStringLiteral("CC_Base_Eye")) {
+  if (name.contains(QStringLiteral("Eye"), Qt::CaseInsensitive)) {
     return QVector4D(0.35f, 0.45f, 0.55f, 1.0f);
   }
-  if (name == QStringLiteral("CC_Base_EyeOcclusion")) {
-    return QVector4D(0.10f, 0.10f, 0.10f, 1.0f);
-  }
-  if (name == QStringLiteral("CC_Base_TearLine")) {
-    return QVector4D(0.80f, 0.85f, 0.90f, 1.0f);
-  }
-  if (name == QStringLiteral("CC_Base_Tongue")) {
-    return QVector4D(0.85f, 0.40f, 0.40f, 1.0f);
-  }
-  if (name == QStringLiteral("CC_Toon_Teeth_01")) {
+  if (name.contains(QStringLiteral("Teeth"), Qt::CaseInsensitive)) {
     return QVector4D(0.95f, 0.95f, 0.95f, 1.0f);
   }
-  if (name == QStringLiteral("Toon_Eyebrows")) {
+  if (name.contains(QStringLiteral("Tongue"), Qt::CaseInsensitive)) {
+    return QVector4D(0.85f, 0.40f, 0.40f, 1.0f);
+  }
+  if (name.contains(QStringLiteral("Brow"), Qt::CaseInsensitive)) {
     return QVector4D(0.15f, 0.10f, 0.08f, 1.0f);
   }
+  if (name.contains(QStringLiteral("Hair"), Qt::CaseInsensitive)) {
+    return QVector4D(0.20f, 0.15f, 0.10f, 1.0f);
+  }
+  if (name.contains(QStringLiteral("Outfit"), Qt::CaseInsensitive) ||
+      name.contains(QStringLiteral("Bottom"), Qt::CaseInsensitive) ||
+      name.contains(QStringLiteral("Top"), Qt::CaseInsensitive) ||
+      name.contains(QStringLiteral("Footwear"), Qt::CaseInsensitive)) {
+    return QVector4D(1.0f, 1.0f, 1.0f, 1.0f);
+  }
+  if (name.contains(QStringLiteral("Glasses"), Qt::CaseInsensitive)) {
+    return QVector4D(0.10f, 0.10f, 0.10f, 1.0f);
+  }
 
-  return QVector4D(0.5f, 0.5f, 0.5f, 1.0f);
+  return QVector4D(0.75f, 0.65f, 0.55f, 1.0f);
 }
 
 } // namespace
@@ -157,9 +163,7 @@ bool AvatarRenderer::initialize(const AvatarMeshData &meshData) {
     GpuMesh gpuMesh;
     gpuMesh.name = mesh.name;
 
-    const bool isFace = (mesh.name == QStringLiteral("CC_Base_Body"));
-
-    if (!uploadMesh(mesh, gpuMesh, isFace, meshData)) {
+    if (!uploadMesh(mesh, gpuMesh, meshData)) {
       qWarning() << "[AvatarRenderer] Failed to upload mesh" << mesh.name;
       freeGpuData();
       return false;
@@ -340,8 +344,10 @@ bool AvatarRenderer::compileShaders() {
 }
 
 bool AvatarRenderer::uploadMesh(const AvatarMesh &mesh, GpuMesh &out,
-                                bool captureMorphSource,
                                 const AvatarMeshData &meshData) {
+  const bool isFace =
+      mesh.name.contains(QStringLiteral("Head"), Qt::CaseInsensitive);
+
   for (const AvatarPrimitive &prim : mesh.primitives) {
     const int vertexCount = prim.vertexCount();
 
@@ -354,7 +360,7 @@ bool AvatarRenderer::uploadMesh(const AvatarMesh &mesh, GpuMesh &out,
     gpuPrim.materialIndex = prim.materialIndex;
     gpuPrim.vertexCount = vertexCount;
     gpuPrim.morphTargetCount = prim.morphTargetCount();
-    gpuPrim.isFacePrimitive = captureMorphSource;
+    gpuPrim.isFacePrimitive = isFace;
 
     gpuPrim.baseColorTextureIndex = -1;
 
@@ -401,7 +407,7 @@ bool AvatarRenderer::uploadMesh(const AvatarMesh &mesh, GpuMesh &out,
                   static_cast<size_t>(vertexCount) * 3 * sizeof(float));
     }
 
-    if (captureMorphSource) {
+    if (isFace) {
       gpuPrim.basePositions = prim.positions;
 
       gpuPrim.morphDeltas.clear();
@@ -458,7 +464,7 @@ bool AvatarRenderer::uploadMesh(const AvatarMesh &mesh, GpuMesh &out,
     glGenBuffers(1, &gpuPrim.posVbo);
     glBindBuffer(GL_ARRAY_BUFFER, gpuPrim.posVbo);
     glBufferData(GL_ARRAY_BUFFER, positions.size(), positions.constData(),
-                 captureMorphSource ? GL_DYNAMIC_DRAW : GL_STATIC_DRAW);
+                 isFace ? GL_DYNAMIC_DRAW : GL_STATIC_DRAW);
 
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0,

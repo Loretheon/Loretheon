@@ -151,39 +151,15 @@ void AssistantShell::setAvatar(AvatarWidget *avatar) {
   m_avatar->setAttribute(Qt::WA_TranslucentBackground, true);
   m_avatar->setResizable(true);
 
-  QSettings settings;
-  QSize storedSize =
-      settings.value(QStringLiteral("avatar/size"),
-                     m_avatar->defaultSize()).toSize();
-
-  const QSize minSize(120, 180);
-  const QSize maxSize(960, 1440);
-
-  if (storedSize.width() < minSize.width() ||
-      storedSize.height() < minSize.height() ||
-      storedSize.width() > maxSize.width() ||
-      storedSize.height() > maxSize.height()) {
-    storedSize = m_avatar->defaultSize();
-  }
+  const QSize storedSize = m_avatar->defaultSize();
 
   m_avatar->resize(storedSize);
   m_avatar->show();
   m_avatar->raise();
 
-  connect(m_avatar, &AvatarWidget::geometryChanged, this,
-          [this]() {
-            if (!m_avatar) {
-              return;
-            }
+  m_avatarPlaced = false;
 
-            m_avatarOffset = m_avatar->bottomRightOffset();
-            m_avatarOffsetSaved = true;
-
-            QSettings s;
-            s.setValue(QStringLiteral("avatar/size"), m_avatar->size());
-          });
-
-  repositionAvatar();
+  placeAvatarOnce();
 }
 
 void AssistantShell::buildUi() {
@@ -432,17 +408,19 @@ QString AssistantShell::beginUserMessage(const QString &text) {
 
 void AssistantShell::showEvent(QShowEvent *event) {
   QWidget::showEvent(event);
-  repositionAvatar();
+  placeAvatarOnce();
   focusPrompt();
 }
 
 void AssistantShell::resizeEvent(QResizeEvent *event) {
   QWidget::resizeEvent(event);
-  repositionAvatar();
 }
 
-void AssistantShell::repositionAvatar() {
-  if (!m_avatar) {
+void AssistantShell::placeAvatarOnce() {
+  if (!m_avatar || m_avatarPlaced) {
+    if (m_avatar) {
+      m_avatar->raise();
+    }
     return;
   }
 
@@ -451,7 +429,8 @@ void AssistantShell::repositionAvatar() {
 
   m_avatar->move(x, y);
   m_avatar->raise();
-  m_avatar->update();
+
+  m_avatarPlaced = true;
 }
 
 void AssistantShell::updateHeroVisibility() {

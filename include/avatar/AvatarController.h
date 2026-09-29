@@ -38,6 +38,8 @@ public:
 
   bool attachToScene(QQuickItem *qmlRoot, const QString &nodeName);
 
+  void setMeshData(const AvatarMeshData &meshData);
+
   void start();
   void stop();
 
@@ -106,6 +108,7 @@ private:
   float m_clipDuration = 0.0f;
 
   AvatarMeshData m_meshData;
+  bool m_meshDataValid = false;
 
   QVector<int> m_skinToOzzJoint;
   QVector<QMatrix4x4> m_inverseBindPoses;

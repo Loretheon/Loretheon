@@ -16,17 +16,20 @@
 #include <QSurfaceFormat>
 #include <QOpenGLContext>
 #include <QCursor>
+#include <QWheelEvent>
 
 namespace {
 
-constexpr auto kAvatarMeshPath = ":/avatar/ccbase/Lore.glb";
-constexpr auto kAvatarSkeletonPath = ":/avatar/ccbase/skeleton.ozz";
-constexpr auto kAvatarClipDir = ":/avatar/ccbase";
+constexpr auto kAvatarMeshPath = ":/avatar/julia/julia.glb";
+constexpr auto kAvatarSkeletonPath = ":/avatar/julia/skeleton.ozz";
+constexpr auto kAvatarClipDir = ":/avatar/julia";
 
 constexpr int kCornerBand = 18;
 constexpr int kEdgeBand = 10;
 
 constexpr bool kInteractionEnabled = true;
+
+constexpr double kResizeStepFactor = 0.05;
 
 }
 
@@ -116,6 +119,8 @@ AvatarWidget::AvatarWidget(QWidget *parent) : QQuickWidget(parent) {
             }
 
             surface->setMeshData(meshData);
+
+            m_controller->setMeshData(meshData);
           });
 
   setSource(QUrl(QStringLiteral("qrc:/avatar/AvatarOverlay.qml")));
@@ -141,10 +146,13 @@ void AvatarWidget::onSurfaceReady() {
 
   m_controller->setSurface(surface);
 
-  if (!m_controller->loadArchives(QString::fromLatin1(kAvatarSkeletonPath),
-                                  QString::fromLatin1(kAvatarClipDir))) {
-    qWarning() << "[AvatarWidget] Controller failed to load archives.";
-    return;
+  const bool archivesOk = m_controller->loadArchives(
+      QString::fromLatin1(kAvatarSkeletonPath),
+      QString::fromLatin1(kAvatarClipDir));
+
+  if (!archivesOk) {
+    qWarning() << "[AvatarWidget] Controller failed to load archives;"
+               << "continuing without animations.";
   }
 
   m_controller->start();
@@ -232,7 +240,12 @@ void AvatarWidget::mousePressEvent(QMouseEvent *event) {
   }
 
   const QPoint local = event->position().toPoint();
-  const DragKind kind = bandFor(local);
+  DragKind kind = bandFor(local);
+
+  // Right-button anywhere in the interior drags the widget.
+  if (event->button() == Qt::RightButton && kind == DragKind::None) {
+    kind = DragKind::Move;
+  }
 
   const bool isResize =
       kind == DragKind::ResizeTopLeft || kind == DragKind::ResizeTopRight ||
@@ -348,6 +361,28 @@ void AvatarWidget::mouseDoubleClickEvent(QMouseEvent *event) {
   QQuickWidget::mouseDoubleClickEvent(event);
 }
 
+void AvatarWidget::wheelEvent(QWheelEvent *event) {
+  if (!kInteractionEnabled || !m_resizable) {
+    QQuickWidget::wheelEvent(event);
+    return;
+  }
+
+  const int steps = event->angleDelta().y() / 120;
+
+  if (steps == 0) {
+    QQuickWidget::wheelEvent(event);
+    return;
+  }
+
+  int side = width() + qRound(width() * kResizeStepFactor * steps);
+
+  side = qBound(m_config.minSize.width(), side, m_config.maxSize.width());
+
+  applyResizeToSide(side);
+
+  event->accept();
+}
+
 void AvatarWidget::applyResize(const QPoint &globalDelta) {
   int dx = globalDelta.x();
   int dy = globalDelta.y();
@@ -401,6 +436,17 @@ void AvatarWidget::applyResize(const QPoint &globalDelta) {
   default:
     return;
   }
+
+  setGeometry(QRect(newTopLeft, newSize));
+}
+
+void AvatarWidget::applyResizeToSide(int side) {
+  const QPoint center = pos() + QPoint(width() / 2, height() / 2);
+
+  const QSize newSize(side, side);
+
+  const QPoint newTopLeft =
+      center - QPoint(newSize.width() / 2, newSize.height() / 2);
 
   setGeometry(QRect(newTopLeft, newSize));
 }

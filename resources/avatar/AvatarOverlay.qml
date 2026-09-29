@@ -13,8 +13,6 @@ Item {
 
     readonly property real dragThreshold: 4.0
 
-    readonly property real referenceAspect: 1.0
-
     function setViseme(shape) {
     }
 
@@ -31,10 +29,8 @@ Item {
 
         objectName: "avatarSurface"
 
-        readonly property real aspect: 1.0
-
-        width: Math.min(parent.width, parent.height * aspect)
-        height: width / aspect
+        width: parent.width
+        height: parent.height
         anchors.centerIn: parent
 
         cameraDistance: 2.42
@@ -95,9 +91,7 @@ Item {
             lastX = mouse.x
             lastY = mouse.y
 
-            if (mouse.buttons & (Qt.RightButton | Qt.MiddleButton)) {
-                surface.panBy(dx, dy)
-            } else if (mouse.buttons & Qt.LeftButton) {
+            if (mouse.buttons & Qt.LeftButton) {
                 surface.orbitBy(dx, dy)
             }
         }
@@ -112,12 +106,6 @@ Item {
 
         onDoubleClicked: {
             surface.resetCamera()
-        }
-    }
-
-    WheelHandler {
-        onWheel: (event) => {
-            surface.zoomBy(event.angleDelta.y / 120.0)
         }
     }
 

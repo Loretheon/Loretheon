@@ -51,8 +51,7 @@ private:
 
   bool compileShaders();
   bool uploadMesh(const AvatarMesh &mesh, GpuMesh &out,
-                bool captureMorphSource,
-                const AvatarMeshData &meshData);
+                  const AvatarMeshData &meshData);
   void freeGpuData();
   void uploadSkinBuffer();
   void rebuildFacePositions();

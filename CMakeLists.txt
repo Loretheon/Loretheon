@@ -318,9 +318,8 @@ add_executable(Lore
         include/ai/chat/ChatWidgetEditFlow.h
         resources/themes/resources.qrc
         resources/icons/resources.qrc
-        resources/avatar/vita/resources.qrc
         resources/avatar/resources.qrc
-        resources/avatar/ccbase/resources.qrc
+        resources/avatar/julia/resources.qrc
         src/file/DirectoryExplorerSettings.cpp
         include/file/DirectoryExplorerSettings.h
         src/text/formats/DotSyntaxHighlighter.cpp

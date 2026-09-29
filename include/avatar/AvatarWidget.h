@@ -3,6 +3,7 @@
 #include <QPoint>
 #include <QQuickWidget>
 #include <QSize>
+#include <QWheelEvent>
 
 #include "AvatarConfig.h"
 
@@ -15,6 +16,7 @@ class AvatarWidget : public QQuickWidget {
 public:
   explicit AvatarWidget(QWidget *parent = nullptr);
   ~AvatarWidget() override;
+
   void setSpeaking(bool speaking);
   void applyConfig(const AvatarConfig &config);
 
@@ -33,8 +35,8 @@ public:
   void placeByBottomRightOffset(const QPoint &offset);
   QPoint bottomRightOffset() const;
 
-  signals:
-    void geometryChanged();
+signals:
+  void geometryChanged();
   void modelLoaded();
   void modelFailed(const QString &error);
 
@@ -45,6 +47,7 @@ protected:
   void mouseMoveEvent(QMouseEvent *event) override;
   void mouseReleaseEvent(QMouseEvent *event) override;
   void mouseDoubleClickEvent(QMouseEvent *event) override;
+  void wheelEvent(QWheelEvent *event) override;
 
 private slots:
   void onSurfaceReady();
@@ -63,6 +66,7 @@ private:
 
   DragKind bandFor(const QPoint &localPos) const;
   void applyResize(const QPoint &globalDelta);
+  void applyResizeToSide(int side);
 
   QString m_modelSource;
 
