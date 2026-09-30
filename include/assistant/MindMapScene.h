@@ -85,5 +85,7 @@ private:
 
   QTimer *m_simTimer = nullptr;
   int m_simTicksLeft = 0;
+  int m_lastMaxDisplacement = 0;
   int m_simIteration = 0;
+  int m_settleRun = 0;
 };

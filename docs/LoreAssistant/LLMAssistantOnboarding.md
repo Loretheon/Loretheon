@@ -105,21 +105,47 @@ Facts that never grow — the user's name, a preference, a standing fact — do 
 
 ## The widget
 
-`AssistantWidget` is a top-level window with two tabs: Chat and Mind.
+`AssistantShell` is a single page with a header, two tabs (Chat and Mind), and a composer.
+
+The header is quiet: the name in small letterspaced caps on the left, a short status line, a policy dropdown on the right. The policy dropdown chooses how background results arrive — pasted into the chat, fed into the next turn's prompt, appended to the next user message, or chosen automatically.
+
+The composer is a single rounded input with the speech controls on the left, the message field in the middle, and Send on the right.
+
+An avatar floats in the shell, outside the layout. It is not part of the conversation. Its position and size are the user's: left-drag orbits the camera, right-drag moves the widget, scroll resizes the widget around its centre, resize handles at the corners and edges do the same with a corner-drag. The widget is always square so the render viewport's aspect and the projection's aspect stay in agreement. No position or size is persisted between sessions; the widget starts centred on the shell at its default size every time.
 
 The Chat tab renders the conversation as a tree. A user message is a root node. An assistant reply is a root node. Every job, status, and error the reply produces is a child of that reply node, indented and collapsed by default.
 
-The Mind tab renders the assistant's own files as a nested graph: `identity.md`, `user.md`, `self.md`, and everything under `memories/`. Topics expand to show the facts they contain. The graph is navigated by cursor position, not clicks.
+The Mind tab renders what the assistant knows as a graph. Three hubs sit around a central root:
+
+    Profile     identity.md, user.md, self.md
+    Memory      topics under memories/topics, sessions under
+                memories/sessions
+    Overseer    one node per session in OverseerSessionManager,
+                each carrying the session description
+
+Profile files render as full markdown cards. They use the same renderer as the rest of the application: the node holds a `QTextDocument`, sizes itself from the document's extent, and draws via the document layout. The markdown goes through `setMarkdown`, then through `setHtml` so the theme's stylesheet applies. The card grows as tall as its content needs.
+
+Memory topics expand to show their facts. Each fact is a small node carrying its timestamp header and its text. Sessions render as single-line nodes with their title and first paragraph.
+
+Edges are cubic beziers between parent and child anchors, drawn in the scene's foreground. Cross-links — file-to-file references discovered by scanning `[[...]]` patterns — draw as dashed arcs between peers.
+
+Layout is a force-directed simulation. Every node repels every other; every edge is a spring. The simulation runs on a timer, cools by displacement limiting, and settles. Positions are written to `memories/.mindmap.json` on settle. On subsequent opens the cached positions are loaded and pinned, and only new nodes get a short incremental settle. The graph is spatially stable across sessions: it is a map, not a re-simulation.
+
+Hover focuses a branch — the hovered node's path to the root and its subtree stay bright, everything else dims. Click opens the underlying file, or opens the Overseer session if the node is an Overseer session. Drag any node to pin it in place; the position is written to the cache on release. Drag empty space to pan. Scroll to zoom under the cursor. Right-click shows a small menu: Refresh, Re-layout, Fit to view.
+
+Refresh rebuilds the node set from disk, keeps the pinned positions of nodes that still exist, seeds new nodes near their parents, settles just the new ones, and saves. Re-layout clears all pins, re-seeds from the hub geometry, and runs the full simulation.
+
+The graph reads the assistant root when the tab is opened. It is rebuilt when the Overseer session list changes, when the user asks for a refresh from the context menu, and when `LoreAssistant` signals that the knowledge tree has changed.
 
 ## Single sources of truth
 
 Some values live in exactly one place and must not be duplicated:
 
 - **The camera** lives in the QML scene (`AvatarOverlay.qml`). It is not duplicated in C++.
-- **The avatar widget's size and offset** live in `QSettings`, written on move and resize.
 - **The viseme table** lives in `VisemeTable.cpp`.
 - **The node id for a reply** is created by `LoreAssistant::onLlmDelta` on the first delta and reused for every later delta. The widget obeys the id; it does not create its own.
 - **The session description** is written once at creation and read when choosing a session. It is never rewritten automatically.
+- **The mind map cache** lives in `memories/.mindmap.json`. Node positions are written there on settle, on drag release, and on refresh. They are read on build. Nothing else writes to it.
 
 When a value seems to be wrong in more than one place, the fix is to find the duplication and remove it, not to override at each site.
 
@@ -134,4 +160,3 @@ When a value seems to be wrong in more than one place, the fix is to find the du
 - **Always return full files.** Not negotiable, not conditional on length.
 - **Stop and ask before calling an unseen function.**
 - **Do not silently duplicate a value across layers.**
-

@@ -31,6 +31,7 @@ struct AssistantToolContext {
   ScopeIndex *scopeIndex = nullptr;
   LoreAssistant *assistant = nullptr;
   QString notesRoot;
+  QString root;
 
   QStringList recentActivity;
 };

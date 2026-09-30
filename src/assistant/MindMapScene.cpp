@@ -28,10 +28,15 @@ constexpr qreal kSpringStrength = 0.045;
 constexpr qreal kCenterPull = 0.006;
 constexpr qreal kDamping = 0.72;
 constexpr qreal kMaxDisplacement = 60.0;
-constexpr qreal kSettleEpsilon = 0.6;
+constexpr qreal kSettleEpsilon = 0.4;
 
 constexpr int kFullSimTicks = 320;
 constexpr int kIncrementalTicks = 120;
+constexpr int kSettleChecks = 12;
+
+// The scene rect is a very large fixed rectangle, so the pan area is
+// effectively unbounded and does not shrink or grow as nodes move.
+constexpr qreal kInfiniteExtent = 100000.0;
 
 QString readFile(const QString &path) {
   QFile file(path);
@@ -151,6 +156,9 @@ QString hubCacheId(const QString &name) {
 MindMapScene::MindMapScene(QObject *parent) : QGraphicsScene(parent) {
   setBackgroundBrush(Qt::NoBrush);
 
+  setSceneRect(-kInfiniteExtent, -kInfiniteExtent,
+               kInfiniteExtent * 2.0, kInfiniteExtent * 2.0);
+
   m_simTimer = new QTimer(this);
   m_simTimer->setInterval(16);
   connect(m_simTimer, &QTimer::timeout, this,
@@ -194,8 +202,6 @@ void MindMapScene::build() {
   m_root->setCacheId(QStringLiteral("root"));
   addToScene(m_root);
 
-  // ---- Profile hub ----
-
   auto *profileHub = new MindMapNode(MindMapNode::Kind::Hub,
                                      QStringLiteral("Profile"));
   profileHub->setCacheId(hubCacheId(QStringLiteral("Profile")));
@@ -216,8 +222,6 @@ void MindMapScene::build() {
                                       readFile(userPath)));
   profileHub->addChild(addProfileFile(QStringLiteral("Self"), selfPath,
                                       readFile(selfPath)));
-
-  // ---- Memory hub ----
 
   auto *memoryHub = new MindMapNode(MindMapNode::Kind::Hub,
                                     QStringLiteral("Memory"));
@@ -263,8 +267,6 @@ void MindMapScene::build() {
     }
   }
 
-  // ---- Overseer hub ----
-
   auto *overseerHub = new MindMapNode(MindMapNode::Kind::Hub,
                                       QStringLiteral("Overseer"));
   overseerHub->setCacheId(hubCacheId(QStringLiteral("Overseer")));
@@ -296,14 +298,10 @@ void MindMapScene::build() {
     startSimulation(kFullSimTicks);
   }
 
-  setSceneRect(itemsBoundingRect().adjusted(-160, -160, 160, 160));
-
   emit contentChanged();
 }
 
 void MindMapScene::refresh() {
-  // Snapshot positions so we can restore them after the full rebuild.
-
   QHash<QString, QPointF> savedPositions;
 
   for (MindMapNode *node : std::as_const(m_allNodes)) {
@@ -350,8 +348,6 @@ void MindMapScene::refresh() {
     saveLayout();
   }
 
-  setSceneRect(itemsBoundingRect().adjusted(-160, -160, 160, 160));
-
   emit contentChanged();
 }
 
@@ -391,7 +387,8 @@ MindMapNode *MindMapScene::addMemoryTopic(const QString &path) {
   const QString title =
       firstHeading(body, QFileInfo(path).completeBaseName());
 
-  auto *node = new MindMapNode(MindMapNode::Kind::MemoryTopic, title);
+  auto *node = new MindMapNode(MindMapNode::Kind::MemoryTopic, title,
+                               body.trimmed());
   node->setPath(path);
   node->setCacheId(fileCacheId(path));
 
@@ -421,10 +418,8 @@ MindMapNode *MindMapScene::addMemorySession(const QString &path) {
   const QString title =
       firstHeading(body, QFileInfo(path).completeBaseName());
 
-  const QString detail = firstParagraph(body, 90);
-
-  auto *node =
-      new MindMapNode(MindMapNode::Kind::MemorySession, title, detail);
+  auto *node = new MindMapNode(MindMapNode::Kind::MemorySession, title,
+                               body.trimmed());
   node->setPath(path);
   node->setCacheId(fileCacheId(path));
 
@@ -438,10 +433,6 @@ MindMapNode *MindMapScene::addMemorySession(const QString &path) {
 MindMapNode *MindMapScene::addOverseerSession(const QString &name,
                                               const QString &description) {
   QString detail = description.trimmed();
-
-  if (detail.length() > 90) {
-    detail = detail.left(89) + QStringLiteral("…");
-  }
 
   auto *node = new MindMapNode(MindMapNode::Kind::OverseerSession,
                                name, detail);
@@ -740,6 +731,8 @@ void MindMapScene::startSimulation(int maxTicks) {
 
   m_simTicksLeft = maxTicks;
   m_simIteration = 0;
+  m_lastMaxDisplacement = 0.0;
+  m_settleRun = 0;
 
   for (MindMapNode *node : std::as_const(m_allNodes)) {
     node->setVelocity(QPointF(0.0, 0.0));
@@ -751,7 +744,12 @@ void MindMapScene::startSimulation(int maxTicks) {
 }
 
 void MindMapScene::onSimulationTick() {
-  if (m_simTicksLeft <= 0 || m_allNodes.isEmpty()) {
+  if (m_allNodes.isEmpty()) {
+    m_simTimer->stop();
+    return;
+  }
+
+  if (m_simTicksLeft <= 0) {
     m_simTimer->stop();
     saveLayout();
     return;
@@ -821,6 +819,8 @@ void MindMapScene::onSimulationTick() {
     forces[node] -= node->pos() * kCenterPull;
   }
 
+  qreal maxDisplacementThisTick = 0.0;
+
   for (MindMapNode *node : std::as_const(m_allNodes)) {
     if (node->isPinned()) {
       continue;
@@ -838,6 +838,9 @@ void MindMapScene::onSimulationTick() {
 
     node->setVelocity(velocity);
 
+    maxDisplacementThisTick =
+        qMax(maxDisplacementThisTick, speed);
+
     if (speed < kSettleEpsilon * 0.1) {
       continue;
     }
@@ -845,9 +848,23 @@ void MindMapScene::onSimulationTick() {
     node->setPos(node->pos() + velocity);
   }
 
+  m_lastMaxDisplacement = maxDisplacementThisTick;
+
   --m_simTicksLeft;
 
-  setSceneRect(itemsBoundingRect().adjusted(-160, -160, 160, 160));
+  if (m_lastMaxDisplacement < kSettleEpsilon) {
+    ++m_settleRun;
+
+    if (m_settleRun >= kSettleChecks) {
+      m_simTimer->stop();
+      m_simTicksLeft = 0;
+      m_settleRun = 0;
+      saveLayout();
+      return;
+    }
+  } else {
+    m_settleRun = 0;
+  }
 }
 
 void MindMapScene::focusOn(MindMapNode *node) {

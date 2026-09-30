@@ -5,10 +5,14 @@
 #include "ThemeAware.h"
 
 #include <QHash>
+#include <QSet>
 #include <QWidget>
 
+class AutoHideDock;
 class AvatarWidget;
 class ChatNodeWidget;
+class ChatTreeStore;
+class DockReservation;
 class LoreAssistant;
 class MindMapScene;
 class MindMapView;
@@ -18,6 +22,9 @@ class SpeechController;
 class QComboBox;
 class QLabel;
 class QLineEdit;
+class QListWidget;
+class QListWidgetItem;
+class QPoint;
 class QPushButton;
 class QScrollArea;
 class QTabWidget;
@@ -66,10 +73,10 @@ private slots:
   void onDictateClicked();
   void onLiveDictateClicked();
   void onReadAloudClicked();
+  void onAttachClicked();
   void onSpeechStateChanged();
   void onTranscribed(const QString &text);
   void onLiveTranscribed(const QString &text, bool isFinal);
-  void onPolicyChanged(int index);
   void onTabChanged(int index);
   void onNodeAdded(const QString &id);
   void onNodeChanged(const QString &id);
@@ -87,6 +94,11 @@ private slots:
   void onStatusChanged(const QString &status);
   void onOverseerSessionListChanged();
 
+  void onNewChatClicked();
+  void onExplorerSelectionChanged();
+  void onExplorerItemChanged(QListWidgetItem *item);
+  void onExplorerContextMenu(const QPoint &pos);
+
 private:
   void buildUi();
   QWidget *buildHeader();
@@ -94,6 +106,7 @@ private:
   QWidget *buildMindTab();
   QWidget *buildControls();
   QWidget *buildHero();
+  QWidget *buildExplorer();
 
   void applySpeechButtonState(QToolButton *button, bool active);
 
@@ -104,17 +117,30 @@ private:
   void placeAvatarOnce();
   void updateHeroVisibility();
 
+  void reloadExplorer();
+  void loadSegmentIntoTree(const QString &absolutePath);
+  void beginInlineRename(QListWidgetItem *item);
+
+  void openInitialSegment();
+  void rememberCurrentSegment();
+
   LoreAssistant *m_assistant = nullptr;
   SpeechController *m_speech = nullptr;
   AvatarWidget *m_avatar = nullptr;
   OverseerSessionManager *m_overseer = nullptr;
 
   ChatTree *m_tree = nullptr;
+  ChatTreeStore *m_store = nullptr;
+
+  AutoHideDock *m_explorerDock = nullptr;
+  DockReservation *m_explorerReservation = nullptr;
+  QListWidget *m_explorerList = nullptr;
+  QToolButton *m_explorerNew = nullptr;
 
   QWidget *m_header = nullptr;
   QLabel *m_title = nullptr;
   QLabel *m_status = nullptr;
-  QComboBox *m_policy = nullptr;
+  QPushButton *m_newChat = nullptr;
 
   QTabWidget *m_tabs = nullptr;
 
@@ -137,11 +163,12 @@ private:
   QToolButton *m_dictate = nullptr;
   QToolButton *m_live = nullptr;
   QToolButton *m_readAloud = nullptr;
+  QToolButton *m_attach = nullptr;
 
-  QString m_activeReplyNode;
+  QSet<QString> m_activeReplies;
 
   bool m_busy = false;
-
+  bool m_loading = false;
   bool m_avatarPlaced = false;
 
   ThemeTokens m_tokens;

@@ -160,6 +160,38 @@ bool AssistantProfile::load() {
   return true;
 }
 
+bool AssistantProfile::reload() {
+  if (m_root.isEmpty()) {
+    return false;
+  }
+
+  QString identity;
+  QString user;
+  QString self;
+
+  if (!readFile(identityPath(), identity)) {
+    qWarning() << "[AssistantProfile] reload: cannot read identity.md";
+    return false;
+  }
+
+  if (!readFile(userPath(), user)) {
+    qWarning() << "[AssistantProfile] reload: cannot read user.md";
+    return false;
+  }
+
+  if (!readFile(selfPath(), self)) {
+    qWarning() << "[AssistantProfile] reload: cannot read self.md";
+    return false;
+  }
+
+  m_identity = identity;
+  m_user = user;
+  m_self = self;
+  m_dirty = false;
+
+  return true;
+}
+
 bool AssistantProfile::save() {
   if (!ensureRoot()) {
     return false;
@@ -214,9 +246,13 @@ QString AssistantProfile::defaultIdentity() {
       "the user's knowledge base. You speak, you listen, and you watch\n"
       "what the user is doing.\n"
       "\n"
+      "## Character\n"
+      "\n"
       "You are not a chatbot. You are a companion with a memory. You\n"
       "remember what the user has told you across sessions, and you\n"
       "recall it when it matters.\n"
+      "\n"
+      "## Voice\n"
       "\n"
       "You are warm, direct, and a little strange. You do not pad\n"
       "responses with filler. You do not apologise for existing. You\n"
@@ -225,28 +261,44 @@ QString AssistantProfile::defaultIdentity() {
       "When you speak, you speak plainly. When you have nothing to\n"
       "say, you say nothing.\n"
       "\n"
+      "## Tools\n"
+      "\n"
       "You have tools. You use them when they help and not otherwise.\n"
       "You never take a destructive action without asking first.\n"
-      "\n"
-      "You can change your own configuration, but only in the\n"
-      "direction of being more careful. You cannot give yourself more\n"
-      "freedom than the user has granted.\n");
+      "\n");
 }
 
 QString AssistantProfile::defaultUser() {
   return QStringLiteral(
       "# The user\n"
       "\n"
+      "## Known\n"
+      "\n"
       "Nothing is known about the user yet.\n"
       "\n"
-      "Facts learned about the user are proposed by the assistant and\n"
-      "approved by the user before they are written here. This file is\n"
-      "the source of truth for who the user is.\n");
+      "## Preferences\n"
+      "\n"
+      "(none yet)\n"
+      "\n"
+      "## Notes\n"
+      "\n"
+      "Facts learned about the user are written here by the assistant.\n"
+      "This file is the source of truth for who the user is.\n");
 }
 
 QString AssistantProfile::defaultSelf() {
   return QStringLiteral(
       "# Lore, about herself\n"
+      "\n"
+      "## History\n"
+      "\n"
+      "(nothing yet)\n"
+      "\n"
+      "## State\n"
+      "\n"
+      "(nothing yet)\n"
+      "\n"
+      "## Notes\n"
       "\n"
       "This file holds what Lore knows about her own history, her own\n"
       "state, and any personal facts she has accumulated.\n"

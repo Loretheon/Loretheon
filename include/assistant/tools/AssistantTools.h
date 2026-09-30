@@ -6,8 +6,8 @@ namespace assistant {
 class AssistantToolRegistry;
 
 // The tools Lore uses. She does not implement anything herself: she
-// dispatches into the surfaces that already exist, and remembers
-// facts when the user tells her something durable.
+// dispatches into the surfaces that already exist, and edits her own
+// files through the scoped-edit pipeline.
 //
 //   search        — runs a query through the user's notes and returns
 //                   the synthesised answer. Runs on the assistant's
@@ -18,8 +18,16 @@ class AssistantToolRegistry;
 //                   reports back when it is done. The assistant does
 //                   not wait.
 //
-//   remember_fact — writes a durable fact to the user profile, the
-//                   self profile, or the memory tree.
+//   edit_profile  — runs a scoped edit against one of the assistant's
+//                   own files: identity.md, user.md, self.md, or a
+//                   topic file under memories/topics/. Returns a job
+//                   id. No user review.
+//
+//   read_paste    — reads the full text of a large paste the user
+//                   dropped into the composer. Pastes are never sent
+//                   inline; the message carries a placeholder with the
+//                   paste id, and this tool fetches the body on
+//                   demand.
 //
 //   speak         — speaks a line through the user's speakers.
 
@@ -34,11 +42,21 @@ public:
                  const AssistantToolContext &context) const override;
 };
 
-class RememberFactTool : public AssistantTool {
+class EditProfileTool : public AssistantTool {
 public:
-  QString name() const override { return QStringLiteral("remember_fact"); }
+  QString name() const override { return QStringLiteral("edit_profile"); }
   QString description() const override;
-  QString category() const override { return QStringLiteral("memory"); }
+  QString category() const override { return QStringLiteral("write"); }
+  QJsonObject parametersSchema() const override;
+  Result execute(const QJsonObject &arguments,
+                 const AssistantToolContext &context) const override;
+};
+
+class ReadPasteTool : public AssistantTool {
+public:
+  QString name() const override { return QStringLiteral("read_paste"); }
+  QString description() const override;
+  QString category() const override { return QStringLiteral("read"); }
   QJsonObject parametersSchema() const override;
   Result execute(const QJsonObject &arguments,
                  const AssistantToolContext &context) const override;

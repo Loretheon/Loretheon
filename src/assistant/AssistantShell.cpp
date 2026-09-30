@@ -2,19 +2,29 @@
 
 #include "../../include/app/theme/ThemeRegistry.h"
 #include "../../include/assistant/ChatNodeWidget.h"
+#include "../../include/assistant/ChatTreeStore.h"
 #include "../../include/assistant/MindMapScene.h"
 #include "../../include/assistant/MindMapView.h"
 #include "../../include/avatar/AvatarWidget.h"
 #include "../../include/overseer/OverseerSessionManager.h"
+#include "../../include/ui/AutoHideDock.h"
+#include "../../include/ui/DockReservation.h"
 #include "../../include/voice/SpeechController.h"
 
 #include <QComboBox>
+#include <QFileDialog>
+#include <QFileInfo>
 #include <QFrame>
 #include <QGuiApplication>
 #include <QHBoxLayout>
+#include <QInputDialog>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
+#include <QListWidget>
+#include <QMenu>
+#include <QMessageBox>
+#include <QPoint>
 #include <QPushButton>
 #include <QResizeEvent>
 #include <QScrollArea>
@@ -29,14 +39,27 @@
 
 namespace {
 
-constexpr auto kPolicyKey = "assistant/completionPolicy";
+constexpr auto kLastChatKey = "assistant/lastChatPath";
 
 constexpr int kShellMargin = 32;
 constexpr int kHeaderSpacing = 16;
 
+constexpr int kExplorerEntryRole = Qt::UserRole + 1;
+
+constexpr int kExplorerWidth = 280;
+
 bool isTopLevelNode(ChatNode::Kind kind) {
   return kind == ChatNode::Kind::UserText ||
-         kind == ChatNode::Kind::AssistantText;
+         kind == ChatNode::Kind::AssistantText ||
+         kind == ChatNode::Kind::Status ||
+         kind == ChatNode::Kind::Error;
+}
+
+bool isHeaderItem(const QListWidgetItem *item) {
+  if (!item)
+    return false;
+
+  return item->data(Qt::UserRole).toString() == QStringLiteral("__header__");
 }
 
 } // namespace
@@ -50,6 +73,7 @@ AssistantShell::AssistantShell(QWidget *parent) : QWidget(parent) {
       ThemeRegistry::instance().activeTheme());
 
   m_tree = new ChatTree(this);
+  m_store = new ChatTreeStore(this);
 
   connect(m_tree, &ChatTree::nodeAdded, this,
           &AssistantShell::onNodeAdded);
@@ -79,24 +103,6 @@ void AssistantShell::setAssistant(LoreAssistant *assistant) {
     return;
   }
 
-  QSettings settings;
-  const int stored =
-      settings.value(kPolicyKey,
-                     static_cast<int>(LoreAssistant::CompletionPolicy::Automatic))
-          .toInt();
-
-  if (m_policy) {
-    const int index = m_policy->findData(stored);
-    if (index >= 0) {
-      m_policy->blockSignals(true);
-      m_policy->setCurrentIndex(index);
-      m_policy->blockSignals(false);
-    }
-  }
-
-  m_assistant->setCompletionPolicy(
-      static_cast<LoreAssistant::CompletionPolicy>(stored));
-
   connect(m_assistant, &LoreAssistant::assistantReplyStarted, this,
           &AssistantShell::onAssistantReplyStarted);
   connect(m_assistant, &LoreAssistant::assistantChunk, this,
@@ -115,6 +121,86 @@ void AssistantShell::setAssistant(LoreAssistant *assistant) {
           &AssistantShell::onStatusMessage);
   connect(m_assistant, &LoreAssistant::statusChanged, this,
           &AssistantShell::onStatusChanged);
+  connect(m_assistant, &LoreAssistant::knowledgeChanged, this,
+          &AssistantShell::refreshMindMap);
+
+  if (m_mindView) {
+    m_mindView->setAssistant(m_assistant);
+  }
+
+  if (m_store) {
+    m_store->setRoot(m_assistant->rootPath());
+
+    openInitialSegment();
+
+    reloadExplorer();
+    updateHeroVisibility();
+  }
+}
+
+void AssistantShell::openInitialSegment() {
+  if (!m_store || !m_tree) {
+    return;
+  }
+
+  QSettings settings;
+  const QString remembered = settings.value(kLastChatKey).toString();
+
+  if (!remembered.isEmpty() && QFileInfo::exists(remembered)) {
+    if (m_store->openSegment(remembered)) {
+      m_loading = true;
+      m_store->load(m_tree);
+      m_loading = false;
+
+      if (m_assistant) {
+        m_assistant->setCurrentChat(m_tree);
+      }
+
+      return;
+    }
+  }
+
+  const QVector<ChatTreeStore::Entry> entries = m_store->listSegments();
+
+  if (!entries.isEmpty()) {
+    const QString newest = entries.first().absolutePath;
+
+    if (m_store->openSegment(newest)) {
+      m_loading = true;
+      m_store->load(m_tree);
+      m_loading = false;
+
+      if (m_assistant) {
+        m_assistant->setCurrentChat(m_tree);
+      }
+
+      rememberCurrentSegment();
+      return;
+    }
+  }
+
+  m_store->beginNewSegment();
+
+  if (m_assistant) {
+    m_assistant->setCurrentChat(m_tree);
+  }
+
+  rememberCurrentSegment();
+}
+
+void AssistantShell::rememberCurrentSegment() {
+  if (!m_store) {
+    return;
+  }
+
+  const QString path = m_store->currentPath();
+
+  if (path.isEmpty()) {
+    return;
+  }
+
+  QSettings settings;
+  settings.setValue(kLastChatKey, path);
 }
 
 void AssistantShell::setSpeechController(SpeechController *speech) {
@@ -181,23 +267,94 @@ void AssistantShell::setAvatar(AvatarWidget *avatar) {
 }
 
 void AssistantShell::buildUi() {
-  auto *root = new QVBoxLayout(this);
-  root->setContentsMargins(kShellMargin, 24, kShellMargin, kShellMargin);
-  root->setSpacing(kHeaderSpacing);
+  auto *root = new QHBoxLayout(this);
+  root->setContentsMargins(0, 0, 0, 0);
+  root->setSpacing(0);
 
-  root->addWidget(buildHeader(), 0);
+  m_explorerDock = new AutoHideDock(AutoHideDock::Edge::Left,
+                                    QStringLiteral("assistant/explorer"),
+                                    this);
 
-  m_tabs = new QTabWidget(this);
+  m_explorerDock->setContent(buildExplorer());
+  m_explorerDock->setPreferredContentLength(kExplorerWidth);
+
+  m_explorerReservation = new DockReservation(m_explorerDock, this);
+
+  root->addWidget(m_explorerReservation, 0);
+
+  auto *mainColumn = new QWidget(this);
+  auto *column = new QVBoxLayout(mainColumn);
+  column->setContentsMargins(kShellMargin, 24, kShellMargin, kShellMargin);
+  column->setSpacing(kHeaderSpacing);
+
+  column->addWidget(buildHeader(), 0);
+
+  m_tabs = new QTabWidget(mainColumn);
   m_tabs->setObjectName(QStringLiteral("assistantShellTabs"));
   m_tabs->setDocumentMode(true);
   m_tabs->addTab(buildChatTab(), tr("Chat"));
   m_tabs->addTab(buildMindTab(), tr("Mind"));
 
-  root->addWidget(m_tabs, 1);
-  root->addWidget(buildControls(), 0);
+  column->addWidget(m_tabs, 1);
+  column->addWidget(buildControls(), 0);
+
+  root->addWidget(mainColumn, 1);
 
   connect(m_tabs, &QTabWidget::currentChanged, this,
           &AssistantShell::onTabChanged);
+}
+
+QWidget *AssistantShell::buildExplorer() {
+  auto *panel = new QWidget;
+
+  auto *layout = new QVBoxLayout(panel);
+  layout->setContentsMargins(8, 8, 8, 8);
+  layout->setSpacing(6);
+
+  auto *headingRow = new QWidget(panel);
+  auto *headingLayout = new QHBoxLayout(headingRow);
+  headingLayout->setContentsMargins(0, 0, 0, 0);
+  headingLayout->setSpacing(4);
+
+  auto *heading = new QLabel(tr("Chats"), headingRow);
+  heading->setObjectName(QStringLiteral("assistantExplorerHeading"));
+
+  m_explorerNew = new QToolButton(headingRow);
+  m_explorerNew->setObjectName(QStringLiteral("assistantExplorerNew"));
+  m_explorerNew->setText(QStringLiteral("+"));
+  m_explorerNew->setToolTip(tr("New chat"));
+  m_explorerNew->setCursor(Qt::PointingHandCursor);
+  m_explorerNew->setFocusPolicy(Qt::NoFocus);
+  m_explorerNew->setAutoRaise(true);
+  m_explorerNew->setFixedSize(22, 22);
+
+  headingLayout->addWidget(heading, 1);
+  headingLayout->addWidget(m_explorerNew, 0);
+
+  m_explorerList = new QListWidget(panel);
+  m_explorerList->setObjectName(QStringLiteral("assistantExplorerList"));
+  m_explorerList->setFrameShape(QFrame::NoFrame);
+  m_explorerList->setSelectionMode(QAbstractItemView::SingleSelection);
+  m_explorerList->setUniformItemSizes(false);
+  m_explorerList->setEditTriggers(QAbstractItemView::NoEditTriggers);
+  m_explorerList->setContextMenuPolicy(Qt::CustomContextMenu);
+  m_explorerList->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+  m_explorerList->setWordWrap(true);
+  m_explorerList->setTextElideMode(Qt::ElideRight);
+
+  layout->addWidget(headingRow, 0);
+  layout->addWidget(m_explorerList, 1);
+
+  connect(m_explorerNew, &QToolButton::clicked, this,
+          &AssistantShell::onNewChatClicked);
+  connect(m_explorerList, &QListWidget::itemSelectionChanged, this,
+          &AssistantShell::onExplorerSelectionChanged);
+  connect(m_explorerList, &QListWidget::itemChanged, this,
+          &AssistantShell::onExplorerItemChanged);
+  connect(m_explorerList, &QListWidget::customContextMenuRequested, this,
+          &AssistantShell::onExplorerContextMenu);
+
+  return panel;
 }
 
 QWidget *AssistantShell::buildHeader() {
@@ -220,21 +377,10 @@ QWidget *AssistantShell::buildHeader() {
   m_status->setObjectName(QStringLiteral("assistantShellStatus"));
   m_status->setFocusPolicy(Qt::NoFocus);
 
-  m_policy = new QComboBox(m_header);
-  m_policy->setObjectName(QStringLiteral("assistantShellPolicy"));
-  m_policy->setFocusPolicy(Qt::NoFocus);
-  m_policy->addItem(tr("Results: automatic"),
-                    static_cast<int>(
-                        LoreAssistant::CompletionPolicy::Automatic));
-  m_policy->addItem(tr("Results: paste in chat"),
-                    static_cast<int>(
-                        LoreAssistant::CompletionPolicy::PasteInChat));
-  m_policy->addItem(tr("Results: feed to Lore"),
-                    static_cast<int>(
-                        LoreAssistant::CompletionPolicy::FeedToQueue));
-  m_policy->addItem(tr("Results: next message"),
-                    static_cast<int>(
-                        LoreAssistant::CompletionPolicy::AppendToNextUserMessage));
+  m_newChat = new QPushButton(tr("New chat"), m_header);
+  m_newChat->setObjectName(QStringLiteral("assistantShellNewChat"));
+  m_newChat->setCursor(Qt::PointingHandCursor);
+  m_newChat->setFocusPolicy(Qt::NoFocus);
 
   auto *layout = new QHBoxLayout(m_header);
   layout->setContentsMargins(0, 0, 0, 0);
@@ -242,10 +388,10 @@ QWidget *AssistantShell::buildHeader() {
   layout->addWidget(m_title);
   layout->addWidget(m_status);
   layout->addStretch(1);
-  layout->addWidget(m_policy);
+  layout->addWidget(m_newChat);
 
-  connect(m_policy, QOverload<int>::of(&QComboBox::currentIndexChanged),
-          this, &AssistantShell::onPolicyChanged);
+  connect(m_newChat, &QPushButton::clicked, this,
+          &AssistantShell::onNewChatClicked);
 
   return m_header;
 }
@@ -263,7 +409,7 @@ QWidget *AssistantShell::buildChatTab() {
   m_chatHost->setFocusPolicy(Qt::NoFocus);
 
   m_chatLayout = new QVBoxLayout(m_chatHost);
-  m_chatLayout->setContentsMargins(0, 16, 0, 16);
+  m_chatLayout->setContentsMargins(0, 0, 0, 16);
   m_chatLayout->setSpacing(0);
   m_chatLayout->setAlignment(Qt::AlignTop);
 
@@ -369,6 +515,9 @@ QWidget *AssistantShell::buildControls() {
     return button;
   };
 
+  m_attach = makeSpeechButton(QStringLiteral("assistantShellAttach"),
+                              QStringLiteral("+"),
+                              tr("Attach a file to memory."));
   m_dictate = makeSpeechButton(QStringLiteral("assistantShellDictate"),
                                QStringLiteral("●"),
                                tr("Dictate: record once, transcribe, send."));
@@ -404,6 +553,7 @@ QWidget *AssistantShell::buildControls() {
   auto *layout = new QHBoxLayout(m_controls);
   layout->setContentsMargins(8, 8, 8, 8);
   layout->setSpacing(8);
+  layout->addWidget(m_attach);
   layout->addWidget(m_dictate);
   layout->addWidget(m_live);
   layout->addWidget(m_readAloud);
@@ -417,6 +567,8 @@ QWidget *AssistantShell::buildControls() {
           &AssistantShell::onSubmit);
   connect(m_abort, &QPushButton::clicked, this,
           &AssistantShell::onAbortClicked);
+  connect(m_attach, &QToolButton::clicked, this,
+          &AssistantShell::onAttachClicked);
   connect(m_dictate, &QToolButton::clicked, this,
           &AssistantShell::onDictateClicked);
   connect(m_live, &QToolButton::clicked, this,
@@ -475,12 +627,23 @@ void AssistantShell::placeAvatarOnce() {
 }
 
 void AssistantShell::updateHeroVisibility() {
-  if (!m_hero) {
+  if (!m_hero || !m_chatLayout) {
     return;
   }
 
   const bool empty = m_tree && m_tree->roots().isEmpty();
-  m_hero->setVisible(empty);
+
+  if (empty) {
+    if (m_chatLayout->indexOf(m_hero) < 0)
+      m_chatLayout->insertWidget(0, m_hero);
+
+    m_hero->show();
+  } else {
+    if (m_chatLayout->indexOf(m_hero) >= 0)
+      m_chatLayout->removeWidget(m_hero);
+
+    m_hero->hide();
+  }
 }
 
 void AssistantShell::keyPressEvent(QKeyEvent *event) {
@@ -494,7 +657,7 @@ void AssistantShell::keyPressEvent(QKeyEvent *event) {
 }
 
 void AssistantShell::onSubmit() {
-  if (m_busy || !m_input) {
+  if (!m_input) {
     return;
   }
 
@@ -505,8 +668,6 @@ void AssistantShell::onSubmit() {
   }
 
   m_input->clear();
-
-  m_activeReplyNode.clear();
 
   if (m_tree) {
     m_tree->appendText(ChatNode::Kind::UserText, text, QString());
@@ -523,6 +684,38 @@ void AssistantShell::onAbortClicked() {
   if (m_assistant) {
     m_assistant->abortAll();
   }
+}
+
+void AssistantShell::onAttachClicked() {
+  if (!m_assistant) {
+    return;
+  }
+
+  const QString path = QFileDialog::getOpenFileName(
+      this, tr("Attach a file to memory"), QString(),
+      tr("Documents (*.md *.pdf *.html *.htm *.docx *.pptx *.epub);;"
+         "All files (*)"));
+
+  if (path.isEmpty()) {
+    return;
+  }
+
+  bool ok = false;
+
+  const QString suggested =
+      QFileInfo(path).completeBaseName().toLower().simplified().replace(
+          QChar(' '), QChar('-'));
+
+  const QString topic = QInputDialog::getText(
+      this, tr("Attach to memory"),
+      tr("Topic name (used as the file name under memories/topics/):"),
+      QLineEdit::Normal, suggested, &ok);
+
+  if (!ok) {
+    return;
+  }
+
+  m_assistant->importToMemory(path, topic);
 }
 
 void AssistantShell::onDictateClicked() {
@@ -612,20 +805,6 @@ void AssistantShell::onLiveTranscribed(const QString &text, bool isFinal) {
   }
 }
 
-void AssistantShell::onPolicyChanged(int index) {
-  if (!m_assistant || !m_policy) {
-    return;
-  }
-
-  const int value = m_policy->itemData(index).toInt();
-
-  m_assistant->setCompletionPolicy(
-      static_cast<LoreAssistant::CompletionPolicy>(value));
-
-  QSettings settings;
-  settings.setValue(kPolicyKey, value);
-}
-
 void AssistantShell::onTabChanged(int index) {
   if (index != 1) {
     return;
@@ -641,11 +820,9 @@ void AssistantShell::onTabChanged(int index) {
     return;
   }
 
-  if (m_mindScene->assistantRoot() != root) {
-    m_mindScene->setAssistantRoot(root);
-    m_mindScene->build();
-    m_mindView->refresh();
-  }
+  m_mindScene->setAssistantRoot(root);
+  m_mindScene->refresh();
+  m_mindView->refresh();
 }
 
 void AssistantShell::onOverseerSessionListChanged() {
@@ -681,7 +858,9 @@ void AssistantShell::onAssistantReplyStarted(const QString &nodeId) {
 
   m_tree->appendWithId(node, nodeId, QString());
 
-  m_activeReplyNode = nodeId;
+  m_activeReplies.insert(nodeId);
+
+  setBusy(!m_activeReplies.isEmpty());
 }
 
 void AssistantShell::onAssistantChunk(const QString &nodeId,
@@ -691,14 +870,20 @@ void AssistantShell::onAssistantChunk(const QString &nodeId,
   }
 
   m_tree->appendText(nodeId, text);
+
+  updateWidget(nodeId);
 }
 
 void AssistantShell::onAssistantTurnFinished(const QString &nodeId) {
-  Q_UNUSED(nodeId);
+  if (nodeId.isEmpty()) {
+    return;
+  }
 
-  setBusy(false);
+  m_activeReplies.remove(nodeId);
 
-  if (m_input && isVisible()) {
+  setBusy(!m_activeReplies.isEmpty());
+
+  if (m_activeReplies.isEmpty() && m_input && isVisible()) {
     m_input->setFocus(Qt::OtherFocusReason);
   }
 }
@@ -712,10 +897,7 @@ void AssistantShell::onJobCreated(const QString &jobId,
     return;
   }
 
-  const QString parent =
-      nodeId.isEmpty() ? m_activeReplyNode : nodeId;
-
-  m_tree->appendJob(kind, title, detail, jobId, parent);
+  m_tree->appendJob(kind, title, detail, jobId, nodeId);
 }
 
 void AssistantShell::onJobCompleted(const QString &jobId,
@@ -749,7 +931,18 @@ void AssistantShell::onStatusMessage(const QString &text) {
     return;
   }
 
-  m_tree->appendText(ChatNode::Kind::Status, text, m_activeReplyNode);
+  QString parent;
+
+  for (const QString &reply : m_activeReplies) {
+    parent = reply;
+    break;
+  }
+
+  if (parent.isEmpty()) {
+    m_tree->appendText(ChatNode::Kind::Status, text, QString());
+  } else {
+    m_tree->appendText(ChatNode::Kind::Status, text, parent);
+  }
 }
 
 void AssistantShell::onStatusChanged(const QString &status) {
@@ -802,17 +995,15 @@ void AssistantShell::onNodeChanged(const QString &id) {
       if (m_status) {
         m_status->setText(tr("%n job(s) in flight", "", count));
       }
-      if (m_abort) {
-        m_abort->setVisible(true);
-      }
-    } else {
+    } else if (m_activeReplies.isEmpty()) {
       if (m_status) {
         m_status->setText(tr("Idle"));
       }
-      if (m_abort) {
-        m_abort->setVisible(false);
-      }
     }
+  }
+
+  if (!m_loading && m_store) {
+    m_store->save(m_tree);
   }
 }
 
@@ -836,10 +1027,12 @@ void AssistantShell::appendTopLevelWidget(const QString &nodeId) {
 
   connect(widget, &ChatNodeWidget::abortRequested, this,
           [this](const QString &jobId) {
-            if (!m_assistant || jobId.isEmpty()) {
-              if (m_assistant) {
-                m_assistant->abortAll();
-              }
+            if (!m_assistant) {
+              return;
+            }
+
+            if (jobId.isEmpty()) {
+              m_assistant->abortAll();
               return;
             }
 
@@ -882,10 +1075,6 @@ void AssistantShell::scrollToBottom() {
   if (bar) {
     bar->setValue(bar->maximum());
   }
-
-  if (m_input && isVisible()) {
-    m_input->setFocus(Qt::OtherFocusReason);
-  }
 }
 
 void AssistantShell::onTreeCleared() {
@@ -898,7 +1087,8 @@ void AssistantShell::onTreeCleared() {
   }
 
   m_topLevelWidgets.clear();
-  m_activeReplyNode.clear();
+
+  m_activeReplies.clear();
 
   if (m_status) {
     m_status->setText(tr("Idle"));
@@ -913,15 +1103,275 @@ void AssistantShell::onTreeCleared() {
 void AssistantShell::setBusy(bool busy) {
   m_busy = busy;
 
-  if (m_send) {
-    m_send->setEnabled(!busy);
+  if (m_abort) {
+    m_abort->setVisible(busy);
+  }
+}
+
+void AssistantShell::reloadExplorer() {
+  if (!m_explorerList || !m_store) {
+    return;
   }
 
-  if (m_dictate) {
-    m_dictate->setEnabled(!busy);
+  m_explorerList->blockSignals(true);
+  m_explorerList->clear();
+
+  const QVector<ChatTreeStore::Entry> entries = m_store->listSegments();
+
+  QDate lastDate;
+
+  for (const ChatTreeStore::Entry &entry : entries) {
+    if (entry.date != lastDate) {
+      lastDate = entry.date;
+
+      auto *header = new QListWidgetItem(
+          entry.date.toString(QStringLiteral("yyyy-MM-dd")),
+          m_explorerList);
+
+      header->setFlags(Qt::NoItemFlags);
+      header->setData(Qt::UserRole, QStringLiteral("__header__"));
+      header->setData(kExplorerEntryRole, QString());
+
+      QFont headerFont = header->font();
+      headerFont.setPointSizeF(qMax(7.0, headerFont.pointSizeF() - 1.5));
+      headerFont.setCapitalization(QFont::AllUppercase);
+      headerFont.setLetterSpacing(QFont::AbsoluteSpacing, 1.5);
+      headerFont.setWeight(QFont::DemiBold);
+      header->setFont(headerFont);
+
+      header->setForeground(m_tokens.textSubtle);
+      header->setTextAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+      header->setSizeHint(QSize(0, 30));
+    }
+
+    auto *item = new QListWidgetItem(entry.name, m_explorerList);
+    item->setData(kExplorerEntryRole, entry.absolutePath);
+    item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable |
+                   Qt::ItemIsEditable);
+    item->setToolTip(entry.name);
+
+    if (entry.absolutePath == m_store->currentPath()) {
+      item->setSelected(true);
+      m_explorerList->setCurrentItem(item);
+    }
   }
 
-  if (m_live) {
-    m_live->setEnabled(!busy);
+  m_explorerList->blockSignals(false);
+}
+
+void AssistantShell::beginInlineRename(QListWidgetItem *item) {
+  if (!item || !m_explorerList || isHeaderItem(item))
+    return;
+
+  m_explorerList->setCurrentItem(item);
+  m_explorerList->editItem(item);
+}
+
+void AssistantShell::onNewChatClicked() {
+  if (!m_store || !m_tree) {
+    return;
   }
+
+  m_store->save(m_tree);
+
+  m_store->beginNewSegment();
+
+  rememberCurrentSegment();
+
+  m_loading = true;
+  m_tree->clear();
+  m_loading = false;
+
+  if (m_assistant) {
+    m_assistant->setCurrentChat(m_tree);
+  }
+
+  m_activeReplies.clear();
+  setBusy(false);
+
+  reloadExplorer();
+
+  if (m_explorerDock) {
+    m_explorerDock->showDock();
+  }
+
+  if (m_explorerList) {
+    for (int i = 0; i < m_explorerList->count(); ++i) {
+      QListWidgetItem *row = m_explorerList->item(i);
+
+      if (!row || isHeaderItem(row))
+        continue;
+
+      if (row->data(kExplorerEntryRole).toString() == m_store->currentPath()) {
+        beginInlineRename(row);
+        break;
+      }
+    }
+  }
+
+  focusPrompt();
+}
+
+void AssistantShell::onExplorerSelectionChanged() {
+  if (!m_explorerList || !m_store || !m_tree) {
+    return;
+  }
+
+  const QList<QListWidgetItem *> selected = m_explorerList->selectedItems();
+
+  if (selected.isEmpty()) {
+    return;
+  }
+
+  QListWidgetItem *first = selected.first();
+
+  if (isHeaderItem(first))
+    return;
+
+  const QString path = first->data(kExplorerEntryRole).toString();
+
+  if (path.isEmpty())
+    return;
+
+  if (path == m_store->currentPath())
+    return;
+
+  loadSegmentIntoTree(path);
+}
+
+void AssistantShell::loadSegmentIntoTree(const QString &absolutePath) {
+  if (!m_store || !m_tree)
+    return;
+
+  if (!m_store->openSegment(absolutePath))
+    return;
+
+  rememberCurrentSegment();
+
+  m_loading = true;
+  m_store->load(m_tree);
+  m_loading = false;
+
+  if (m_assistant) {
+    m_assistant->setCurrentChat(m_tree);
+  }
+
+  updateHeroVisibility();
+  scrollToBottom();
+}
+
+void AssistantShell::onExplorerItemChanged(QListWidgetItem *item) {
+  if (!item || !m_store || !m_explorerList)
+    return;
+
+  if (isHeaderItem(item))
+    return;
+
+  const QString path = item->data(kExplorerEntryRole).toString();
+
+  if (path.isEmpty())
+    return;
+
+  const QString typed = item->text().trimmed();
+
+  const QString currentName =
+      QFileInfo(path).completeBaseName();
+
+  if (typed.isEmpty() || typed == currentName) {
+    item->setText(currentName);
+    return;
+  }
+
+  const QString newPath = m_store->renameSegment(path, typed);
+
+  if (newPath.isEmpty()) {
+    item->setText(currentName);
+    return;
+  }
+
+  const QString finalName = QFileInfo(newPath).completeBaseName();
+
+  m_explorerList->blockSignals(true);
+  item->setText(finalName);
+  item->setData(kExplorerEntryRole, newPath);
+  m_explorerList->blockSignals(false);
+
+  rememberCurrentSegment();
+}
+
+void AssistantShell::onExplorerContextMenu(const QPoint &pos) {
+  if (!m_explorerList || !m_store || !m_tree)
+    return;
+
+  QListWidgetItem *item = m_explorerList->itemAt(pos);
+
+  if (!item || isHeaderItem(item))
+    return;
+
+  const QString path = item->data(kExplorerEntryRole).toString();
+
+  if (path.isEmpty())
+    return;
+
+  QMenu menu(m_explorerList);
+
+  QAction *rename = menu.addAction(tr("Rename"));
+  QAction *remove = menu.addAction(tr("Delete"));
+
+  QAction *chosen = menu.exec(m_explorerList->viewport()->mapToGlobal(pos));
+
+  if (!chosen)
+    return;
+
+  if (chosen == rename) {
+    beginInlineRename(item);
+    return;
+  }
+
+  if (chosen != remove)
+    return;
+
+  const QString name = QFileInfo(path).completeBaseName();
+
+  const auto reply = QMessageBox::question(
+      this, tr("Delete chat"),
+      tr("Delete \u201c%1\u201d? This cannot be undone.").arg(name),
+      QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+
+  if (reply != QMessageBox::Yes)
+    return;
+
+  const bool wasCurrent = (path == m_store->currentPath());
+
+  if (!m_store->deleteSegment(path))
+    return;
+
+  if (!wasCurrent) {
+    reloadExplorer();
+    return;
+  }
+
+  m_loading = true;
+  m_tree->clear();
+  m_loading = false;
+
+  m_activeReplies.clear();
+  setBusy(false);
+
+  const QVector<ChatTreeStore::Entry> remaining = m_store->listSegments();
+
+  if (remaining.isEmpty()) {
+    m_store->beginNewSegment();
+  } else {
+    loadSegmentIntoTree(remaining.first().absolutePath);
+  }
+
+  if (m_assistant) {
+    m_assistant->setCurrentChat(m_tree);
+  }
+
+  rememberCurrentSegment();
+
+  reloadExplorer();
+  updateHeroVisibility();
 }

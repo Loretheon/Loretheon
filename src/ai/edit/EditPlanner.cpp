@@ -466,14 +466,23 @@ EditPlanner::EditPlanner(InferenceService *inferenceService, QObject *parent)
             if (!m_active)
               return;
 
+            // The stream closed. Either a complete JSON value was
+            // already extracted by processStream and the planner is
+            // mid-transition, or the buffer is incomplete. If the
+            // buffer is incomplete and a retry is available, re-issue
+            // the same request once. Otherwise report the failure.
+            if (retryCurrentRequest())
+              return;
+
             m_active = false;
             disarmWatchdog();
 
             m_payloadLogger.log(
                 QStringLiteral("EDIT_PLAN_STREAM_INCOMPLETE"),
                 QStringLiteral("Received %1 bytes without a complete JSON "
-                               "value.\n\nBuffer:\n%2")
+                               "value after %2 attempt(s).\n\nBuffer:\n%3")
                     .arg(m_streamingResponse.size())
+                    .arg(m_retryCount + 1)
                     .arg(m_streamingResponse));
 
             m_streamingResponse.clear();
@@ -558,6 +567,10 @@ void EditPlanner::startOnDocument(TextDocument *document,
   // Any prior terminal emission belongs to a prior start. Clear it
   // before this run can emit anything.
   m_terminalEmitted = false;
+  m_retryCount = 0;
+  m_lastMessages = QJsonArray();
+  m_lastScopeIds.clear();
+  m_lastSessionId.clear();
 
   if (!m_inferenceService) {
     m_terminalEmitted = true;
@@ -607,7 +620,8 @@ void EditPlanner::startOnDocument(TextDocument *document,
         QStringLiteral(
             "You are planning a whole-file rewrite.\n"
             "\n"
-            "Return exactly one JSON array containing exactly one edit.\n"
+            "Return exactly one JSON object with a single \"edits\" array "
+            "containing exactly one edit.\n"
             "Do not return markdown fences.\n"
             "Do not return explanatory text.\n"
             "\n"
@@ -640,7 +654,7 @@ void EditPlanner::startOnDocument(TextDocument *document,
         QStringLiteral(
             "You are planning edits to a document.\n"
             "\n"
-            "Return exactly one JSON array.\n"
+            "Return exactly one JSON object with a single \"edits\" array.\n"
             "Do not return markdown fences.\n"
             "Do not return explanatory text.\n"
             "\n"
@@ -762,15 +776,65 @@ void EditPlanner::startOnDocument(TextDocument *document,
 
   emit contextScopes(contextScopeIds);
 
+  // Retain everything a retry needs.
+  m_lastMessages = messages;
+  m_lastScopeIds = scopeIds;
+  m_lastTimeoutMs = 120000;
+  m_lastSessionId.clear();
+
+  armWatchdog();
+
+  // The JSON schema is the sole constraint. It is forwarded in both
+  // local and remote mode; llama.cpp converts it to a GBNF grammar
+  // internally on the local path.
+  m_activeToken = m_inferenceService->sendChatRequest(
+      messages, QString(), 0.7, m_lastTimeoutMs,
+      QString(),
+      EditGrammar::jsonResponseFormat(scopeIds),
+      QJsonArray(), m_lastSessionId);
+}
+
+bool EditPlanner::retryCurrentRequest() {
+  if (!m_active)
+    return false;
+
+  if (m_retryCount >= kMaxRetries)
+    return false;
+
+  if (m_lastMessages.isEmpty())
+    return false;
+
+  ++m_retryCount;
+
+  m_payloadLogger.log(
+      QStringLiteral("EDIT_PLAN_RETRY"),
+      QStringLiteral("Attempt %1. Re-issuing the same request.")
+          .arg(m_retryCount + 1));
+
+  // Discard the partial buffer. The retry starts from an empty
+  // stream.
+  m_streamingResponse.clear();
+
+  // Re-arm the watchdog for the retry. The first watchdog was
+  // disarmed by the llmFinished handler before this call.
   armWatchdog();
 
   m_activeToken = m_inferenceService->sendChatRequest(
-      messages, QString(), 0.7, 120000, EditGrammar::gbnf(scopeIds));
+      m_lastMessages, QString(), 0.7, m_lastTimeoutMs,
+      QString(),
+      EditGrammar::jsonResponseFormat(m_lastScopeIds),
+      QJsonArray(), m_lastSessionId);
+
+  return true;
 }
 
 void EditPlanner::abort() {
   m_active = false;
   m_streamingResponse.clear();
+  m_lastMessages = QJsonArray();
+  m_lastScopeIds.clear();
+  m_lastSessionId.clear();
+  m_retryCount = 0;
 
   disarmWatchdog();
 
@@ -913,6 +977,36 @@ bool EditPlanner::takeCompleteJsonValue(QString &buffer, QString &jsonText) {
   return false;
 }
 
+QJsonArray EditPlanner::extractEdits(const QJsonDocument &document,
+                                     QString *error) {
+  if (error)
+    error->clear();
+
+  if (document.isArray())
+    return document.array();
+
+  if (document.isObject()) {
+    const QJsonObject root = document.object();
+
+    const QJsonValue editsValue = root.value(QStringLiteral("edits"));
+
+    if (editsValue.isArray())
+      return editsValue.toArray();
+
+    if (error) {
+      *error =
+          QStringLiteral("The response object has no \"edits\" array.");
+    }
+
+    return {};
+  }
+
+  if (error)
+    *error = QStringLiteral("The response is neither an object nor an array.");
+
+  return {};
+}
+
 void EditPlanner::processStream() {
   if (!m_active)
     return;
@@ -936,7 +1030,7 @@ void EditPlanner::processStream() {
   const QJsonDocument json =
       QJsonDocument::fromJson(jsonText.toUtf8(), &parseError);
 
-  if (parseError.error != QJsonParseError::NoError || !json.isArray()) {
+  if (parseError.error != QJsonParseError::NoError) {
     m_payloadLogger.log(QStringLiteral("EDIT_PLAN_PARSE_ERROR"),
                         QStringLiteral("Error: %1 | Received JSON: %2")
                             .arg(parseError.errorString(), jsonText));
@@ -945,6 +1039,23 @@ void EditPlanner::processStream() {
       m_terminalEmitted = true;
       emit failed(
           QStringLiteral("Invalid edit plan: %1").arg(parseError.errorString()));
+    }
+
+    m_streamingResponse.clear();
+    return;
+  }
+
+  QString shapeError;
+  const QJsonArray items = extractEdits(json, &shapeError);
+
+  if (!shapeError.isEmpty()) {
+    m_payloadLogger.log(QStringLiteral("EDIT_PLAN_SHAPE_ERROR"),
+                        QStringLiteral("Error: %1 | Received JSON: %2")
+                            .arg(shapeError, jsonText));
+
+    if (!m_terminalEmitted) {
+      m_terminalEmitted = true;
+      emit failed(QStringLiteral("Invalid edit plan: %1").arg(shapeError));
     }
 
     m_streamingResponse.clear();
@@ -971,8 +1082,6 @@ void EditPlanner::processStream() {
 
   const QVector<const SectionInfo *> targets =
       resolveRequestedSections(m_userRequest, sections);
-
-  const QJsonArray items = json.array();
 
   QVector<EditCommand> edits;
   edits.reserve(items.size());

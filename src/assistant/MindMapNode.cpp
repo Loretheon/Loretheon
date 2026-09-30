@@ -13,7 +13,7 @@
 namespace {
 
 constexpr qreal kMaxTextWidthRoot = 340.0;
-constexpr qreal kMaxTextWidthProfile = 420.0;
+constexpr qreal kMaxTextWidthProfile = 320.0;
 constexpr qreal kMaxTextWidthNode = 260.0;
 
 QString htmlEscape(const QString &in) {
@@ -38,9 +38,7 @@ MindMapNode::MindMapNode(Kind kind, const QString &title,
   setFlag(QGraphicsItem::ItemIsSelectable, false);
   setFlag(QGraphicsItem::ItemIsMovable, false);
 
-  if (!detail.isEmpty()) {
-    setToolTip(detail);
-  }
+
 }
 
 MindMapNode::~MindMapNode() {
@@ -113,32 +111,15 @@ qreal MindMapNode::preferredContentWidth() const {
 
   maxTextWidth *= scale;
 
-  // Profile files are always full-width. Their body is real markdown
-  // and should wrap at a readable measure, not at the width of
-  // whichever line happens to be longest.
-
-  if (m_kind == Kind::ProfileFile) {
-    return maxTextWidth;
-  }
-
   QFont titleFont;
   titleFont.setPointSizeF((isRoot ? 14.0 : 11.0) * scale);
   titleFont.setBold(isRoot || m_kind == Kind::Hub);
 
-  QFont detailFont;
-  detailFont.setPointSizeF(9.0 * scale);
-
   const QFontMetricsF titleMetrics(titleFont);
-  const QFontMetricsF detailMetrics(detailFont);
 
   const qreal titleWidth = titleMetrics.horizontalAdvance(m_title);
-  const qreal detailWidth =
-      m_detail.isEmpty()
-          ? 0.0
-          : detailMetrics.horizontalAdvance(
-                m_detail.split(QChar('\n')).first());
 
-  qreal natural = qMax(titleWidth, detailWidth);
+  qreal natural = titleWidth;
 
   natural = qMin(natural, maxTextWidth);
   natural = qMax(natural, kMinWidth * scale);
@@ -157,16 +138,11 @@ void MindMapNode::ensureDocument() const {
 
   const qreal contentWidth = preferredContentWidth();
   const qreal titlePt = (isRoot ? 14.0 : 11.0) * scale;
-  const qreal detailPt = 9.0 * scale;
 
   if (!m_document) {
     m_document = new QTextDocument;
     m_document->setDocumentMargin(0);
   }
-
-  // The stylesheet applies to HTML content parsed by setHtml. It does
-  // NOT apply to Markdown parsed by setMarkdown. So the Markdown path
-  // below converts to HTML and re-parses so the stylesheet takes hold.
 
   const QString styleSheet =
       QStringLiteral(
@@ -174,87 +150,34 @@ void MindMapNode::ensureDocument() const {
           "p { margin: 0; padding: 0; }"
           "h1, h2, h3, h4, h5, h6 {"
           "  color: %1;"
-          "  margin-top: 4px;"
-          "  margin-bottom: 4px;"
-          "  font-weight: 600; }"
-          "h1 { font-size: %2pt; }"
-          "h2 { font-size: %2pt; }"
-          "h3 { font-size: %2pt; }"
-          "h4, h5, h6 { font-size: %2pt; }"
-          "ul, ol { margin: 0; padding-left: 18px; }"
-          "li { margin: 0; }"
-          "a { color: %3; text-decoration: none; }"
-          "code {"
-          "  font-family: 'JetBrains Mono','Fira Code','Courier New',"
-          "               monospace;"
-          "  font-size: %4pt; }"
-          "pre {"
-          "  margin: 4px 0;"
-          "  padding: 6px 10px; }"
-          "blockquote {"
-          "  margin-left: 0;"
-          "  margin-right: 0;"
-          "  padding-left: 10px; }"
-          "hr { border: none; border-top: 1px solid %5; margin: 8px 0; }")
-          .arg(colorHex(textColor))
-          .arg(titlePt, 0, 'f', 2)
-          .arg(colorHex(tokens.accent))
-          .arg(detailPt, 0, 'f', 2)
-          .arg(colorHex(tokens.divider));
+          "  margin: 0;"
+          "  padding: 0;"
+          "  font-weight: 600; }")
+          .arg(colorHex(textColor));
 
   m_document->setDefaultStyleSheet(styleSheet);
 
-  if (m_kind == Kind::ProfileFile && !m_detail.isEmpty()) {
-    // Markdown path. Build the composite markdown, parse it, then
-    // re-parse as HTML so the stylesheet applies.
+  // The node shows only the title. The body lives in `detail` and is
+  // surfaced by the hover panel in MindMapView. Facts carry their
+  // text as the title directly and a timestamp as the detail; those
+  // are small, so the fact title is all that matters.
 
-    QString markdown;
-    markdown += QStringLiteral("### ") + m_title;
-    markdown += QStringLiteral("\n\n");
-    markdown += m_detail;
+  QString html;
 
-    m_document->setMarkdown(markdown,
-                            QTextDocument::MarkdownDialectGitHub);
+  const QString weight =
+      (isRoot || m_kind == Kind::Hub) ? QStringLiteral("600")
+                                      : QStringLiteral("400");
 
-    // Re-parse so the stylesheet takes effect. Qt applies the
-    // defaultStyleSheet only to HTML content inserted through
-    // setHtml()/insertHtml(), not to Markdown parsed with
-    // setMarkdown().
+  html += QStringLiteral(
+              "<div style=\"font-size:%1pt;font-weight:%2;"
+              "color:%3;margin:0;padding:0;\">%4</div>")
+              .arg(titlePt, 0, 'f', 2)
+              .arg(weight)
+              .arg(colorHex(textColor))
+              .arg(htmlEscape(m_title)
+                       .replace(QChar('\n'), QStringLiteral("<br/>")));
 
-    m_document->setHtml(m_document->toHtml());
-  } else {
-    QString html;
-
-    const QString weight =
-        (isRoot || m_kind == Kind::Hub) ? QStringLiteral("600")
-                                        : QStringLiteral("400");
-
-    html += QStringLiteral(
-                "<div style=\"font-size:%1pt;font-weight:%2;"
-                "color:%3;margin:0;padding:0;\">%4</div>")
-                .arg(titlePt, 0, 'f', 2)
-                .arg(weight)
-                .arg(colorHex(textColor))
-                .arg(htmlEscape(m_title)
-                         .replace(QChar('\n'), QStringLiteral("<br/>")));
-
-    if (!m_detail.isEmpty()) {
-      html += QStringLiteral("<div style=\"margin-top:%1px;\">")
-                  .arg(3.0 * scale, 0, 'f', 2);
-
-      html += QStringLiteral(
-                  "<div style=\"font-size:%1pt;color:%2;\">%3</div>")
-                  .arg(detailPt, 0, 'f', 2)
-                  .arg(colorHex(textColor))
-                  .arg(htmlEscape(m_detail)
-                           .replace(QChar('\n'),
-                                    QStringLiteral("<br/>")));
-
-      html += QStringLiteral("</div>");
-    }
-
-    m_document->setHtml(html);
-  }
+  m_document->setHtml(html);
 
   m_document->setTextWidth(contentWidth);
 

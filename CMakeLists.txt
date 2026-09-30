@@ -592,6 +592,10 @@ add_executable(Lore
         include/overseer/OverseerBottomPanel.h
         include/assistant/AssistantShell.h
         src/assistant/AssistantShell.cpp
+        include/assistant/ProfileEditJob.h
+        src/assistant/ProfileEditJob.cpp
+        include/assistant/ChatTreeStore.h
+        src/assistant/ChatTreeStore.cpp
 )
 
 add_dependencies(Lore

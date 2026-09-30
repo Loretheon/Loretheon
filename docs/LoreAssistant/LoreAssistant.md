@@ -1,4 +1,4 @@
-# The Assistant
+**The Assistant**
 
 The assistant is a persistent character named Lore. She is not a
 chat panel. She watches what the user does, speaks, listens, and
@@ -10,7 +10,8 @@ She is owned by `LoreAssistant`, which is constructed once by
 `LoreAssistant` has no visible surface of its own. Its screen is
 `AssistantShell`, a full-window page with no window chrome and no
 close control. The shell is the assistant's entire presence: a
-quiet header, a chat view, a mind map, and a composer.
+quiet header, a chat view, a mind map, an explorer for past
+conversations, and a composer.
 
 ## Two shells
 
@@ -38,6 +39,7 @@ keyboard shortcut from the workspace. Nothing else.
 - an `AssistantActivity` — the user's action stream
 - an `AssistantToolRegistry` — the tools she can call
 - a `SpeechAnimator` — the viseme clock that drives the mouth
+- a `ChatTreeStore` — the persistence layer for the conversation
 - a job cache — every background job, keyed by id
 
 `LoreAssistant` owns none of the application objects it is given.
@@ -63,14 +65,16 @@ the note promoter, the scope index, the notes root, and the assistant
 root path. It hands the assistant to `AssistantShell`, hands the
 speech controller to the shell as well, and calls `start()`.
 
-`start()` does five things:
+`start()` does six things:
 
 1. Creates the assistant root directory if it does not exist.
-2. Loads the profile. Missing profile files are created with defaults.
-3. Ensures the memory tree exists. Loads the memory index if there is
+2. Creates the `pastes/` directory under it if it does not exist.
+3. Loads the profile. Missing profile files are created with defaults.
+4. Ensures the memory tree exists. Loads the memory index if there is
    one on disk; if not, builds one.
-4. Installs the tools into the registry.
-5. Starts the activity batch timer.
+5. Sets the chat store root.
+6. Installs the tools into the registry.
+7. Starts the activity batch timer and the turn watchdog.
 
 The greeting is not sent from `start()`. `MainWindow` listens for
 `InferenceService::ttsReady` and speaks the first line when the TTS
@@ -88,6 +92,16 @@ Three small files under the assistant root:
 These are read at startup and on every change. They are put into the
 system prompt verbatim, on every turn. She does not search for them.
 The user can edit them directly, and can ask her to rewrite them.
+The assistant can rewrite them herself through `edit_profile`, with
+no user review. Changes to `identity.md` take effect on the next
+turn, because `ProfileEditJob` reloads the profile when it finishes.
+
+The three files carry markdown headings so the scoped-edit pipeline
+has something to target. `identity.md` has `## Character`,
+`## Voice`, `## Tools`, `## Boundaries`. `user.md` has `## Known`,
+`## Preferences`, `## Notes`. `self.md` has `## History`, `## State`,
+`## Notes`. A file with no headings collapses to a single
+`"document"` scope and can only be edited by whole-file replacement.
 
 ## The memory tree
 
@@ -100,12 +114,18 @@ Two shapes, both under `memories/`:
         one file per topic, appended to across sessions
 
 Recall is semantic. `AssistantMemory::recall` queries the memory
-index and returns the bodies of the top matches. This is what makes
-the assistant remember without being asked.
+index and returns the bodies of the top four matches, injected into
+the system prompt. This is what makes the assistant remember without
+being asked.
 
 Facts that never grow — the user's name, a preference, a standing
 fact — do not go here. They go in the profile, where they are always
 in context. The memory tree is for things that accumulate.
+
+Nothing writes to the memory tree automatically. The only writer is
+`EditProfileTool` with `target=topic`, which starts a scoped-edit job
+against the topic file. The model decides what is durable and where
+it belongs, one tool call at a time.
 
 ## The activity stream
 
@@ -126,10 +146,35 @@ signal. See `docs/Voice.md`.
 
 ## The turn
 
-`handleUserMessage` starts one turn. It builds the messages array —
-the system prompt, the profile, the memory recall, any pending
-background results, and the user's message — and sends it with the
-tool schemas attached.
+`handleUserMessage` starts one turn. Any number of turns may be
+active at once; each has its own token, its own reply node, its own
+messages array, and its own tool-round budget. The user is never
+blocked by an in-flight turn.
+
+Large pastes are extracted before the turn begins. Anything over
+2000 characters is written to `pastes/<id>.txt` under the assistant
+root and replaced in the message with a one-line placeholder:
+
+    [paste: 4821 chars — id a3f19c. Call read_paste("a3f19c") to
+    read it.]
+
+The model reads the body only when it calls `read_paste`. Pastes are
+never indexed and never enter the recent tail.
+
+The messages array is built as:
+
+    system     the profile, the memory recall, the runtime section,
+               and any pending background results
+    recent     the last few user/assistant pairs, as real chat
+               messages, capped at 4000 estimated tokens
+    user       the new message
+
+The recent tail is derived from the loaded chat, not accumulated in
+memory. When the shell loads a segment — at startup, on segment
+switch, on new chat — it calls `LoreAssistant::setCurrentChat(tree)`,
+which walks the tree's roots in order and rebuilds the tail from the
+newest user/assistant pairs that fit the budget. A restart does not
+lose the conversation; the tail is reconstructed from the chat file.
 
 The reply streams back through `llmDelta`. The first delta creates a
 reply node; every subsequent delta appends to the same node. A turn
@@ -142,16 +187,19 @@ the conductor starts the job, records it in the job cache, and
 returns the job id to the model. The model acknowledges and moves on.
 
 `finishTurn` ends the turn. The reply node is not cleared. It is
-cleared when the user sends the next message. That way every delta
-in one exchange, including deltas after a tool round, lands in the
-same node.
+cleared when the user sends the next message or opens a different
+chat. The tail is updated with the completed user/assistant pair.
+
+`abandonTurn` ends a turn that never produced a terminal signal. It
+is driven by a watchdog that runs every five seconds and abandons
+any turn whose request is no longer active in the inference layer.
 
 ## Jobs and the cache
 
 Anything the assistant does that reaches outside the conversation —
-a search, a delegate, a promote — is a job. A job has a stable id,
-a state, and a result. It runs in the background. The conversation
-is not blocked.
+a search, a delegate, a promote, a profile edit — is a job. A job
+has a stable id, a state, and a result. It runs in the background.
+The conversation is not blocked.
 
 The result is stored in `m_jobs` on `LoreAssistant`, keyed by id.
 The model is not told the result automatically. It can call
@@ -159,27 +207,44 @@ The model is not told the result automatically. It can call
 The user can abort the wait with the abort control on the job node
 or with the global abort button.
 
+Jobs render as children of the assistant reply that started them.
+They appear as carousel pages under the reply card, one page per
+job, with dots and arrows to step through them. A job's result
+appears only on its own card. It is not also pasted into the reply
+text.
+
 `abortJob` cancels a single job and marks it `Cancelled`. `abortAll`
-cancels every non-terminal job and aborts the current turn.
+cancels every non-terminal job and abandons every active turn.
 
 ## The shell
 
-`AssistantShell` is a single page, laid out top to bottom:
+`AssistantShell` is a single page, laid out left to right, then top
+to bottom:
 
-    header    Lore              status              policy
+    explorer  a hideable left dock with the list of past chats
+    header    Lore              status              New chat
     tabs      Chat | Mind
     body      chat scroll       | mind map
     composer  dictate live read | input | abort | send
 
+The explorer dock holds every chat file under
+`<assistantRoot>/chats/<YYYY-MM-DD>/<name>.md`, grouped by day. A
+date header is a non-selectable item, styled as a caption rather
+than a chat. Each chat is a selectable, renameable item. A `+` at
+the top of the panel creates a new chat and immediately opens it
+for inline rename. Right-clicking a chat offers Rename and Delete.
+Selecting a chat loads it into the tree and rebuilds the recent
+tail.
+
 The header is quiet: the name in small letterspaced caps on the
-left, a short status line, a policy dropdown on the right. The
-policy dropdown chooses how background results arrive — pasted into
-the chat, fed into the next turn's prompt, appended to the next user
-message, or chosen automatically.
+left, a short status line, and a New chat button on the right.
 
 The tabs switch the body between the chat view and the mind map.
 The composer is a single rounded input with the speech controls on
 the left, the message field in the middle, and Send on the right.
+Send is never disabled by an in-flight turn; the composer only
+greys while the shell is streaming, and the stream does not block
+the input.
 
 A 96-pixel avatar floats in the shell, outside the layout. It is
 not part of the conversation. Its position and its size are the
@@ -201,8 +266,9 @@ card is a `ChatNodeWidget` bound to one `ChatNode` in the tree.
 A user message is a card with a filled background. An assistant
 reply is a card with a lighter background. Job, status, and error
 nodes produced during a reply are children of that reply and appear
-as nested cards under it, opened and closed by a small arrow rail
-on the right.
+as a carousel of pages under the reply body, one page per child,
+with dots and arrows to step through them. The carousel chrome is
+hidden when there is only one page.
 
 The tree is not a document tree. It is a simple parent/child model
 backed by `ChatTree`. A reply can have many children; a child can
@@ -212,6 +278,26 @@ updated in place as its state changes.
 When the tree is empty, a hero block appears at the top of the chat
 with a one-line title and a one-line description. It disappears the
 first time a message is sent.
+
+## The chat files
+
+The conversation is eternal. Each chat is one file under
+`<assistantRoot>/chats/<YYYY-MM-DD>/<name>.md`, where `<name>` is a
+random six-hex identifier on creation and can be renamed by the
+user. The file uses the same block format as the Overseer
+transcript:
+
+    ## <kind> | <ISO8601 with ms> | <json sidecar>
+    <text>
+    <0x1E>
+
+The sidecar carries the node's id, parentId, state, detail, jobId,
+result, error, and child ids. Order in the file is insertion order;
+children are reconstructed from parentId.
+
+A new chat is created only when the user asks for one. There is no
+per-day file and no per-message file. The shell saves the tree after
+every change.
 
 ## The mind map
 
@@ -267,13 +353,30 @@ rebuilt when the Overseer session list changes, when the user asks
 for a refresh from the context menu, and when `LoreAssistant`
 signals that the knowledge tree has changed.
 
+## The tools
+
+- `search` — starts a search job through the assistant's own
+  `RetrievalLoop`. Returns a job id.
+- `read_job` — reads the result of a job by id. Waits if the job is
+  still running.
+- `read_paste` — reads the full text of a paste by id.
+- `delegate` — hands a task to the Overseer conductor. Returns a
+  job id.
+- `promote_note` — copies a file the worker produced into the
+  notes.
+- `list_notes`, `read_note`, `write_note`, `edit_note`,
+  `delete_note` — operate on the user's notes folder.
+- `edit_profile` — runs a scoped edit against `identity.md`,
+  `user.md`, `self.md`, or a topic file. Returns a job id. No user
+  review.
+- `speak` — says something aloud.
+
 ## The prompt
 
-The system prompt is built from the profile, the memory recall, and
-a fixed runtime section. The runtime section explains the tools, the
-job model, the citation convention, and the failure rule. It does not
-hardcode her name or her behaviour. Those come from `identity.md`,
-which the user can rewrite.
+The system prompt is built from the profile, the memory recall, the
+paste convention, the job model, the tool list, and the failure
+rule. It does not hardcode her name or her behaviour. Those come
+from `identity.md`, which the user can rewrite.
 
 ## What is not built yet
 
@@ -287,8 +390,18 @@ sessions, and the Overseer descriptions are all editable as plain
 files, but the graph does not offer an inline editor. Editing a
 node is editing its file through the editor, then refreshing.
 
-The chat tree is lost when the application closes. Only the
-assistant's own summaries survive, in the memory tree. A session
-that wants to reload its chat would need a serializer for
-`ChatTree`, and a place to write it — the natural choice is a sidecar
-next to the session memory file.
+The explorer dock does not watch the chats directory. A file
+renamed or deleted from outside the app will not be reflected until
+the app restarts or a new chat is created.
+
+Pastes are never garbage collected. A paste that is referenced by a
+chat file lives forever, which is correct, but a paste that was
+created by a message that was never sent — a write that succeeded
+and a turn that failed before it went out — is orphaned. A sweep
+that deletes pastes not referenced by any chat file would close
+that hole. It is small and it is not wired.
+
+The chat tree has no cross-chat search. Every chat is an island.
+Searching across chats would mean indexing the chat files, which
+would put them into `recall` alongside the memory tree. That is a
+design decision, not a mechanism, and it has not been made.

@@ -1,4 +1,3 @@
-```markdown
 # Overseer — Technical Overview
 
 ## What it is
@@ -526,4 +525,3 @@ reopen. The one exception is a file under an active scoped edit: while
 a scoped edit is in flight the file's contents are held in memory until
 the plan is applied or cancelled, and a manual edit in that window may
 be overwritten when the plan lands.
-```

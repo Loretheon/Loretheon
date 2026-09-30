@@ -6,7 +6,8 @@
 // Reads and writes the small, curated, human-editable files that make
 // up the assistant's always-in-context knowledge:
 //
-//   identity.md   — who she is. Fixed by the app, editable by the user.
+//   identity.md   — who she is. Fixed by the app, editable by the user
+//                   and by the assistant.
 //   user.md       — what she knows about the user.
 //   self.md       — what she knows about herself and her own history.
 //
@@ -27,6 +28,11 @@ public:
   // Load all three files. Missing files are created with defaults.
   // Returns false only if the directory cannot be created.
   bool load();
+
+  // Re-read all three files from disk, discarding any in-memory
+  // changes. Used after an external editor or a profile edit job has
+  // written the files.
+  bool reload();
 
   // Persist all three files. Creates the directory if needed.
   bool save();

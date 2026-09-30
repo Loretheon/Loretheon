@@ -6,8 +6,10 @@
 
 #include "inference/InferenceService.h"
 
+#include <QJsonArray>
 #include <QObject>
 #include <QString>
+#include <QStringList>
 #include <QTimer>
 #include <QVector>
 
@@ -67,6 +69,19 @@ private:
 
   bool takeCompleteJsonValue(QString &buffer, QString &jsonText);
 
+  // Re-issue the current request with the exact arguments the first
+  // attempt used. Called from the llmFinished path when the stream
+  // closed with an incomplete buffer. Returns false if a retry has
+  // already been used or the planner is no longer active.
+  bool retryCurrentRequest();
+
+  // Given a parsed JSON document from the model, return the edit
+  // array. Accepts either the canonical {"edits":[...]} object or a
+  // bare array, so both remote structured output and any permissive
+  // local endpoint work.
+  static QJsonArray extractEdits(const QJsonDocument &document,
+                                 QString *error);
+
   void armWatchdog();
   void disarmWatchdog();
 
@@ -88,6 +103,15 @@ private:
   bool m_active{false};
 
   InferenceService::RequestToken m_activeToken;
+
+  // Retained so a retry can re-issue the request unchanged.
+  QJsonArray m_lastMessages;
+  QStringList m_lastScopeIds;
+  int m_lastTimeoutMs{120000};
+  QString m_lastSessionId;
+  int m_retryCount{0};
+
+  static constexpr int kMaxRetries = 1;
 
   // Fires if no planValidated and no failed is emitted within
   // m_watchdogMs of startOnDocument. Guards against an LLM layer
