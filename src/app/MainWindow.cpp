@@ -376,6 +376,10 @@ void MainWindow::wireTitleBar() {
   cb.newMarkdown = [this]() { m_documentManager->newMarkdownFile(); };
   cb.newPlantUml = [this]() { m_documentManager->newPlantUmlFile(); };
 
+  cb.newDot     = [this]() { m_documentManager->newDotFile(); };
+  cb.newMermaid = [this]() { m_documentManager->newMermaidFile(); };
+  cb.newHtml    = [this]() { m_documentManager->newHtmlFile(); };
+
   cb.open = [this]() {
     const QString path = QFileDialog::getOpenFileName(
         this, tr("Open File"), QString(), tr("All Files (*)"));
@@ -789,6 +793,9 @@ void MainWindow::buildNormalPage() {
                                                  : QString());
             m_fileWidget->setModifiedPaths(modifiedPaths());
           });
+
+  connect(m_fileWidget, &FileWidget::convertToMermaidRequested,
+        m_documentManager, &DocumentManager::convertToMermaid);
 
   m_chatDock =
       new AutoHideDock(AutoHideDock::Edge::Right,

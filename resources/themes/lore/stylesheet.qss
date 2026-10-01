@@ -1377,3 +1377,4 @@ QLabel#chatNodeCounter {
     background: transparent;
     padding-left: 6px;
 }
+

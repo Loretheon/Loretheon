@@ -16,13 +16,8 @@ class FileWidget : public QWidget {
 public:
   explicit FileWidget(QWidget *parent = nullptr);
 
-  // The embedded tree view.  Exposed so the hosting splitter can clamp
-  // this widget's maximum width to the view's preferred content width.
   FileSystemView *view() const { return fileSystemView; }
 
-  // Forwarded to the view. Lower-case extensions, without the dot, that
-  // the ingest layer can convert. Controls the context menu's "Import…"
-  // entries.
   void setImportableExtensions(const QStringList &extensions);
 
 public slots:
@@ -31,8 +26,8 @@ public slots:
   void setModifiedPaths(const QSet<QString> &paths);
   void setRootPath(const QString &path);
 
-signals:
-  void fileSelected(const QString &path);
+  signals:
+    void fileSelected(const QString &path);
   void renameRequested(const QString &oldPath, const QString &newPath);
   void newNoteRequested(const QString &parentPath);
   void newFolderRequested(const QString &parentPath);
@@ -41,23 +36,16 @@ signals:
   void convertToTextRequested(const QString &path);
   void convertToDotRequested(const QString &path);
   void convertToPlantUmlRequested(const QString &path);
+  void convertToMermaidRequested(const QString &path);
 
-  // Emitted when the user picks "Add to Overseer session" from the tree's
-  // context menu. Contains all selected files (absolute paths).
   void addToOverseerRequested(const QStringList &paths);
 
-  // Emitted when the user picks "Import…" from the tree's context menu.
-  // Carries one source file a registered extractor can handle.
   void importRequested(const QString &path);
 
-  // Emitted when the user picks "Import All…" from the tree's context
-  // menu. Carries every selected source file an extractor can handle.
   void importAllRequested(const QStringList &paths);
 
-  // Emitted when the user picks "Promote to notes" from the tree's
-  // context menu. Contains the absolute paths of every selected file
-  // or folder.
   void promoteToNotesRequested(const QStringList &paths);
+
 
 private:
   FileSystemModel *fileSystemModel = nullptr;

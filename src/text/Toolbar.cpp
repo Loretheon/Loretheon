@@ -26,9 +26,6 @@ static QWidget * createSpacer(QWidget *parent) {
   return spacer;
 }
 
-// Add an action to the toolbar and let its button grow horizontally so the
-// toolbar fills the available width instead of bunching all buttons at the
-// left edge.
 static QAction * addExpandingAction(QToolBar *toolbar, const QIcon &icon,
                                     const QString &text = QString()) {
   QAction *action = toolbar->addAction(icon, text);
@@ -44,15 +41,27 @@ static QAction * addExpandingAction(QToolBar *toolbar, const QIcon &icon,
 }
 
 QIcon Toolbar::createThemedIcon(const QString &symbolName) {
-  // Try system theme first
-  QIcon icon = QIcon::fromTheme(symbolName);
-  if (!icon.isNull()) {
-    return icon;
+  // The AppImage does not carry a system icon theme, so QIcon::fromTheme
+  // returns null for every name on a machine that has no theme installed.
+  // The icons are compiled into the binary through
+  // resources/icons/resources.qrc, so the resource is the canonical
+  // source and the system theme is the fallback for names not yet
+  // bundled.
+
+  const QIcon resource =
+      QIcon(QStringLiteral(":/icons/dark/%1.svg").arg(symbolName));
+
+  if (!resource.isNull() && !resource.availableSizes().isEmpty()) {
+    return resource;
   }
 
-  // Fallback: create a simple colored square based on the symbol name
-  // In production, you'd use proper SVG icons here
-  return QIcon::fromTheme("document-properties");
+  const QIcon themed = QIcon::fromTheme(symbolName);
+
+  if (!themed.isNull()) {
+    return themed;
+  }
+
+  return QIcon(QStringLiteral(":/icons/dark/document-properties.svg"));
 }
 
 Toolbar::Toolbar(QWidget *parent) : QToolBar(parent) {
@@ -62,7 +71,6 @@ Toolbar::Toolbar(QWidget *parent) : QToolBar(parent) {
   layout()->setSpacing(6);
   setupToolbarStyle();
 
-  // Text formatting
   m_boldAction = addExpandingAction(this, createThemedIcon("format-text-bold"));
   m_boldAction->setCheckable(true);
   m_boldAction->setShortcut(Qt::CTRL | Qt::Key_B);
@@ -82,13 +90,12 @@ Toolbar::Toolbar(QWidget *parent) : QToolBar(parent) {
   m_codeSpanAction->setShortcut(Qt::CTRL | Qt::Key_Agrave);
   m_codeSpanAction->setToolTip(tr("Inline Code (Ctrl+`)"));
 
-  m_highlightAction = addExpandingAction(this, createThemedIcon("format-highlight"));
+  m_highlightAction = addExpandingAction(this, createThemedIcon("format-text-highlight"));
   m_highlightAction->setCheckable(true);
   m_highlightAction->setToolTip(tr("Highlight"));
 
   addWidget(createSpacer(this));
 
-  // Links & media
   m_linkAction = addExpandingAction(this, createThemedIcon("insert-link"));
   m_linkAction->setShortcut(Qt::CTRL | Qt::Key_K);
   m_linkAction->setToolTip(tr("Link (Ctrl+K)"));
@@ -107,7 +114,6 @@ Toolbar::Toolbar(QWidget *parent) : QToolBar(parent) {
 
   addWidget(createSpacer(this));
 
-  // Paragraph / heading
   m_headingCombo = new QComboBox(this);
   m_headingCombo->addItem(tr("¶"), 0);
 
@@ -130,7 +136,6 @@ Toolbar::Toolbar(QWidget *parent) : QToolBar(parent) {
 
   addWidget(createSpacer(this));
 
-  // Lists
   m_bulletListAction = addExpandingAction(this, createThemedIcon("format-list-unordered"));
   m_bulletListAction->setCheckable(true);
   m_bulletListAction->setToolTip(tr("Bullet List"));
@@ -148,7 +153,6 @@ Toolbar::Toolbar(QWidget *parent) : QToolBar(parent) {
 
   addWidget(createSpacer(this));
 
-  // Blocks
   m_codeBlockAction = addExpandingAction(this, createThemedIcon("text-x-generic"));
   m_codeBlockAction->setCheckable(true);
   m_codeBlockAction->setToolTip(tr("Code Block"));
@@ -174,7 +178,6 @@ Toolbar::Toolbar(QWidget *parent) : QToolBar(parent) {
 
   addWidget(createSpacer(this));
 
-  // Indentation
   m_decreaseIndentAction = addExpandingAction(this, createThemedIcon("format-indent-less"));
   m_decreaseIndentAction->setShortcut(Qt::SHIFT | Qt::Key_Tab);
   m_decreaseIndentAction->setToolTip(tr("Outdent (Shift+Tab)"));
@@ -185,7 +188,6 @@ Toolbar::Toolbar(QWidget *parent) : QToolBar(parent) {
 
   addWidget(createSpacer(this));
 
-  // Tables
   m_insertTableAction = addExpandingAction(this, createThemedIcon("insert-table"));
   m_insertTableAction->setToolTip(tr("Insert Table"));
 
@@ -215,7 +217,6 @@ Toolbar::Toolbar(QWidget *parent) : QToolBar(parent) {
 
   addWidget(createSpacer(this));
 
-  // Document
   m_footnoteAction = addExpandingAction(this, createThemedIcon("footnote"));
   m_footnoteAction->setToolTip(tr("Footnote"));
 
@@ -230,7 +231,6 @@ Toolbar::Toolbar(QWidget *parent) : QToolBar(parent) {
 
   addWidget(createSpacer(this));
 
-  // View
   m_toggleSourceViewAction = addExpandingAction(this, createThemedIcon("text-x-generic"));
   m_toggleSourceViewAction->setCheckable(true);
   m_toggleSourceViewAction->setShortcut(Qt::CTRL | Qt::SHIFT | Qt::Key_V);

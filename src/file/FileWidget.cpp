@@ -59,9 +59,6 @@ FileWidget::FileWidget(QWidget *parent) : QWidget(parent) {
   fileSystemView->setSortingEnabled(true);
   fileSystemView->sortByColumn(settings.sortColumn(), settings.sortOrder());
 
-  // Scrollbar policy and section resize mode are handled inside
-  // FileSystemView (applyColumnSizing).  Here we only restore the
-  // persisted column order and visibility.
   fileSystemView->header()->setSectionsMovable(true);
 
   const QList<bool> visibility = settings.columnVisibility();
@@ -84,6 +81,9 @@ FileWidget::FileWidget(QWidget *parent) : QWidget(parent) {
 
             emit fileSelected(fileSystemModel->filePath(index));
           });
+
+  connect(fileSystemView, &FileSystemView::openRequested, this,
+          &FileWidget::fileSelected);
 
   connect(fileSystemModel, &FileSystemModel::fileRenamed, this,
           [this](const QString &path, const QString &oldName,
@@ -128,6 +128,8 @@ FileWidget::FileWidget(QWidget *parent) : QWidget(parent) {
           &FileWidget::convertToPlantUmlRequested);
   connect(fileSystemView, &FileSystemView::convertToDotRequested, this,
           &FileWidget::convertToDotRequested);
+  connect(fileSystemView, &FileSystemView::convertToMermaidRequested, this,
+          &FileWidget::convertToMermaidRequested);
 
   connect(fileSystemView, &FileSystemView::addToOverseerRequested, this,
           &FileWidget::addToOverseerRequested);
@@ -137,9 +139,6 @@ FileWidget::FileWidget(QWidget *parent) : QWidget(parent) {
 
   connect(fileSystemView, &FileSystemView::importAllRequested, this,
           &FileWidget::importAllRequested);
-
-  connect(fileSystemView, &FileSystemView::promoteToNotesRequested, this,
-          &FileWidget::promoteToNotesRequested);
 
   auto saveExpanded = [this]() {
     DirectoryExplorerSettings::instance().setExpandedPaths(
@@ -295,14 +294,9 @@ void FileWidget::setRootPath(const QString &path) {
 
   pendingEditPath.clear();
 
-  // Reset the persisted expansion so paths from a previous root don't
-  // keep matching. The tree will re-populate from the new root.
   DirectoryExplorerSettings::instance().setExpandedPaths({});
   DirectoryExplorerSettings::instance().setSelectedPath({});
 
-  // Expand everything under the new root and measure the widest cell
-  // per column. This is what lets the dock jump to a width that shows
-  // every column in full.
   QTimer::singleShot(0, fileSystemView,
                      [this]() { fileSystemView->expandAllAndMeasure(); });
 }

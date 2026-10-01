@@ -606,6 +606,11 @@ void OverseerPage::onSessionCleared() {
 
   updateFileTreeVisibility();
 
+  if (auto *view = m_fileWidget->view()) {
+    view->setPromoteToNotesEnabled(false);
+  }
+
+  
   emit dirtyChanged(false);
 }
 
@@ -641,6 +646,10 @@ void OverseerPage::reloadSession(const QString &name) {
 
   if (m_fileWidget) {
     m_fileWidget->setRootPath(m_currentOutputFolder);
+  }
+
+  if (auto *view = m_fileWidget->view()) {
+    view->setPromoteToNotesEnabled(true);
   }
 
   updateFileTreeVisibility();

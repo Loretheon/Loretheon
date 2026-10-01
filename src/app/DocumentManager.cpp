@@ -16,6 +16,7 @@ constexpr QLatin1StringView TextExtension("txt");
 constexpr QLatin1StringView DotExtension("dot");
 constexpr QLatin1StringView PlantUmlExtension("puml");
 constexpr QLatin1StringView MermaidExtension("mmd");
+constexpr QLatin1StringView HtmlExtension("html");
 constexpr QLatin1StringView UntitledBaseName("Untitled");
 
 QString normalizedExtension(const QString &extension) {
@@ -76,11 +77,6 @@ bool readTextFile(const QString &path, QString &text) {
   return true;
 }
 
-// Extensions that are binary by nature and should never be read as text.
-// Opening them produces garbage and wastes memory. The list is
-// deliberately conservative: it covers archives, executables, object
-// files, and a few common opaque containers. Anything not on the list
-// falls through to the existing text path.
 bool isKnownBinaryExtension(const QString &extension) {
   static const QStringList kBinaryExtensions = {
       QStringLiteral("zip"),  QStringLiteral("tar"),
@@ -117,7 +113,6 @@ void DocumentManager::setCurrentDocument(TextDocument *document) {
     return;
   }
 
-  // Only accept documents that are actually open.
   if (document && !openDocumentsList.contains(document)) {
     return;
   }
@@ -202,7 +197,6 @@ void DocumentManager::unregisterOpenDocument(TextDocument *document) {
     openDocumentsList.removeAt(index);
   }
 
-  // Pick a neighbour to become current if we removed the current one.
   if (wasCurrent) {
     if (openDocumentsList.isEmpty()) {
       current = nullptr;
@@ -294,6 +288,19 @@ void DocumentManager::newPlantUmlFile() {
                  QString::fromLatin1(PlantUmlExtension));
 }
 
+void DocumentManager::newDotFile() {
+  createDocument(DocumentMode::Dot, QString::fromLatin1(DotExtension));
+}
+
+void DocumentManager::newMermaidFile() {
+  createDocument(DocumentMode::Mermaid,
+                 QString::fromLatin1(MermaidExtension));
+}
+
+void DocumentManager::newHtmlFile() {
+  createDocument(DocumentMode::Html, QString::fromLatin1(HtmlExtension));
+}
+
 void DocumentManager::newTextFileIn(const QString &parentPath) {
   createDocumentIn(DocumentMode::PlainText,
                    QString::fromLatin1(TextExtension), parentPath);
@@ -307,6 +314,21 @@ void DocumentManager::newMarkdownFileIn(const QString &parentPath) {
 void DocumentManager::newPlantUmlFileIn(const QString &parentPath) {
   createDocumentIn(DocumentMode::PlantUml,
                    QString::fromLatin1(PlantUmlExtension), parentPath);
+}
+
+void DocumentManager::newDotFileIn(const QString &parentPath) {
+  createDocumentIn(DocumentMode::Dot,
+                   QString::fromLatin1(DotExtension), parentPath);
+}
+
+void DocumentManager::newMermaidFileIn(const QString &parentPath) {
+  createDocumentIn(DocumentMode::Mermaid,
+                   QString::fromLatin1(MermaidExtension), parentPath);
+}
+
+void DocumentManager::newHtmlFileIn(const QString &parentPath) {
+  createDocumentIn(DocumentMode::Html,
+                   QString::fromLatin1(HtmlExtension), parentPath);
 }
 
 void DocumentManager::newFolderIn(const QString &parentPath) {
@@ -327,7 +349,6 @@ void DocumentManager::newFolderIn(const QString &parentPath) {
 }
 
 TextDocument *DocumentManager::openDocumentFromPath(const QString &path) {
-  // If the path is already open, just focus it.
   const QString absolute = QFileInfo(path).absoluteFilePath();
 
   for (TextDocument *document : std::as_const(openDocumentsList)) {
@@ -413,6 +434,7 @@ bool DocumentManager::saveDocument(TextDocument *document) {
 
   return true;
 }
+
 bool DocumentManager::renameFile(const QString &oldPath,
                                  const QString &newPath) {
   if (oldPath == newPath) {
@@ -444,7 +466,6 @@ bool DocumentManager::deleteFile(const QString &path) {
     return false;
   }
 
-  // Close any open tabs whose path matches or is under the deleted path.
   QList<TextDocument *> toClose;
 
   for (TextDocument *document : std::as_const(openDocumentsList)) {
@@ -543,6 +564,11 @@ bool DocumentManager::convertToText(const QString &path) {
 bool DocumentManager::convertToPlantUml(const QString &path) {
   return convertFile(path, QString::fromLatin1(PlantUmlExtension),
                      DocumentMode::PlantUml);
+}
+
+bool DocumentManager::convertToMermaid(const QString &path) {
+  return convertFile(path, QString::fromLatin1(MermaidExtension),
+                     DocumentMode::Mermaid);
 }
 
 void DocumentManager::closeCurrent() { closeDocument(current); }

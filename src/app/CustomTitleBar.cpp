@@ -108,6 +108,18 @@ void CustomTitleBar::buildMenus() {
   connect(newPlantUmlAct, &QAction::triggered, this,
           [this]() { if (m_callbacks.newPlantUml) m_callbacks.newPlantUml(); });
 
+  auto *newDotAct = newMenu->addAction(tr("&Graphviz Diagram"));
+  connect(newDotAct, &QAction::triggered, this,
+          [this]() { if (m_callbacks.newDot) m_callbacks.newDot(); });
+
+  auto *newMermaidAct = newMenu->addAction(tr("&Mermaid Diagram"));
+  connect(newMermaidAct, &QAction::triggered, this,
+          [this]() { if (m_callbacks.newMermaid) m_callbacks.newMermaid(); });
+
+  auto *newHtmlAct = newMenu->addAction(tr("&HTML File"));
+  connect(newHtmlAct, &QAction::triggered, this,
+          [this]() { if (m_callbacks.newHtml) m_callbacks.newHtml(); });
+
   auto *openAct = m_fileMenu->addAction(tr("&Open..."));
   openAct->setShortcuts(QKeySequence::Open);
   connect(openAct, &QAction::triggered, this,

@@ -14,6 +14,8 @@ class TextWidget;
 class EditSession;
 class MediaPane;
 
+class QToolButton;
+
 class DocumentArea : public QStackedWidget {
   Q_OBJECT
 
@@ -50,6 +52,9 @@ private:
   int indexForDocument(TextDocument *document) const;
 
   void wireSessionToEditor(EditSession *session, TextEdit *editor);
+
+  void installTabButtons(TextWidget *page);
+  void syncTabButtons();
 
   DocumentManager *m_manager = nullptr;
   EditSession *m_session = nullptr;

@@ -190,17 +190,10 @@ int FileSystemView::contentWidth(int column) const {
 }
 
 int FileSystemView::scrollbarAllowance() const {
-  // Reserve room for the vertical scrollbar. A visible vertical
-  // scrollbar consumes horizontal space, which is what makes the
-  // "fits exactly, then a horizontal scrollbar appears" bug happen:
-  // without this, the last column's right edge pushes against the
-  // vertical scrollbar's left edge.
   return style()->pixelMetric(QStyle::PM_ScrollBarExtent) + 2;
 }
 
 int FileSystemView::frameAllowance() const {
-  // Reserve room for the viewport frame. On some styles this is 1 px
-  // per side, on others it is zero; add 2 px of slack.
   const int frame = frameWidth();
   return frame > 0 ? frame * 2 : 2;
 }
@@ -293,7 +286,6 @@ QSize FileSystemView::minimumSizeHint() const {
   return QSize(kMinimumViewWidth, QTreeView::minimumSizeHint().height());
 }
 
-// In FileSystemView.cpp:
 int FileSystemView::fullContentWidth() const {
   if (!model())
     return kMinimumViewWidth;
@@ -307,11 +299,6 @@ int FileSystemView::fullContentWidth() const {
 
   int total = 0;
 
-  // Deliberately ignore isColumnHidden() here. The user asked for a
-  // fit-to-content dock; if a column has data in it, the width should
-  // account for that data even when the column is hidden. Hiding a
-  // column is a display preference, not a statement that its content
-  // does not matter.
   for (int col = 0; col < h->count(); ++col) {
     const int headerW = headerWidth(col);
     const int contentW = contentWidth(col);
@@ -331,11 +318,6 @@ int FileSystemView::fullContentWidth() const {
 
 void FileSystemView::expandAllAndMeasure() {
   expandAll();
-
-  // expandAll() schedules a single-shot recalculation via the
-  // expanded() signal, but it fires on the next event-loop turn, after
-  // the caller has already read our width. Do the recalculation now so
-  // the caller sees a fully-measured value.
   recalculateColumnWidths();
 }
 
@@ -347,10 +329,6 @@ void FileSystemView::showEvent(QShowEvent *event) {
 
   m_firstShowDone = true;
 
-  // On first show the tree has its real geometry, so scrollbar and
-  // icon metrics are correct. Force a full measurement so the host
-  // dock sizes correctly even if no rows were inserted after
-  // construction.
   scheduleColumnWidthRecalculation();
 }
 
@@ -372,6 +350,10 @@ void FileSystemView::setImportableExtensions(const QStringList &extensions) {
 
 QStringList FileSystemView::importableExtensions() const {
   return m_importableExtensions;
+}
+
+void FileSystemView::setPromoteToNotesEnabled(bool enabled) {
+  m_promoteToNotesEnabled = enabled;
 }
 
 bool FileSystemView::isImportablePath(const QString &path) const {
@@ -406,6 +388,18 @@ void FileSystemView::closeEditor(QWidget *editor,
 
   QTreeView::closeEditor(editor, hint);
 }
+
+void FileSystemView::mouseMoveEvent(QMouseEvent *event) {
+  QTreeView::mouseMoveEvent(event);
+
+  // QTreeView with DragOnly leaves the drag cursor on the viewport after
+  // a hover, which reads as "the tree is in scroll mode". Restore the
+  // arrow cursor whenever no button is held.
+  if (event->buttons() == Qt::NoButton) {
+    viewport()->setCursor(Qt::ArrowCursor);
+  }
+}
+
 
 void FileSystemView::hideColumn(int column) {
   QTreeView::hideColumn(column);
@@ -501,45 +495,79 @@ void FileSystemView::startDrag(Qt::DropActions supportedActions) {
 void FileSystemView::contextMenuEvent(QContextMenuEvent *event) {
   const QModelIndex index = indexAt(event->pos());
 
-  if (!index.isValid())
-    return;
-
-  setCurrentIndex(index);
-
   auto *fsModel = qobject_cast<FileSystemModel *>(model());
   if (!fsModel)
     return;
 
-  const QString path = fsModel->filePath(index);
-  const bool isDir = fsModel->isDir(index);
-  const QString parentPath =
-      isDir ? path : QFileInfo(path).dir().path();
+  // Three cases: a click on a file, a click on a directory, and a click
+  // on empty space. Empty space means the directory currently shown as
+  // the root.
 
-  const QString suffix = QFileInfo(path).suffix().toLower();
-  const bool isMarkdown = !isDir && suffix == QStringLiteral("md");
-  const bool isText = !isDir && suffix == QStringLiteral("txt");
-  const bool isPlantUml = !isDir && (suffix == QStringLiteral("puml") ||
-                                      suffix == QStringLiteral("plantuml"));
-  const bool isDot = !isDir && (suffix == QStringLiteral("dot") ||
-                                 suffix == QStringLiteral("gv"));
+  const bool onRow = index.isValid();
+  const bool onDir = onRow && fsModel->isDir(index);
+  const bool onFile = onRow && !onDir;
+  const bool onEmpty = !onRow;
+
+  if (onRow)
+    setCurrentIndex(index);
+
+  const QString path = onRow ? fsModel->filePath(index) : QString();
+
+  const QString parentPath =
+      onDir ? path
+            : (onFile ? QFileInfo(path).dir().path()
+                      : fsModel->filePath(rootIndex()));
+
+  const QString suffix = onFile ? QFileInfo(path).suffix().toLower()
+                                : QString();
+
+  const bool isMarkdown = onFile && suffix == QStringLiteral("md");
+  const bool isText = onFile && suffix == QStringLiteral("txt");
+  const bool isPlantUml =
+      onFile && (suffix == QStringLiteral("puml") ||
+                 suffix == QStringLiteral("plantuml"));
+  const bool isDot = onFile && (suffix == QStringLiteral("dot") ||
+                                suffix == QStringLiteral("gv"));
+  const bool isMermaid = onFile && (suffix == QStringLiteral("mmd") ||
+                                    suffix == QStringLiteral("mermaid"));
+  const bool isHtml = onFile && (suffix == QStringLiteral("html") ||
+                                 suffix == QStringLiteral("htm"));
 
   QMenu menu(this);
 
-  QAction *newNoteAction = menu.addAction(tr("New Note"));
-  QAction *newFolderAction = menu.addAction(tr("New Folder"));
-  menu.addSeparator();
+  QAction *openAction = nullptr;
+  if (onFile)
+    openAction = menu.addAction(tr("Open"));
 
-  QAction *renameAction = menu.addAction(tr("Rename"));
-  QAction *deleteAction = menu.addAction(tr("Delete"));
+  QAction *newNoteAction = nullptr;
+  QAction *newFolderAction = nullptr;
+
+  if (onDir || onEmpty) {
+    newNoteAction = menu.addAction(tr("New Note"));
+    newFolderAction = menu.addAction(tr("New Folder"));
+  }
+
+  if (openAction || newNoteAction)
+    menu.addSeparator();
+
+  QAction *renameAction = nullptr;
+  QAction *deleteAction = nullptr;
+
+  if (onRow) {
+    renameAction = menu.addAction(tr("Rename"));
+    deleteAction = menu.addAction(tr("Delete"));
+    menu.addSeparator();
+  }
 
   QAction *convertToTextAction = nullptr;
   QAction *convertToMarkdownAction = nullptr;
   QAction *convertToPlantUmlAction = nullptr;
   QAction *convertToDotAction = nullptr;
+  QAction *convertToMermaidAction = nullptr;
 
-  if (!isDir && (isMarkdown || isText || isPlantUml || isDot)) {
-    menu.addSeparator();
-
+  if (onFile &&
+      (isMarkdown || isText || isPlantUml || isDot || isMermaid ||
+       isHtml)) {
     if (!isMarkdown)
       convertToMarkdownAction = menu.addAction(tr("Convert to Markdown"));
 
@@ -551,13 +579,17 @@ void FileSystemView::contextMenuEvent(QContextMenuEvent *event) {
 
     if (!isPlantUml)
       convertToPlantUmlAction = menu.addAction(tr("Convert to PlantUML"));
+
+    if (!isMermaid)
+      convertToMermaidAction = menu.addAction(tr("Convert to Mermaid"));
+
+    menu.addSeparator();
   }
 
   QAction *importAction = nullptr;
   QAction *importAllAction = nullptr;
 
-  if (!isDir && isImportablePath(path)) {
-    menu.addSeparator();
+  if (onFile && isImportablePath(path)) {
     importAction = menu.addAction(tr("Import…"));
 
     const QStringList selected = selectedFilePaths();
@@ -565,35 +597,47 @@ void FileSystemView::contextMenuEvent(QContextMenuEvent *event) {
       importAllAction = menu.addAction(
           tr("Import All (%1 files)…").arg(selected.size()));
     }
-  }
 
-  menu.addSeparator();
+    menu.addSeparator();
+  }
 
   QAction *addToOverseerAction = nullptr;
 
-  if (!isDir) {
+  if (onFile) {
     addToOverseerAction = menu.addAction(tr("Add to Overseer session"));
+    menu.addSeparator();
   }
 
-  menu.addSeparator();
+  QAction *promoteAction = nullptr;
 
-  QAction *promoteAction = menu.addAction(tr("Promote to notes"));
+  if (onRow && m_promoteToNotesEnabled) {
+    promoteAction = menu.addAction(tr("Promote to notes"));
+    menu.addSeparator();
+  }
 
-  menu.addSeparator();
+  QAction *copyPathAction = nullptr;
+  QAction *revealAction = nullptr;
 
-  QAction *copyPathAction = menu.addAction(tr("Copy Path"));
-  QAction *revealAction = menu.addAction(tr("Show in File Manager"));
+  if (onRow) {
+    copyPathAction = menu.addAction(tr("Copy Path"));
+    revealAction = menu.addAction(tr("Show in File Manager"));
+  }
+
+  if (menu.actions().isEmpty())
+    return;
 
   QAction *chosen = menu.exec(event->globalPos());
   if (!chosen)
     return;
 
-  if (chosen == renameAction) {
-    edit(index);
+  if (chosen == openAction) {
+    emit openRequested(path);
   } else if (chosen == newNoteAction) {
     emit newNoteRequested(parentPath);
   } else if (chosen == newFolderAction) {
     emit newFolderRequested(parentPath);
+  } else if (chosen == renameAction) {
+    edit(index);
   } else if (chosen == deleteAction) {
     emit deleteRequested(path);
   } else if (chosen == convertToTextAction) {
@@ -604,6 +648,8 @@ void FileSystemView::contextMenuEvent(QContextMenuEvent *event) {
     emit convertToDotRequested(path);
   } else if (chosen == convertToPlantUmlAction) {
     emit convertToPlantUmlRequested(path);
+  } else if (chosen == convertToMermaidAction) {
+    emit convertToMermaidRequested(path);
   } else if (chosen == importAction) {
     emit importRequested(path);
   } else if (chosen == importAllAction) {
@@ -630,6 +676,6 @@ void FileSystemView::contextMenuEvent(QContextMenuEvent *event) {
     QApplication::clipboard()->setText(path);
   } else if (chosen == revealAction) {
     QDesktopServices::openUrl(
-        QUrl::fromLocalFile(isDir ? path : QFileInfo(path).dir().path()));
+        QUrl::fromLocalFile(onDir ? path : QFileInfo(path).dir().path()));
   }
 }

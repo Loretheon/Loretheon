@@ -21,6 +21,9 @@ public:
     std::function<void()> newText;
     std::function<void()> newMarkdown;
     std::function<void()> newPlantUml;
+    std::function<void()> newDot;
+    std::function<void()> newMermaid;
+    std::function<void()> newHtml;
     std::function<void()> open;
     std::function<void()> importFiles;
     std::function<void()> importFolder;

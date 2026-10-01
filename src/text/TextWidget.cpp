@@ -69,6 +69,10 @@ TextWidget::TextWidget(QWidget *parent)
   previewController =
       new PreviewController(textEdit, nullptr, previewPane, this);
 
+
+
+
+
   auto *mainLay = new QVBoxLayout(this);
   mainLay->setContentsMargins(0, 0, 0, 0);
   mainLay->setSpacing(0);

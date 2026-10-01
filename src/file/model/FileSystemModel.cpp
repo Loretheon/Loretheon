@@ -207,25 +207,17 @@ QVariant FileSystemModel::data(const QModelIndex &index, int role) const {
   const bool isActive = !activePath.isEmpty() && path == activePath;
   const bool isModified = modifiedPaths.contains(path);
 
+  // Active and modified state are conveyed by the font alone. The
+  // stylesheet owns the selection background and the text colour, so
+  // the model must not override either. Returning a foreground here
+  // wins over the stylesheet's selected colour and produces a blue or
+  // yellow row whenever the model and the theme disagree.
+
   if (role == Qt::FontRole && index.column() == NameColumn) {
     QFont font;
     font.setBold(isActive);
     font.setItalic(isModified);
     return font;
-  }
-
-  if (role == Qt::ForegroundRole && index.column() == NameColumn) {
-    if (isModified)
-      return QColor(Qt::darkYellow);
-    if (isActive)
-      return QColor(Qt::darkCyan);
-    return QVariant();
-  }
-
-  if (role == Qt::BackgroundRole && index.column() == NameColumn) {
-    if (isActive)
-      return QColor(0, 0, 0, 30);
-    return QVariant();
   }
 
   if (role == Qt::ToolTipRole && index.column() == NameColumn) {
@@ -419,8 +411,7 @@ void FileSystemModel::emitRowChanged(const QString &path) {
       index(proxyName.row(), DateCreatedColumn, proxyName.parent());
   if (left.isValid() && right.isValid()) {
     emit dataChanged(left, right,
-                     {Qt::DisplayRole, Qt::FontRole, Qt::ForegroundRole,
-                      Qt::BackgroundRole, Qt::ToolTipRole});
+                     {Qt::DisplayRole, Qt::FontRole, Qt::ToolTipRole});
   }
 }
 
