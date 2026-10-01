@@ -5,7 +5,9 @@
 #include "../../include/assistant/ChatTreeStore.h"
 #include "../../include/assistant/MindMapScene.h"
 #include "../../include/assistant/MindMapView.h"
+#ifdef LORE_WITH_AVATAR
 #include "../../include/avatar/AvatarWidget.h"
+#endif
 #include "../../include/overseer/OverseerSessionManager.h"
 #include "../../include/ui/AutoHideDock.h"
 #include "../../include/ui/DockReservation.h"
@@ -257,6 +259,7 @@ void AssistantShell::setOverseerManager(OverseerSessionManager *manager) {
 }
 
 void AssistantShell::setAvatar(AvatarWidget *avatar) {
+#ifdef LORE_WITH_AVATAR
   if (m_avatar == avatar) {
     return;
   }
@@ -279,6 +282,9 @@ void AssistantShell::setAvatar(AvatarWidget *avatar) {
   m_avatarPlaced = false;
 
   placeAvatarOnce();
+#else
+  Q_UNUSED(avatar);
+#endif
 }
 
 void AssistantShell::buildUi() {
@@ -619,6 +625,7 @@ void AssistantShell::resizeEvent(QResizeEvent *event) {
 }
 
 void AssistantShell::placeAvatarOnce() {
+#ifdef LORE_WITH_AVATAR
   if (!m_avatar || m_avatarPlaced) {
     if (m_avatar) {
       m_avatar->raise();
@@ -639,6 +646,7 @@ void AssistantShell::placeAvatarOnce() {
 
     m_avatarPlaced = true;
   });
+#endif
 }
 
 void AssistantShell::updateHeroVisibility() {
@@ -800,24 +808,30 @@ void AssistantShell::onTranscribed(const QString &text) {
     return;
   }
 
+  // One-shot dictation fills the composer and stops. The user reviews
+  // the text, edits it if they want, and sends it themselves. Do not
+  // submit on their behalf.
+
   if (m_input) {
     m_input->setText(text);
+    m_input->setCursorPosition(text.length());
+    m_input->setFocus(Qt::OtherFocusReason);
   }
-
-  onSubmit();
 }
 
 void AssistantShell::onLiveTranscribed(const QString &text, bool isFinal) {
+  Q_UNUSED(isFinal);
+
   if (!m_input || text.isEmpty()) {
     return;
   }
 
+  // Live dictation updates the composer as the model refines the
+  // utterance. It does not send. The user presses Enter when they are
+  // satisfied with the text.
+
   m_input->setText(text);
   m_input->setCursorPosition(text.length());
-
-  if (isFinal) {
-    onSubmit();
-  }
 }
 
 void AssistantShell::onTabChanged(int index) {

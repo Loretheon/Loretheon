@@ -4,13 +4,18 @@ project(Lore VERSION 0.1.0 LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+option(LORE_WITH_AVATAR "Build the 3D avatar and its dependencies" OFF)
+
 find_package(QuaZip-Qt6 REQUIRED)
 find_package(OpenMP REQUIRED)
 find_package(faiss REQUIRED)
 find_package(Qt6 6.4 REQUIRED COMPONENTS
         Core Gui Widgets PrintSupport Pdf PdfWidgets Network Multimedia
-        MultimediaWidgets Svg SvgWidgets Xml Concurrent
-        Quick QuickWidgets Quick3D)
+        MultimediaWidgets Svg SvgWidgets Xml Concurrent)
+
+if (LORE_WITH_AVATAR)
+    find_package(Qt6 6.4 REQUIRED COMPONENTS Quick QuickWidgets Quick3D)
+endif ()
 
 qt_standard_project_setup()
 
@@ -196,20 +201,25 @@ lore_ts_grammar(mermaid tree-sitter-mermaid bindings/c)
 # ozz-animation
 # =============================================================================
 #
-# Runtime only. The offline tools (gltf2ozz) are built separately in
+# Runtime only, and only needed by the avatar. Built when
+# LORE_WITH_AVATAR is ON.
+#
+# The offline tools (gltf2ozz) are built separately in
 # external/ozz-animation/build-tools and are not part of the Lore build.
 
-set(OZZ_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
-set(OZZ_BUILD_SAMPLES OFF CACHE BOOL "" FORCE)
-set(OZZ_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-set(OZZ_BUILD_HOWTOS OFF CACHE BOOL "" FORCE)
-set(OZZ_BUILD_GLTF OFF CACHE BOOL "" FORCE)
-set(OZZ_BUILD_FBX OFF CACHE BOOL "" FORCE)
+if (LORE_WITH_AVATAR)
+    set(OZZ_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+    set(OZZ_BUILD_SAMPLES OFF CACHE BOOL "" FORCE)
+    set(OZZ_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(OZZ_BUILD_HOWTOS OFF CACHE BOOL "" FORCE)
+    set(OZZ_BUILD_GLTF OFF CACHE BOOL "" FORCE)
+    set(OZZ_BUILD_FBX OFF CACHE BOOL "" FORCE)
 
-add_subdirectory(
-        external/ozz-animation
-        ${CMAKE_BINARY_DIR}/ozz
-)
+    add_subdirectory(
+            external/ozz-animation
+            ${CMAKE_BINARY_DIR}/ozz
+    )
+endif ()
 
 # =============================================================================
 # tinygltf (header-only)
@@ -318,8 +328,6 @@ add_executable(Lore
         include/ai/chat/ChatWidgetEditFlow.h
         resources/themes/resources.qrc
         resources/icons/resources.qrc
-        resources/avatar/resources.qrc
-        resources/avatar/julia/resources.qrc
         src/file/DirectoryExplorerSettings.cpp
         include/file/DirectoryExplorerSettings.h
         src/text/formats/DotSyntaxHighlighter.cpp
@@ -520,8 +528,6 @@ add_executable(Lore
         include/agent/StructuredCall.h
         src/agent/schemas/SufficiencySchema.cpp
         include/agent/schemas/SufficiencySchema.h
-        src/avatar/AvatarWidget.cpp
-        include/avatar/AvatarWidget.h
         src/assistant/AssistantProfile.cpp
         include/assistant/AssistantProfile.h
         src/assistant/AssistantMemory.cpp
@@ -542,24 +548,6 @@ add_executable(Lore
         include/assistant/SpeechAnimator.h
         src/assistant/LoreAssistant.cpp
         include/assistant/LoreAssistant.h
-        include/avatar/AvatarConfig.h
-        src/avatar/AvatarResizeGrip.cpp
-        include/avatar/AvatarResizeGrip.h
-        src/avatar/AvatarController.cpp
-        include/avatar/AvatarController.h
-        include/avatar/AvatarMeshData.h
-        src/avatar/AvatarMeshLoader.cpp
-        include/avatar/AvatarMeshLoader.h
-        src/avatar/AvatarRenderer.cpp
-        include/avatar/AvatarRenderer.h
-        src/avatar/AvatarSurface.cpp
-        include/avatar/AvatarSurface.h
-        src/avatar/AvatarRenderNode.cpp
-        include/avatar/AvatarRenderNode.h
-        src/avatar/AvatarMoveGrip.cpp
-        include/avatar/AvatarMoveGrip.h
-        src/avatar/VisemeTable.cpp
-        include/avatar/VisemeTable.h
         src/overseer/OverseerRunner.cpp
         include/overseer/OverseerRunner.h
         src/overseer/OverseerSessionManager.cpp
@@ -597,6 +585,35 @@ add_executable(Lore
         include/assistant/ChatTreeStore.h
         src/assistant/ChatTreeStore.cpp
 )
+
+if (LORE_WITH_AVATAR)
+    target_sources(Lore PRIVATE
+            resources/avatar/resources.qrc
+            resources/avatar/julia/resources.qrc
+            src/avatar/AvatarWidget.cpp
+            include/avatar/AvatarWidget.h
+            include/avatar/AvatarConfig.h
+            src/avatar/AvatarResizeGrip.cpp
+            include/avatar/AvatarResizeGrip.h
+            src/avatar/AvatarController.cpp
+            include/avatar/AvatarController.h
+            include/avatar/AvatarMeshData.h
+            src/avatar/AvatarMeshLoader.cpp
+            include/avatar/AvatarMeshLoader.h
+            src/avatar/AvatarRenderer.cpp
+            include/avatar/AvatarRenderer.h
+            src/avatar/AvatarSurface.cpp
+            include/avatar/AvatarSurface.h
+            src/avatar/AvatarRenderNode.cpp
+            include/avatar/AvatarRenderNode.h
+            src/avatar/AvatarMoveGrip.cpp
+            include/avatar/AvatarMoveGrip.h
+            src/avatar/VisemeTable.cpp
+            include/avatar/VisemeTable.h
+    )
+
+    target_compile_definitions(Lore PRIVATE LORE_WITH_AVATAR=1)
+endif ()
 
 add_dependencies(Lore
         ext_edlib
@@ -672,9 +689,6 @@ target_link_libraries(Lore PRIVATE
         Qt6::SvgWidgets
         Qt6::Xml
         Qt6::Concurrent
-        Qt6::Quick
-        Qt6::QuickWidgets
-        Qt6::Quick3D
         qf-inference
         ep_edlib
         ep_tree_sitter
@@ -687,5 +701,13 @@ target_link_libraries(Lore PRIVATE
         QuaZip::QuaZip
         faiss
         OpenMP::OpenMP_CXX
-        ozz_animation
 )
+
+if (LORE_WITH_AVATAR)
+    target_link_libraries(Lore PRIVATE
+            Qt6::Quick
+            Qt6::QuickWidgets
+            Qt6::Quick3D
+            ozz_animation
+    )
+endif ()

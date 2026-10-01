@@ -3,20 +3,20 @@
 #include <qsettings.h>
 
 #include "../include/app/MainWindow.h"
-#include "AvatarSurface.h"
 #include "Settings.h"
 
-#include <QDirIterator>
+#ifdef LORE_WITH_AVATAR
+#include "AvatarSurface.h"
 #include <qqml.h>
+#endif
 
 int main(int argc, char **argv) {
-
-  // QDirIterator it(":", QDirIterator::Subdirectories);
-  // while (it.hasNext()) {
-  //   qDebug() << it.next();
-  // }
-  qmlRegisterType<AvatarSurface>("Lore.Avatar", 1, 0, "AvatarSurface");
   QApplication app(argc, argv);
+
+#ifdef LORE_WITH_AVATAR
+  qmlRegisterType<AvatarSurface>("Lore.Avatar", 1, 0, "AvatarSurface");
+#endif
+
   QCoreApplication::setOrganizationName("Questfarer");
   QCoreApplication::setApplicationName("Lore");
   QCoreApplication::setApplicationVersion("0.0");

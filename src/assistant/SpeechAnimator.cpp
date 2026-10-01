@@ -1,6 +1,8 @@
 #include "../../include/assistant/SpeechAnimator.h"
 
+#ifdef LORE_WITH_AVATAR
 #include "../../include/avatar/AvatarWidget.h"
+#endif
 #include "inference/InferenceService.h"
 #include "voice/TtsManager.h"
 
@@ -45,6 +47,7 @@ void SpeechAnimator::setTickIntervalMs(int ms) {
 int SpeechAnimator::tickIntervalMs() const { return m_tickIntervalMs; }
 
 void SpeechAnimator::onChunkPlaybackStarted(const AudioChunk &chunk) {
+#ifdef LORE_WITH_AVATAR
   m_visemes = chunk.visemes;
   m_visemeIndex = -1;
 
@@ -68,11 +71,15 @@ void SpeechAnimator::onChunkPlaybackStarted(const AudioChunk &chunk) {
   // frame the chunk starts, not one tick later.
   m_visemeIndex = 0;
   applyShape(m_visemes.first().shape);
+#else
+  Q_UNUSED(chunk);
+#endif
 }
 
 void SpeechAnimator::onSentenceFinished() { finishTimeline(); }
 
 void SpeechAnimator::onTick() {
+#ifdef LORE_WITH_AVATAR
   if (!m_playing) {
     m_timer->stop();
     return;
@@ -132,9 +139,13 @@ void SpeechAnimator::onTick() {
   if (!m_visemes.isEmpty() && elapsed >= m_visemes.last().endMs) {
     finishTimeline();
   }
+#else
+  m_timer->stop();
+#endif
 }
 
 void SpeechAnimator::applyShape(const QString &shape) {
+#ifdef LORE_WITH_AVATAR
   if (!m_avatar) {
     return;
   }
@@ -149,10 +160,14 @@ void SpeechAnimator::applyShape(const QString &shape) {
   m_lastAppliedShape = shape;
 
   m_avatar->applyViseme(shape);
+#else
+  Q_UNUSED(shape);
+#endif
 }
 
 void SpeechAnimator::applyBlend(const QString &from, const QString &to,
                                 float t) {
+#ifdef LORE_WITH_AVATAR
   if (!m_avatar) {
     return;
   }
@@ -160,6 +175,11 @@ void SpeechAnimator::applyBlend(const QString &from, const QString &to,
   m_lastAppliedShape.clear();
 
   m_avatar->applyVisemeBlend(from, to, t);
+#else
+  Q_UNUSED(from);
+  Q_UNUSED(to);
+  Q_UNUSED(t);
+#endif
 }
 
 void SpeechAnimator::finishTimeline() {
@@ -169,9 +189,11 @@ void SpeechAnimator::finishTimeline() {
   m_visemeIndex = -1;
   m_lastAppliedShape.clear();
 
+#ifdef LORE_WITH_AVATAR
   if (m_avatar) {
     m_avatar->setSpeaking(false);
   }
+#endif
 
   applyShape(kSilence);
 }

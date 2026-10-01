@@ -2,8 +2,10 @@
 
 #include "../../include/assistant/LoreAssistant.h"
 #include "../../include/assistant/AssistantShell.h"
+#ifdef LORE_WITH_AVATAR
 #include "../../include/avatar/AvatarConfig.h"
 #include "../../include/avatar/AvatarWidget.h"
+#endif
 #include "../../include/file/FileSystemView.h"
 #include "../../include/ingest/Extractors.h"
 #include "../../include/ingest/IngestRegistry.h"
@@ -79,7 +81,9 @@ constexpr auto ModeKey = "ui/mode";
 
 constexpr int ImportConcurrency = 4;
 
+#ifdef LORE_WITH_AVATAR
 const AvatarConfig kAvatarConfig{};
+#endif
 
 InferenceService::LlmConfig configuredLlm() {
   InferenceService::LlmConfig config;
@@ -321,15 +325,19 @@ MainWindow::MainWindow() {
 void MainWindow::buildAssistantShell() {
   m_assistantShell = new AssistantShell(this);
 
+#ifdef LORE_WITH_AVATAR
   m_avatar = new AvatarWidget(m_assistantShell);
   m_avatar->applyConfig(kAvatarConfig);
   m_avatar->setModel(QStringLiteral("qrc:/avatar/julia/julia.glb"));
 
   m_assistantShell->setAvatar(m_avatar);
+#endif
+
   m_assistantShell->setOverseerManager(m_overseerSessionManager);
 
   m_assistantShellPage = m_assistantShell;
 }
+
 void MainWindow::setShell(Shell shell) {
   if (!m_shellStack)
     return;
@@ -1839,6 +1847,7 @@ void MainWindow::onAssistantMessageSubmitted(const QString &text) {
   m_assistantShell->setBusy(true);
   m_assistant->handleUserMessage(text);
 }
+
 void MainWindow::onDocumentSaved(TextDocument *document) {
   if (!document || !m_scopeIndex) {
     return;

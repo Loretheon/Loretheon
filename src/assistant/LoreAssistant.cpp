@@ -14,7 +14,9 @@
 #include "../../include/assistant/SpeechAnimator.h"
 #include "../../include/assistant/tools/AssistantTools.h"
 #include "../../include/assistant/tools/NoteTools.h"
+#ifdef LORE_WITH_AVATAR
 #include "../../include/avatar/AvatarWidget.h"
+#endif
 #include "../../include/ingest/IngestOptions.h"
 #include "../../include/ingest/IngestService.h"
 #include "../../include/overseer/OverseerSessionManager.h"
