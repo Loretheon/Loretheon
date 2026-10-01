@@ -338,8 +338,13 @@ void MainWindow::setShell(Shell shell) {
   m_shellStack->setCurrentIndex(static_cast<int>(shell));
 
   if (shell == Shell::Assistant) {
-    if (m_assistantShell)
+    if (m_speechPanel && m_speechPanel->isVisible()) {
+      m_speechPanel->hide();
+    }
+
+    if (m_assistantShell) {
       m_assistantShell->focusPrompt();
+    }
   }
 }
 

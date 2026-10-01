@@ -13,7 +13,11 @@ DictateCommand::DictateCommand(SpeechController *controller, QObject *parent)
   }
 
   connect(m_controller, &SpeechController::transcribed, this,
-          [this](const QString &text) {
+          [this](const QString &text, SpeechController::Origin origin) {
+            if (origin != SpeechController::Origin::Editor) {
+              return;
+            }
+
             if (!m_target || text.isEmpty()) {
               m_target = nullptr;
               return;
@@ -21,8 +25,6 @@ DictateCommand::DictateCommand(SpeechController *controller, QObject *parent)
 
             QTextCursor cursor = m_target->textCursor();
             if (!cursor.isNull() && !text.isEmpty()) {
-              // Ensure a space before the inserted text if the cursor is
-              // not at the start of a block.
               const QString prefix =
                   cursor.atBlockStart() ? QString() : QStringLiteral(" ");
               cursor.insertText(prefix + text);
@@ -63,7 +65,7 @@ void DictateCommand::start(const VoiceContext &context) {
   }
 
   m_target = context.editor;
-  m_controller->beginCapture();
+  m_controller->beginCapture(SpeechController::Origin::Editor);
 }
 
 void DictateCommand::stop() {

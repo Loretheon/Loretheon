@@ -12,7 +12,14 @@ LiveDictateCommand::LiveDictateCommand(SpeechController *controller,
   if (!m_controller) return;
 
   connect(m_controller, &SpeechController::liveTranscribed, this,
-          &LiveDictateCommand::onLiveTranscribed);
+          [this](const QString &text, bool isFinal,
+                 SpeechController::Origin origin) {
+            if (origin != SpeechController::Origin::Editor) {
+              return;
+            }
+
+            onLiveTranscribed(text, isFinal);
+          });
 
   connect(m_controller, &SpeechController::transcriptionFailed, this,
           [this](const QString &error) {
@@ -45,7 +52,7 @@ void LiveDictateCommand::start(const VoiceContext &context) {
   if (!m_controller || !context.editor) return;
   m_target = context.editor;
   clearAnchor();
-  m_controller->startLiveCapture();
+  m_controller->startLiveCapture(SpeechController::Origin::Editor);
 }
 
 void LiveDictateCommand::stop() {
@@ -71,8 +78,6 @@ void LiveDictateCommand::onLiveTranscribed(const QString &text, bool isFinal) {
 
   const int docLength = document->characterCount() - 1;
 
-  // Sanity: a stale anchor that reaches past the document means the
-  // user edited underneath us. Abandon it and start fresh.
   if (m_anchorStart < 0 || m_anchorStart > docLength) {
     clearAnchor();
   }
@@ -80,8 +85,6 @@ void LiveDictateCommand::onLiveTranscribed(const QString &text, bool isFinal) {
   QTextCursor cursor(document);
 
   if (m_anchorStart < 0) {
-    // First result of an utterance. Insert at the editor's cursor and
-    // remember where the interim begins.
     QTextCursor editorCursor = m_target->textCursor();
     const bool atBlockStart = editorCursor.atBlockStart();
     const int position = editorCursor.position();
@@ -91,13 +94,9 @@ void LiveDictateCommand::onLiveTranscribed(const QString &text, bool isFinal) {
     const QString payload = atBlockStart ? text : QStringLiteral(" ") + text;
     cursor.insertText(payload);
 
-    // The anchor covers only the text, not the leading space.
     m_anchorStart = position + (atBlockStart ? 0 : 1);
     m_anchorLength = text.length();
   } else {
-    // Subsequent result. Replace the previous interim text with the new
-    // one. The new one is always longer or equal for a given utterance,
-    // but we handle both cases.
     const int replaceEnd =
         qMin(m_anchorStart + m_anchorLength, docLength);
 
@@ -110,19 +109,13 @@ void LiveDictateCommand::onLiveTranscribed(const QString &text, bool isFinal) {
 
   const int endPosition = m_anchorStart + m_anchorLength;
 
-  // Always move the editor's visible cursor to the end of the interim
-  // so that typing (if any) and the next insert land after it.
   QTextCursor visible(document);
   visible.setPosition(endPosition);
   m_target->setTextCursor(visible);
 
   if (isFinal) {
-    // Utterance is complete. Clear the anchor so the next result starts
-    // a fresh insert after this one.
     clearAnchor();
 
-    // Park the cursor after the final text so the next utterance does
-    // not stomp on it.
     QTextCursor park(document);
     park.setPosition(endPosition);
     m_target->setTextCursor(park);

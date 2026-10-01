@@ -215,9 +215,24 @@ void AssistantShell::setSpeechController(SpeechController *speech) {
   }
 
   connect(m_speech, &SpeechController::transcribed, this,
-          &AssistantShell::onTranscribed);
+          [this](const QString &text, SpeechController::Origin origin) {
+            if (origin != SpeechController::Origin::Composer) {
+              return;
+            }
+
+            onTranscribed(text);
+          });
+
   connect(m_speech, &SpeechController::liveTranscribed, this,
-          &AssistantShell::onLiveTranscribed);
+          [this](const QString &text, bool isFinal,
+                 SpeechController::Origin origin) {
+            if (origin != SpeechController::Origin::Composer) {
+              return;
+            }
+
+            onLiveTranscribed(text, isFinal);
+          });
+
   connect(m_speech, &SpeechController::stateChanged, this,
           &AssistantShell::onSpeechStateChanged);
 
@@ -728,7 +743,7 @@ void AssistantShell::onDictateClicked() {
     return;
   }
 
-  m_speech->beginCapture();
+  m_speech->beginCapture(SpeechController::Origin::Composer);
 }
 
 void AssistantShell::onLiveDictateClicked() {
@@ -741,7 +756,7 @@ void AssistantShell::onLiveDictateClicked() {
     return;
   }
 
-  m_speech->startLiveCapture();
+  m_speech->startLiveCapture(SpeechController::Origin::Composer);
 }
 
 void AssistantShell::onReadAloudClicked() {

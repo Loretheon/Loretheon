@@ -1279,34 +1279,53 @@ bool LoreAssistant::waitForJob(const QString &jobId, QString *resultOut,
 }
 
 void LoreAssistant::abortJob(const QString &jobId) {
-  auto it = m_jobs.find(jobId);
-
-  if (it == m_jobs.end() || it->isTerminal()) {
+  if (!m_jobs.contains(jobId)) {
     return;
   }
 
-  if (NoteEditJob *editJob = m_noteEditJobs.take(jobId)) {
+  const Job snapshot = m_jobs.value(jobId);
+
+  if (snapshot.isTerminal()) {
+    return;
+  }
+
+  // Take the child job objects out of their caches first. Both abort
+  // paths emit failed() synchronously, and the connected lambdas
+  // mutate m_jobs. Holding an iterator into m_jobs across those calls
+  // would invalidate it.
+  NoteEditJob *editJob = m_noteEditJobs.take(jobId);
+  ProfileEditJob *profileJob = m_profileEditJobs.take(jobId);
+  RetrievalLoop *loop = m_searchLoops.take(jobId);
+
+  m_searchBuffers.remove(jobId);
+
+  // Mark the job cancelled before the abort signals fire, so the
+  // connected lambdas see it as terminal and do not overwrite the
+  // state with Failed.
+  {
+    auto it = m_jobs.find(jobId);
+
+    if (it != m_jobs.end()) {
+      it->state = ChatNode::State::Cancelled;
+      it->error = tr("Cancelled.");
+      it->updatedAt = QDateTime::currentDateTime();
+    }
+  }
+
+  if (editJob) {
     editJob->abort();
   }
 
-  if (ProfileEditJob *profileJob = m_profileEditJobs.take(jobId)) {
+  if (profileJob) {
     profileJob->abort();
   }
-
-  RetrievalLoop *loop = m_searchLoops.take(jobId);
 
   if (loop) {
     loop->cancel();
     loop->deleteLater();
   }
 
-  m_searchBuffers.remove(jobId);
-
-  it->state = ChatNode::State::Cancelled;
-  it->error = tr("Cancelled.");
-  it->updatedAt = QDateTime::currentDateTime();
-
-  emit jobFailed(jobId, it->error);
+  emit jobFailed(jobId, tr("Cancelled."));
 }
 
 void LoreAssistant::abortTurn(const QString &replyNodeId) {
