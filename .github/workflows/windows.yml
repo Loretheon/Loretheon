@@ -37,7 +37,7 @@ jobs:
       - name: Install vcpkg Dependencies
         shell: pwsh
         run: |
-          vcpkg install quazip-qt:x64-windows faiss:x64-windows
+          vcpkg install quazip:x64-windows faiss:x64-windows
           echo "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" >> $env:GITHUB_ENV
 
       - name: Install Graphviz, Node.js, tree-sitter CLI
