@@ -312,6 +312,8 @@ endif ()
 # added as a subdirectory. Only the include path is needed, and it is
 # declared in target_include_directories below.
 
+set(QF_ML_BUILD_DEMO OFF CACHE BOOL "" FORCE)
+
 add_subdirectory(
         external/QF-ML
         ${EPISTEME_EXTERNAL_BUILD_DIR}/QF-ML
