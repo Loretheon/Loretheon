@@ -2,7 +2,6 @@ name: Windows Build
 
 on:
   push:
-    branches: [ "main", "master" ]
   pull_request:
   workflow_dispatch:
 
@@ -13,7 +12,7 @@ env:
 
 jobs:
   build-windows:
-    runs-on: windows-latest
+    runs-on: windows-2022
 
     steps:
       - name: Checkout repository
@@ -26,57 +25,61 @@ jobs:
         with:
           version: ${{ env.QT_VERSION }}
           host: 'windows'
-          arch: 'win64_msvc2019_64' # Required for Qt 6.4.2
+          arch: 'win64_msvc2019_64'
           cache: true
           modules: 'qt5compat qtmultimedia'
 
-      - name: Install Dependencies (Graphviz & Node.js)
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install vcpkg Dependencies
+        shell: pwsh
+        run: |
+          vcpkg install quazip-qt:x64-windows faiss:x64-windows
+          echo "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" >> $env:GITHUB_ENV
+
+      - name: Install Graphviz, Node.js, tree-sitter CLI
+        shell: pwsh
         run: |
           choco install graphviz -y
           choco install nodejs-lts -y
-          npm install -g @mermaid-js/mermaid-cli
+          npm install -g @mermaid-js/mermaid-cli tree-sitter-cli
 
       - name: Configure CMake
-        run: >
-          cmake -S . -B build -G "Ninja"
-          -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }}
-          -DCMAKE_PREFIX_PATH="${{ env.QT_ROOT_DIR }}"
-        shell: bash
+        shell: pwsh
+        run: |
+          cmake -S . -B build -G "Ninja" `
+            -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} `
+            -DCMAKE_PREFIX_PATH="${{ env.QT_ROOT_DIR }};$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows" `
+            -DCMAKE_PROGRAM_PATH="${{ env.QT_ROOT_DIR }}/bin;$env:APPDATA/npm"
 
       - name: Build
-        run: cmake --build build --config ${{ env.BUILD_TYPE }}
+        run: cmake --build build --config ${{ env.BUILD_TYPE }} --parallel
 
       - name: Deploy Qt
         run: |
-          mkdir -p deploy
+          New-Item -ItemType Directory -Force -Path deploy | Out-Null
           windeployqt --release --dir deploy "build\bin\${{ env.APP_NAME }}.exe"
+        shell: pwsh
 
       - name: Copy External Assets
-        shell: bash
+        shell: pwsh
         run: |
-          # Create target directories
-          mkdir -p deploy/usr/bin
-          mkdir -p deploy/usr/share/Lore
+          New-Item -ItemType Directory -Force -Path deploy/usr/bin | Out-Null
+          New-Item -ItemType Directory -Force -Path deploy/usr/share/Lore | Out-Null
 
-          # Copy Node and mmdc
-          cp "$(which node)" deploy/usr/bin/node.exe
-          cp "$(which mmdc)" deploy/usr/bin/mmdc.cmd || cp "$(which mmdc)" deploy/usr/bin/mmdc
-          # Note: mmdc is a JS script; on Windows it's usually a .cmd wrapper.
-          # You may need to bundle the node_modules folder for mmdc.
+          Copy-Item (Get-Command node).Source deploy/usr/bin/node.exe
+          Copy-Item (Get-Command mmdc).Source deploy/usr/bin/mmdc.cmd
+          Copy-Item (Get-Command dot).Source  deploy/usr/bin/dot.exe
 
-          # Copy Graphviz dot
-          cp "$(which dot)" deploy/usr/bin/dot.exe
-
-          # Copy Models (if available in the repo, adjust path as needed)
-          if [ -d "models" ]; then
-            cp -r models deploy/usr/share/Lore/
-          fi
-
-      - name: Create Launcher Script (Optional but recommended)
-        run: |
-          # You might need a wrapper to set QF_* environment variables similar to AppRun.
-          # For simplicity, this step is a placeholder.
-          echo "Placeholder: Create a .bat or PowerShell launcher if needed."
+          if (Test-Path "models") {
+            Copy-Item -Recurse models deploy/usr/share/Lore/
+          }
+          if (Test-Path "external/HeadTTS") {
+            Copy-Item -Recurse external/HeadTTS deploy/usr/share/Lore/HeadTTS
+          }
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4

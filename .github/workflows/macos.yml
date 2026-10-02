@@ -32,7 +32,7 @@ jobs:
       - name: Install Homebrew Dependencies
         run: |
           brew update
-          brew install ninja cmake quazip faiss graphviz node libomp
+          brew install ninja cmake quazip faiss graphviz node libomp tree-sitter-cli
 
       - name: Install mermaid-cli
         run: npm install -g @mermaid-js/mermaid-cli
@@ -41,10 +41,12 @@ jobs:
         run: >
           cmake -S . -B build -G "Ninja"
           -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }}
-          -DCMAKE_PREFIX_PATH="${{ env.QT_ROOT_DIR }}"
+          -DCMAKE_PREFIX_PATH="${{ env.QT_ROOT_DIR }};$(brew --prefix);$(brew --prefix quazip);$(brew --prefix faiss)"
           -DCMAKE_PROGRAM_PATH="${{ env.QT_ROOT_DIR }}/bin:$(brew --prefix)/bin"
           -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0
+          -DOpenMP_C_FLAGS="-Xpreprocessor -fopenmp -I$(brew --prefix libomp)/include"
           -DOpenMP_CXX_FLAGS="-Xpreprocessor -fopenmp -I$(brew --prefix libomp)/include"
+          -DOpenMP_C_LIB_NAMES="omp"
           -DOpenMP_CXX_LIB_NAMES="omp"
           -DOpenMP_omp_LIBRARY="$(brew --prefix libomp)/lib/libomp.dylib"
 
