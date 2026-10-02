@@ -2,7 +2,6 @@ name: macOS Build
 
 on:
   push:
-    branches: [ "main", "master" ]
   pull_request:
   workflow_dispatch:
 
@@ -30,20 +29,27 @@ jobs:
           cache: true
           modules: 'qt5compat qtmultimedia'
 
-      - name: Install Dependencies (Graphviz & Node.js)
+      - name: Install Homebrew Dependencies
         run: |
-          brew install graphviz
-          brew install node
-          npm install -g @mermaid-js/mermaid-cli
+          brew update
+          brew install ninja cmake quazip faiss graphviz node libomp
+
+      - name: Install mermaid-cli
+        run: npm install -g @mermaid-js/mermaid-cli
 
       - name: Configure CMake
         run: >
           cmake -S . -B build -G "Ninja"
           -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }}
           -DCMAKE_PREFIX_PATH="${{ env.QT_ROOT_DIR }}"
+          -DCMAKE_PROGRAM_PATH="${{ env.QT_ROOT_DIR }}/bin:$(brew --prefix)/bin"
+          -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0
+          -DOpenMP_CXX_FLAGS="-Xpreprocessor -fopenmp -I$(brew --prefix libomp)/include"
+          -DOpenMP_CXX_LIB_NAMES="omp"
+          -DOpenMP_omp_LIBRARY="$(brew --prefix libomp)/lib/libomp.dylib"
 
       - name: Build
-        run: cmake --build build --config ${{ env.BUILD_TYPE }}
+        run: cmake --build build --config ${{ env.BUILD_TYPE }} --parallel
 
       - name: Deploy Qt
         run: |
@@ -57,16 +63,16 @@ jobs:
           mkdir -p "$RESOURCES_DIR/usr/bin"
           mkdir -p "$RESOURCES_DIR/usr/share/Lore"
 
-          # Copy Node and mmdc
           cp "$(which node)" "$RESOURCES_DIR/usr/bin/node"
           cp "$(which mmdc)" "$RESOURCES_DIR/usr/bin/mmdc"
+          cp "$(which dot)"  "$RESOURCES_DIR/usr/bin/dot"
 
-          # Copy Graphviz dot (and possibly its dylibs, macdeployqt might not handle it)
-          cp "$(which dot)" "$RESOURCES_DIR/usr/bin/dot"
-
-          # Copy Models
           if [ -d "models" ]; then
             cp -r models "$RESOURCES_DIR/usr/share/Lore/"
+          fi
+
+          if [ -d "external/HeadTTS" ]; then
+            cp -r external/HeadTTS "$RESOURCES_DIR/usr/share/Lore/HeadTTS"
           fi
 
       - name: Create DMG
