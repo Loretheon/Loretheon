@@ -27,7 +27,7 @@ jobs:
           host: 'mac'
           arch: 'clang_64'
           cache: true
-          modules: 'qt5compat qtmultimedia'
+          modules: 'qt5compat qtmultimedia qtpdf'
 
       - name: Install Homebrew Dependencies
         run: |
