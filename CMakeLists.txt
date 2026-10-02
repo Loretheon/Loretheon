@@ -222,9 +222,13 @@ lore_external(quazip quazip
 
 lore_import_static(ep_quazip ext_quazip lib/libquazip1-qt6.a)
 
-file(GLOB QUAZIP_INCLUDE_DIRS
-        "${EPISTEME_EXTERNAL_PREFIX}/include/QuaZip-Qt6-*"
-        "${EPISTEME_EXTERNAL_PREFIX}/include")
+# QuaZip 1.4 installs headers to include/QuaZip-Qt6-1.4/quazip/. The
+# versioned parent is what makes <quazip/quazip.h> resolve. This is a
+# deterministic path, not a glob: file(GLOB) runs at configure time,
+# before the ExternalProject install step, so a glob would come back
+# empty on a clean checkout.
+set(QUAZIP_INCLUDE_DIRS
+        "${EPISTEME_EXTERNAL_PREFIX}/include/QuaZip-Qt6-1.4")
 
 # =============================================================================
 # Faiss
