@@ -70,13 +70,24 @@ jobs:
       - name: Build
         run: cmake --build build --config ${{ env.BUILD_TYPE }} --parallel
 
+      - name: Locate App Bundle
+        run: |
+          APP_PATH="$(find build -maxdepth 4 -name 'Lore.app' -type d | head -1)"
+          if [ -z "$APP_PATH" ]; then
+            echo "error: Lore.app not found under build/. Candidates:" >&2
+            find build -maxdepth 4 -name '*.app' -type d >&2
+            exit 1
+          fi
+          echo "Found bundle: $APP_PATH"
+          echo "APP_PATH=$APP_PATH" >> "$GITHUB_ENV"
+
       - name: Deploy Qt
         run: |
-          macdeployqt "build/bin/${{ env.APP_NAME }}.app" -verbose=2
+          macdeployqt "$APP_PATH" -verbose=2
 
       - name: Copy External Assets into Bundle
         run: |
-          APP_BUNDLE="build/bin/${{ env.APP_NAME }}.app"
+          APP_BUNDLE="$APP_PATH"
           RESOURCES_DIR="$APP_BUNDLE/Contents/Resources"
           FRAMEWORKS_DIR="$APP_BUNDLE/Contents/Frameworks"
 
@@ -109,7 +120,7 @@ jobs:
       - name: Create DMG
         run: |
           hdiutil create -volname "${{ env.APP_NAME }}" \
-            -srcfolder "build/bin/${{ env.APP_NAME }}.app" \
+            -srcfolder "$APP_PATH" \
             -ov -format UDZO "${{ env.APP_NAME }}-macos.dmg"
 
       - name: Upload Artifact

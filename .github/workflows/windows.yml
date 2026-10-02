@@ -45,7 +45,7 @@ jobs:
       - name: Install vcpkg Dependencies
         shell: pwsh
         run: |
-          vcpkg install faiss:x64-windows tesseract:x64-windows leptonica:x64-windows
+          vcpkg install faiss:x64-windows tesseract:x64-windows leptonica:x64-windows sentencepiece:x64-windows
           echo "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" >> $env:GITHUB_ENV
 
       - name: Install Graphviz, Node.js, tree-sitter CLI, pkg-config, FFmpeg
@@ -115,12 +115,10 @@ jobs:
           Copy-Item "$env:NPM_BIN\mmdc.cmd"  deploy/usr/bin/
           Copy-Item (Get-Command dot).Source deploy/usr/bin/dot.exe
 
-          # FFmpeg DLLs
           if ($env:FFMPEG_DIR) {
             Get-ChildItem "$env:FFMPEG_DIR\*.dll" | Copy-Item -Destination deploy\ -ErrorAction SilentlyContinue
           }
 
-          # vcpkg DLLs must sit next to Lore.exe so the loader finds them.
           Get-ChildItem "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\bin\*.dll" `
             | Copy-Item -Destination deploy\ -ErrorAction SilentlyContinue
 
@@ -128,7 +126,6 @@ jobs:
             Copy-Item -Recurse "cmake-build-libs/install/lib/*" deploy/lib/
           }
 
-          # NeMo-Speech.cpp shared libraries (built in-tree)
           if (Test-Path "cmake-build-libs/QF-ML/nemo-speech/bin") {
             Get-ChildItem "cmake-build-libs/QF-ML/nemo-speech/bin\*.dll" `
               | Copy-Item -Destination deploy\ -ErrorAction SilentlyContinue
