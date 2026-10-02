@@ -27,7 +27,7 @@ jobs:
           host: 'mac'
           arch: 'clang_64'
           cache: true
-          modules: 'qt5compat qtmultimedia qtpdf qtwebsockets qtwebchannel qttexttospeech'
+          modules: 'qt5compat qtmultimedia qtpdf qtwebsockets qtwebchannel qtspeech'
 
       - name: Install Homebrew Dependencies
         run: |
