@@ -1,0 +1,85 @@
+name: Windows Build
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  QT_VERSION: '6.4.2'
+  BUILD_TYPE: Release
+  APP_NAME: Lore
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: 'windows'
+          arch: 'win64_msvc2019_64' # Required for Qt 6.4.2
+          cache: true
+          modules: 'qt5compat qtmultimedia'
+
+      - name: Install Dependencies (Graphviz & Node.js)
+        run: |
+          choco install graphviz -y
+          choco install nodejs-lts -y
+          npm install -g @mermaid-js/mermaid-cli
+
+      - name: Configure CMake
+        run: >
+          cmake -S . -B build -G "Ninja"
+          -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }}
+          -DCMAKE_PREFIX_PATH="${{ env.QT_ROOT_DIR }}"
+        shell: bash
+
+      - name: Build
+        run: cmake --build build --config ${{ env.BUILD_TYPE }}
+
+      - name: Deploy Qt
+        run: |
+          mkdir -p deploy
+          windeployqt --release --dir deploy "build\bin\${{ env.APP_NAME }}.exe"
+
+      - name: Copy External Assets
+        shell: bash
+        run: |
+          # Create target directories
+          mkdir -p deploy/usr/bin
+          mkdir -p deploy/usr/share/Lore
+
+          # Copy Node and mmdc
+          cp "$(which node)" deploy/usr/bin/node.exe
+          cp "$(which mmdc)" deploy/usr/bin/mmdc.cmd || cp "$(which mmdc)" deploy/usr/bin/mmdc
+          # Note: mmdc is a JS script; on Windows it's usually a .cmd wrapper.
+          # You may need to bundle the node_modules folder for mmdc.
+
+          # Copy Graphviz dot
+          cp "$(which dot)" deploy/usr/bin/dot.exe
+
+          # Copy Models (if available in the repo, adjust path as needed)
+          if [ -d "models" ]; then
+            cp -r models deploy/usr/share/Lore/
+          fi
+
+      - name: Create Launcher Script (Optional but recommended)
+        run: |
+          # You might need a wrapper to set QF_* environment variables similar to AppRun.
+          # For simplicity, this step is a placeholder.
+          echo "Placeholder: Create a .bat or PowerShell launcher if needed."
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lore-windows-${{ env.BUILD_TYPE }}
+          path: deploy/

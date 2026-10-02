@@ -1,0 +1,82 @@
+name: macOS Build
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  QT_VERSION: '6.4.2'
+  BUILD_TYPE: Release
+  APP_NAME: Lore
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: 'mac'
+          arch: 'clang_64'
+          cache: true
+          modules: 'qt5compat qtmultimedia'
+
+      - name: Install Dependencies (Graphviz & Node.js)
+        run: |
+          brew install graphviz
+          brew install node
+          npm install -g @mermaid-js/mermaid-cli
+
+      - name: Configure CMake
+        run: >
+          cmake -S . -B build -G "Ninja"
+          -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }}
+          -DCMAKE_PREFIX_PATH="${{ env.QT_ROOT_DIR }}"
+
+      - name: Build
+        run: cmake --build build --config ${{ env.BUILD_TYPE }}
+
+      - name: Deploy Qt
+        run: |
+          macdeployqt "build/bin/${{ env.APP_NAME }}.app" -verbose=2
+
+      - name: Copy External Assets into Bundle
+        run: |
+          APP_BUNDLE="build/bin/${{ env.APP_NAME }}.app"
+          RESOURCES_DIR="$APP_BUNDLE/Contents/Resources"
+
+          mkdir -p "$RESOURCES_DIR/usr/bin"
+          mkdir -p "$RESOURCES_DIR/usr/share/Lore"
+
+          # Copy Node and mmdc
+          cp "$(which node)" "$RESOURCES_DIR/usr/bin/node"
+          cp "$(which mmdc)" "$RESOURCES_DIR/usr/bin/mmdc"
+
+          # Copy Graphviz dot (and possibly its dylibs, macdeployqt might not handle it)
+          cp "$(which dot)" "$RESOURCES_DIR/usr/bin/dot"
+
+          # Copy Models
+          if [ -d "models" ]; then
+            cp -r models "$RESOURCES_DIR/usr/share/Lore/"
+          fi
+
+      - name: Create DMG
+        run: |
+          hdiutil create -volname "${{ env.APP_NAME }}" \
+            -srcfolder "build/bin/${{ env.APP_NAME }}.app" \
+            -ov -format UDZO "${{ env.APP_NAME }}-macos.dmg"
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lore-macos-${{ env.BUILD_TYPE }}
+          path: ${{ env.APP_NAME }}-macos.dmg
