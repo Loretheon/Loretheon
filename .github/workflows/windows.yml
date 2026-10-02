@@ -45,14 +45,15 @@ jobs:
       - name: Install vcpkg Dependencies
         shell: pwsh
         run: |
-          vcpkg install faiss:x64-windows
+          vcpkg install faiss:x64-windows tesseract:x64-windows leptonica:x64-windows
           echo "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" >> $env:GITHUB_ENV
 
-      - name: Install Graphviz, Node.js, tree-sitter CLI
+      - name: Install Graphviz, Node.js, tree-sitter CLI, pkg-config
         shell: pwsh
         run: |
           choco install graphviz -y
           choco install nodejs-lts -y
+          choco install pkgconfiglite -y
           npm install -g @mermaid-js/mermaid-cli tree-sitter-cli
 
       - name: Set Node.js environment
@@ -60,6 +61,13 @@ jobs:
         run: |
           $npm_bin = npm config get prefix
           echo "NPM_BIN=$npm_bin" >> $env:GITHUB_ENV
+
+      - name: Set pkg-config environment
+        shell: pwsh
+        run: |
+          $pc_path = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\lib\pkgconfig"
+          echo "PKG_CONFIG_PATH=$pc_path" >> $env:GITHUB_ENV
+          echo "PKG_CONFIG_EXECUTABLE=$(Get-Command pkg-config).Source" >> $env:GITHUB_ENV
 
       - name: Configure CMake
         shell: pwsh
@@ -90,11 +98,10 @@ jobs:
           Copy-Item "$env:NPM_BIN\mmdc.cmd"  deploy/usr/bin/
           Copy-Item (Get-Command dot).Source deploy/usr/bin/dot.exe
 
-          # vcpkg faiss DLLs must sit next to Lore.exe so the loader finds them.
+          # vcpkg DLLs must sit next to Lore.exe so the loader finds them.
           Get-ChildItem "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\bin\*.dll" `
             | Copy-Item -Destination deploy\ -ErrorAction SilentlyContinue
 
-          # Static archives and import libs from ExternalProjects
           if (Test-Path "cmake-build-libs/install/lib") {
             Copy-Item -Recurse "cmake-build-libs/install/lib/*" deploy/lib/
           }

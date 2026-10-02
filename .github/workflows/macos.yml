@@ -33,7 +33,7 @@ jobs:
         run: |
           brew update
           brew install ninja cmake graphviz node libomp tree-sitter-cli \
-                       openblas sentencepiece
+                       openblas sentencepiece tesseract leptonica
 
       - name: Install mermaid-cli
         run: npm install -g @mermaid-js/mermaid-cli
