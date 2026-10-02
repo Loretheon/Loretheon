@@ -18,7 +18,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          submodules: recursive
+          submodules: true
 
       - name: Install Qt
         uses: jurplel/install-qt-action@v4

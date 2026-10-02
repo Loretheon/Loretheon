@@ -18,7 +18,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          submodules: recursive
+          submodules: true
 
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
@@ -27,7 +27,7 @@ jobs:
           host: 'windows'
           arch: 'win64_msvc2019_64'
           cache: true
-          modules: 'qt5compat qtmultimedia'
+          modules: 'qt5compat qtmultimedia qtpdf'
 
       - name: Set up MSVC
         uses: ilammy/msvc-dev-cmd@v1
@@ -59,10 +59,10 @@ jobs:
         run: cmake --build build --config ${{ env.BUILD_TYPE }} --parallel
 
       - name: Deploy Qt
+        shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path deploy | Out-Null
           windeployqt --release --dir deploy "build\bin\${{ env.APP_NAME }}.exe"
-        shell: pwsh
 
       - name: Copy External Assets
         shell: pwsh
