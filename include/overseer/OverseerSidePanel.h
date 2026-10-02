@@ -1,12 +1,16 @@
 #pragma once
 
+#include "OverseerRunner.h"
+
 #include <QWidget>
 
 class MemoryPanel;
 class OverviewPanel;
+class MemoryProposalCard;
 class OverseerSession;
 
-class QTabWidget;
+class QComboBox;
+class QStackedWidget;
 class QTextEdit;
 class QScrollArea;
 class QVBoxLayout;
@@ -18,11 +22,12 @@ class OverseerSidePanel : public QWidget {
 public:
   explicit OverseerSidePanel(QWidget *parent = nullptr);
 
-  // Load the panels from a session. Passing nullptr clears them. Used
-  // when the Overseer view switches sessions.
   void setSession(OverseerSession *session);
 
-  QTabWidget *tabs() const { return m_tabs; }
+  void setPendingActions(const QList<OverseerRunner::PendingAction> &actions);
+
+  QComboBox *sectionPicker() const { return m_picker; }
+  QStackedWidget *sectionStack() const { return m_stack; }
 
   MemoryPanel *memoryPanel() const { return m_memoryPanel; }
   MemoryPanel *sessionMemoryPanel() const { return m_sessionMemoryPanel; }
@@ -35,8 +40,21 @@ public:
   QVBoxLayout *userActionsLayout() const { return m_userActionsLayout; }
   QLabel *userActionsEmptyLabel() const { return m_userActionsEmptyLabel; }
 
+signals:
+  void memoryProposalAccepted(const QString &key, const QString &scope);
+  void memoryProposalRejected(const QString &key);
+
+  void editPlanOpenRequested(const QString &planId);
+  void editPlanApplyRequested(const QString &planId);
+  void editPlanCancelRequested(const QString &planId);
+
 private:
-  QTabWidget *m_tabs = nullptr;
+  void clearUserActionCards();
+  void rebuildSectionPicker();
+
+  QComboBox *m_picker = nullptr;
+  QStackedWidget *m_stack = nullptr;
+
   MemoryPanel *m_memoryPanel = nullptr;
   MemoryPanel *m_sessionMemoryPanel = nullptr;
   OverviewPanel *m_overviewPanel = nullptr;
@@ -47,4 +65,7 @@ private:
   QWidget *m_userActionsContent = nullptr;
   QVBoxLayout *m_userActionsLayout = nullptr;
   QLabel *m_userActionsEmptyLabel = nullptr;
+
+  int m_userActionsIndex = -1;
+  int m_userActionsCount = 0;
 };

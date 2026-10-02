@@ -4,15 +4,21 @@
 
 #include "../../include/text/TextEdit.h"
 #include "../../include/text/TextWidget.h"
+#include "../../include/text/Toolbar.h"
 #include "../../include/text/media/MediaPane.h"
 
 #include "../../include/ai/edit/EditSession.h"
 
 #include <QFileInfo>
+#include <QHBoxLayout>
+#include <QSignalBlocker>
 #include <QTabBar>
+#include <QToolButton>
 #include <QVBoxLayout>
 
 namespace {
+
+constexpr int kTabButtonSize = 20;
 
 QString tabLabelFor(TextDocument *document) {
   if (!document) {
@@ -103,8 +109,6 @@ void DocumentArea::setEditSession(EditSession *session) {
     }
   }
 
-  // The session drives one editor at a time. Bind it to the editor that
-  // is active right now, and re-bind whenever the active tab changes.
   wireSessionToEditor(session, currentEditor());
 }
 
@@ -127,7 +131,6 @@ void DocumentArea::wireSessionToEditor(EditSession *session,
 
   m_sessionEditor = editor;
 
-  // Session -> editor. These drive the review bar and the highlights.
   connect(session, &EditSession::pendingEditStarted, editor,
           [editor](const PendingEdit &edit) { editor->showPendingEdit(edit); });
 
@@ -151,8 +154,6 @@ void DocumentArea::wireSessionToEditor(EditSession *session,
   connect(session, &EditSession::aborted, editor,
           [editor]() { editor->clearPendingEdits(); });
 
-  // Editor -> session. These are the ones that were missing. The review
-  // bar emits them; the session must be listening.
   connect(editor, &TextEdit::acceptPendingEditRequested, session,
           [session](int id) { session->acceptPendingEdit(id); });
 
@@ -168,8 +169,6 @@ void DocumentArea::wireSessionToEditor(EditSession *session,
   connect(editor, &TextEdit::rejectAllPendingEditsRequested, session,
           [session]() { session->rejectAllPendingEdits(); });
 
-  // Auto-accept. When enabled, an approved plan is applied without
-  // waiting for a click.
   connect(editor, &TextEdit::autoAcceptChanged, session,
           [session](bool enabled) {
             if (!enabled) {
@@ -218,6 +217,132 @@ int DocumentArea::indexForDocument(TextDocument *document) const {
   return m_tabs->indexOf(page);
 }
 
+void DocumentArea::installTabButtons(TextWidget *page) {
+  if (!page || !m_tabs) {
+    return;
+  }
+
+  const int index = m_tabs->indexOf(page);
+
+  if (index < 0) {
+    return;
+  }
+
+  // The tab bar allows exactly one widget per side. Build a small
+  // container holding the view-mode toggle followed by the close
+  // button, and set that container as the tab's right-side button.
+  // The default close button is replaced by this container; the
+  // container's own close button fires the close path.
+
+  auto *container = new QWidget(m_tabs);
+  container->setObjectName(QStringLiteral("tabButtonContainer"));
+
+  auto *layout = new QHBoxLayout(container);
+  layout->setContentsMargins(0, 0, 0, 0);
+  layout->setSpacing(2);
+
+  auto *viewModeButton = new QToolButton(container);
+  viewModeButton->setObjectName(QStringLiteral("tabViewModeButton"));
+  viewModeButton->setText(QStringLiteral("◧"));
+  viewModeButton->setToolTip(tr("Edit / View"));
+  viewModeButton->setCursor(Qt::PointingHandCursor);
+  viewModeButton->setFocusPolicy(Qt::NoFocus);
+  viewModeButton->setAutoRaise(true);
+  viewModeButton->setFixedSize(kTabButtonSize, kTabButtonSize);
+  viewModeButton->setCheckable(true);
+
+  auto *closeButton = new QToolButton(container);
+  closeButton->setObjectName(QStringLiteral("tabCloseButton"));
+  closeButton->setText(QStringLiteral("✕"));
+  closeButton->setToolTip(tr("Close"));
+  closeButton->setCursor(Qt::PointingHandCursor);
+  closeButton->setFocusPolicy(Qt::NoFocus);
+  closeButton->setAutoRaise(true);
+  closeButton->setFixedSize(kTabButtonSize, kTabButtonSize);
+
+  layout->addWidget(viewModeButton);
+  layout->addWidget(closeButton);
+
+  connect(viewModeButton, &QToolButton::toggled, this,
+          [this, page](bool checked) {
+            if (!page) {
+              return;
+            }
+
+            page->setViewMode(checked);
+
+            if (page->editor() && page->editor()->toolbar()) {
+              page->editor()->toolbar()->setVisible(!checked);
+            }
+          });
+
+  connect(closeButton, &QToolButton::clicked, this, [this, page]() {
+    if (!page || !m_manager) {
+      return;
+    }
+
+    for (auto it = m_widgets.constBegin(); it != m_widgets.constEnd(); ++it) {
+      if (it.value() == page) {
+        m_manager->closeDocument(it.key());
+        return;
+      }
+    }
+  });
+
+  m_tabs->tabBar()->setTabButton(index, QTabBar::RightSide, container);
+
+  if (page->editor() && page->editor()->toolbar()) {
+    page->editor()->toolbar()->setVisible(!page->isViewMode());
+  }
+
+  if (page->isViewMode()) {
+    viewModeButton->blockSignals(true);
+    viewModeButton->setChecked(true);
+    viewModeButton->blockSignals(false);
+  }
+}
+
+void DocumentArea::syncTabButtons() {
+  for (TextWidget *page : std::as_const(m_widgets)) {
+    if (!page) {
+      continue;
+    }
+
+    const int index = m_tabs->indexOf(page);
+
+    if (index < 0) {
+      continue;
+    }
+
+    QWidget *container =
+        m_tabs->tabBar()->tabButton(index, QTabBar::RightSide);
+
+    if (!container || container->objectName() !=
+                          QStringLiteral("tabButtonContainer")) {
+      installTabButtons(page);
+      continue;
+    }
+
+    auto *viewModeButton = container->findChild<QToolButton *>(
+        QStringLiteral("tabViewModeButton"));
+
+    if (!viewModeButton) {
+      installTabButtons(page);
+      continue;
+    }
+
+    const bool viewMode = page->isViewMode();
+
+    viewModeButton->blockSignals(true);
+    viewModeButton->setChecked(viewMode);
+    viewModeButton->blockSignals(false);
+
+    if (page->editor() && page->editor()->toolbar()) {
+      page->editor()->toolbar()->setVisible(!viewMode);
+    }
+  }
+}
+
 void DocumentArea::onDocumentOpened(TextDocument *document) {
   if (!document || m_widgets.contains(document)) {
     return;
@@ -237,6 +362,8 @@ void DocumentArea::onDocumentOpened(TextDocument *document) {
 
   const int index = m_tabs->addTab(page, tabLabelFor(document));
   m_widgets.insert(document, page);
+
+  installTabButtons(page);
 
   m_tabs->setCurrentIndex(index);
   showTextTabs();
@@ -262,6 +389,13 @@ void DocumentArea::onDocumentClosed(TextDocument *document) {
   }
 
   const int index = m_tabs->indexOf(page);
+
+  if (index >= 0) {
+    if (QWidget *container =
+            m_tabs->tabBar()->tabButton(index, QTabBar::RightSide)) {
+      container->deleteLater();
+    }
+  }
 
   m_widgets.remove(document);
 

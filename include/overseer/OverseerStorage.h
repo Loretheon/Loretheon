@@ -30,6 +30,18 @@ bool writeMemory(const QString &text);
 // Creates the file and the section if needed. Returns true on success.
 bool appendFactToMemoryFile(const QString &path, const QString &fact);
 
+// Remove the first line under "## Accepted proposals" whose trimmed
+// content equals the given fact exactly. Returns true if a line was
+// removed. The prose block above the section is left untouched.
+bool removeFactFromMemoryFile(const QString &path, const QString &fact);
+
+// Replace the first line under "## Accepted proposals" whose trimmed
+// content equals `oldFact` with a line for `newFact`. If `oldFact` is
+// empty, this behaves as append. If `newFact` is empty, this behaves
+// as remove. Returns true if the file was rewritten.
+bool replaceFactInMemoryFile(const QString &path, const QString &oldFact,
+                             const QString &newFact);
+
 // Ensure the Overseer root and Sessions directory exist. Returns true on
 // success, false otherwise.
 bool ensureRoot();

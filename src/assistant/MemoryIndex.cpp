@@ -94,7 +94,6 @@ QStringList MemoryIndex::collectMarkdownFiles() const {
   while (it.hasNext()) {
     const QString path = it.next();
 
-    // Do not index anything under the .index folder itself.
     if (path.contains(QStringLiteral("/.index/"))) {
       continue;
     }
@@ -128,8 +127,6 @@ QVector<MemoryIndex::Entry> MemoryIndex::extractScopes(
   const DocumentNode &root = structure.root();
 
   if (!root.isValid()) {
-    // If the memory file has no Markdown structure, index the whole
-    // body as a single scope so nothing is lost.
     if (text.trimmed().length() >= kMinBodyLength) {
       Entry entry;
       entry.filePath = absolutePath;
@@ -160,8 +157,6 @@ void MemoryIndex::collectNodes(const DocumentNode &node,
                                const QString &filePath,
                                QVector<Entry> &out) const {
   if (node.isRoot() && node.isValid()) {
-    // The root carries the whole document. Emit it, because memory
-    // files have no scope tree most of the time.
     if (documentText.trimmed().length() >= kMinBodyLength) {
       Entry entry;
       entry.filePath = filePath;
@@ -287,10 +282,7 @@ int MemoryIndex::rebuild() {
 
   QDir().mkpath(dir);
 
-  const QString indexPath = QDir(dir).filePath(kIndexFile);
-  const QString sidecarPath = QDir(dir).filePath(kSidecarFile);
-
-  if (!m_vectors->save(indexPath) || !saveSidecar(sidecarPath)) {
+  if (!saveIndex() || !saveSidecar(QDir(dir).filePath(kSidecarFile))) {
     emit finished(-1);
     return -1;
   }
@@ -300,6 +292,82 @@ int MemoryIndex::rebuild() {
 
   emit finished(scopes);
   return scopes;
+}
+
+int MemoryIndex::refreshFile(const QString &absolutePath) {
+  if (absolutePath.isEmpty()) {
+    return -1;
+  }
+
+  const QString dir = indexDirectory();
+
+  if (dir.isEmpty()) {
+    return -1;
+  }
+
+  if (!m_inference || !m_inference->isEmbedderReady()) {
+    return -1;
+  }
+
+  if (!m_vectors || !m_vectors->isValid()) {
+    return -1;
+  }
+
+  const QString canonical = QFileInfo(absolutePath).absoluteFilePath();
+
+  // Remove existing entries for this file. VectorIndex::removeIds
+  // compacts the underlying storage and reassigns ids sequentially,
+  // so the sidecar entries must be rebuilt in the same pass.
+
+  QVector<int64_t> idsToRemove;
+  QVector<Entry> surviving;
+
+  surviving.reserve(m_entries.size());
+
+  for (int i = 0; i < m_entries.size(); ++i) {
+    const Entry &entry = m_entries.at(i);
+
+    if (entry.filePath == canonical) {
+      idsToRemove.append(i);
+    } else {
+      surviving.append(entry);
+    }
+  }
+
+  if (!idsToRemove.isEmpty()) {
+    m_vectors->removeIds(idsToRemove);
+  }
+
+  m_entries = surviving;
+
+  // Re-extract the file from disk.
+
+  const QVector<Entry> scopes = extractScopes(canonical);
+
+  int added = 0;
+
+  for (const Entry &entry : scopes) {
+    const std::vector<float> vector = m_inference->embed(entry.body);
+
+    if (vector.empty()) {
+      continue;
+    }
+
+    const int64_t id = m_vectors->add(vector);
+
+    if (id < 0) {
+      continue;
+    }
+
+    m_entries.append(entry);
+    ++added;
+  }
+
+  if (!saveIndex() || !saveSidecar(QDir(dir).filePath(kSidecarFile))) {
+    return -1;
+  }
+
+  return added;
 }
 
 bool MemoryIndex::isReady() const {
@@ -317,6 +385,18 @@ MemoryIndex::Entry MemoryIndex::entryFor(int64_t vectorId) const {
     return {};
   }
   return m_entries.at(static_cast<int>(vectorId));
+}
+
+bool MemoryIndex::saveIndex() const {
+  const QString dir = indexDirectory();
+
+  if (dir.isEmpty() || !m_vectors) {
+    return false;
+  }
+
+  QDir().mkpath(dir);
+
+  return m_vectors->save(QDir(dir).filePath(kIndexFile));
 }
 
 bool MemoryIndex::saveSidecar(const QString &path) const {

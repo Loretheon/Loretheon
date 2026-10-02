@@ -13,5 +13,39 @@
         <file>dark/chevron_down_disabled.svg</file>
         <file>dark/branch_open.svg</file>
         <file>dark/branch_closed.svg</file>
+        <file>dark/checkbox.svg</file>
+        <file>dark/format-text-bold.svg</file>
+        <file>dark/format-text-italic.svg</file>
+        <file>dark/format-text-strikethrough.svg</file>
+        <file>dark/format-text-code.svg</file>
+        <file>dark/format-text-highlight.svg</file>
+        <file>dark/insert-link.svg</file>
+        <file>dark/insert-image.svg</file>
+        <file>dark/format-list-unordered.svg</file>
+        <file>dark/format-list-ordered.svg</file>
+        <file>dark/format-quote.svg</file>
+        <file>dark/insert-table.svg</file>
+        <file>dark/edit-delete.svg</file>
+        <file>dark/list-add.svg</file>
+        <file>dark/list-remove.svg</file>
+        <file>dark/document-properties.svg</file>
+        <file>dark/view-refresh.svg</file>
+        <file>dark/text-x-generic.svg</file>
+        <file>dark/format-justify-left.svg</file>
+        <file>dark/format-justify-center.svg</file>
+        <file>dark/format-justify-right.svg</file>
+        <file>dark/format-indent-less.svg</file>
+        <file>dark/format-indent-more.svg</file>
+        <file>dark/go-next.svg</file>
+        <file>dark/go-previous.svg</file>
+        <file>dark/view-list-details.svg</file>
+        <file>dark/view-list-tree.svg</file>
+        <file>dark/text-html.svg</file>
+        <file>dark/dialog-information.svg</file>
+        <file>dark/footnote.svg</file>
+        <file>dark/tag.svg</file>
+        <file>dark/link.svg</file>
+        <file>dark/video-x-generic.svg</file>
+        <file>dark/accessories-calculator.svg</file>
     </qresource>
 </RCC>

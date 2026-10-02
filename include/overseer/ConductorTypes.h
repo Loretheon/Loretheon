@@ -2,51 +2,62 @@
 
 #include <QDateTime>
 #include <QString>
+#include <QStringList>
 
-// Where a request came from. User requests are typed into the Overseer
-// input. Lore requests are submitted by the assistant on the user's
-// behalf. The transcript distinguishes them so the user can see which
-// requests they made and which ones Lore made.
 enum class Origin {
   User,
   Lore,
 };
 
-// A user request as it appears in the queue and on the conductor's
-// board. Immutable except for its state, which the conductor advances.
 struct ConductorRequest {
-  QString id;              // uuid
-  QString text;            // verbatim user text
+  QString id;
+
+  // Human-readable description shown on the board. For a user request
+  // this is the text the user typed. For a child spawned by a fan-out
+  // it is a short label derived from the action, not the action's raw
+  // JSON.
+  QString text;
+
+  // Raw pre-decided action JSON, empty for user requests. When set,
+  // the conductor routes the request by parsing this instead of
+  // re-asking the model. text and actionJson carry the same task in
+  // two forms: one for humans, one for the router.
+  QString actionJson;
+
   QDateTime queuedAt;
 
   Origin origin = Origin::User;
 
   // "inbox", "routing", "delegated", "awaiting", "done", "failed",
-  // "rejected"
+  // "rejected", "skipped"
+  //
+  // Terminal states: done, rejected, skipped.
+  // Non-terminal: inbox, routing, delegated, awaiting.
+  // failed is recoverable — the user may retry, remove, or skip.
   QString state = QStringLiteral("inbox");
 
-  // Set when state is "delegated", "awaiting", "done", "failed":
-  QString workerId;        // the agent handling it
-  QString planId;          // scoped edit plan id, if applicable
+  QString workerId;
+  QString planId;
 
-  // Set when state is "done" with a non-worker answer, or when state
-  // is "rejected":
   QString answer;
   QString rejectReason;
 
-  // How many times this request has been automatically retried after
-  // a failure. A value of 1 means the first failure has already been
-  // retried once; a second failure is terminal.
   int retryCount = 0;
+
+  bool deferred = false;
+
+  // Ids of the dependencies that are not yet satisfied, if the request
+  // is deferred. Populated by settleDependentRequests.
+  QStringList blockedOn;
+
+  QString parentId;
 };
 
-// A worker on the conductor's roster. File agents are persistent;
-// scoped edit agents are transient and one per file.
 struct ConductorWorker {
   QString id;
-  QString type;            // "file" or "scoped_edit"
-  QString domain;          // file agents: a directory path or topic
-  QString file;            // scoped edit agents: the target file
+  QString type;            // "file", "scoped_edit", "memory"
+  QString domain;
+  QString file;
   QString state;           // "idle", "busy", "waiting", "done"
   int queueDepth = 0;
 };

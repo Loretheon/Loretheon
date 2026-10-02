@@ -1,0 +1,6 @@
+<RCC>
+    <qresource prefix="/avatar/julia">
+        <file>julia.glb</file>
+        <file>skeleton.ozz</file>
+    </qresource>
+</RCC>

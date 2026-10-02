@@ -34,28 +34,29 @@ TranscriptPanel::TranscriptPanel(TranscriptStore *store, QWidget *parent)
 
   m_ribbon = new TranscriptRibbon(this);
 
-  auto *filterRow = new QHBoxLayout;
-  filterRow->setContentsMargins(4, 2, 4, 2);
-  filterRow->setSpacing(8);
+  m_filterRow = new QWidget(this);
+  auto *filterLayout = new QHBoxLayout(m_filterRow);
+  filterLayout->setContentsMargins(4, 2, 4, 2);
+  filterLayout->setSpacing(8);
 
-  m_showUser = new QCheckBox(tr("Me"), this);
-  m_showAssistant = new QCheckBox(tr("Overseer"), this);
-  m_showTools = new QCheckBox(tr("Tools"), this);
-  m_showProposals = new QCheckBox(tr("Proposals"), this);
-  m_showErrors = new QCheckBox(tr("Errors"), this);
-  m_showTimestampsCheck = new QCheckBox(tr("Times"), this);
-  m_pinToBottomCheck = new QCheckBox(tr("Follow"), this);
+  m_showUser = new QCheckBox(tr("Me"), m_filterRow);
+  m_showAssistant = new QCheckBox(tr("Overseer"), m_filterRow);
+  m_showTools = new QCheckBox(tr("Tools"), m_filterRow);
+  m_showProposals = new QCheckBox(tr("Proposals"), m_filterRow);
+  m_showErrors = new QCheckBox(tr("Errors"), m_filterRow);
+  m_showTimestampsCheck = new QCheckBox(tr("Times"), m_filterRow);
+  m_pinToBottomCheck = new QCheckBox(tr("Follow"), m_filterRow);
   m_pinToBottomCheck->setToolTip(
       tr("Stick the transcript to the newest event as it arrives."));
 
-  filterRow->addWidget(m_showUser);
-  filterRow->addWidget(m_showAssistant);
-  filterRow->addWidget(m_showTools);
-  filterRow->addWidget(m_showProposals);
-  filterRow->addWidget(m_showErrors);
-  filterRow->addStretch(1);
-  filterRow->addWidget(m_pinToBottomCheck);
-  filterRow->addWidget(m_showTimestampsCheck);
+  filterLayout->addWidget(m_showUser);
+  filterLayout->addWidget(m_showAssistant);
+  filterLayout->addWidget(m_showTools);
+  filterLayout->addWidget(m_showProposals);
+  filterLayout->addWidget(m_showErrors);
+  filterLayout->addStretch(1);
+  filterLayout->addWidget(m_pinToBottomCheck);
+  filterLayout->addWidget(m_showTimestampsCheck);
 
   m_scroll = new QScrollArea(this);
   m_scroll->setWidgetResizable(true);
@@ -74,12 +75,7 @@ TranscriptPanel::TranscriptPanel(TranscriptStore *store, QWidget *parent)
 
   m_scroll->setWidget(m_cardsHost);
 
-  auto *root = new QVBoxLayout(this);
-  root->setContentsMargins(0, 0, 0, 0);
-  root->setSpacing(0);
-  root->addWidget(m_ribbon);
-  root->addLayout(filterRow);
-  root->addWidget(m_scroll, 1);
+  relayoutForOrientation();
 
   connect(m_ribbon, &TranscriptRibbon::jumpRequested, this,
           &TranscriptPanel::onRibbonJumpRequested);
@@ -93,15 +89,13 @@ TranscriptPanel::TranscriptPanel(TranscriptStore *store, QWidget *parent)
             &TranscriptPanel::onEventUpdated);
   }
 
-  if (m_scroll) {
-    connect(m_scroll->verticalScrollBar(), &QScrollBar::valueChanged, this,
-            [this](int) {
-              updateRibbonVisibleRange();
+  connect(m_scroll->verticalScrollBar(), &QScrollBar::valueChanged, this,
+          [this](int) {
+            updateRibbonVisibleRange();
 
-              if (m_snapPending && !isScrollbarAtBottom())
-                m_snapPending = false;
-            });
-  }
+            if (m_snapPending && !isScrollbarAtBottom())
+              m_snapPending = false;
+          });
 
   auto rebuildFromFilter = [this]() {
     savePreferences();
@@ -130,6 +124,56 @@ TranscriptPanel::TranscriptPanel(TranscriptStore *store, QWidget *parent)
 
   loadPreferences();
   onEventsReset();
+}
+
+void TranscriptPanel::relayoutForOrientation() {
+  // Tear down whatever layout is currently installed. Qt will not let
+  // us reassign the layout of a widget that already has one, so we
+  // delete the old layout and install a fresh one.
+  if (QLayout *old = layout()) {
+    QLayoutItem *item = nullptr;
+
+    while ((item = old->takeAt(0)) != nullptr)
+      delete item;
+
+    delete old;
+  }
+
+  const bool horizontal = (m_orientation == Qt::Horizontal);
+
+  if (horizontal) {
+    // Ribbon hidden: it is a vertical minimap and does not make sense
+    // in a short wide strip. Filter row on top, scroll area below.
+    m_ribbon->hide();
+
+    auto *root = new QVBoxLayout(this);
+    root->setContentsMargins(0, 0, 0, 0);
+    root->setSpacing(0);
+    root->addWidget(m_filterRow, 0);
+    root->addWidget(m_scroll, 1);
+  } else {
+    m_ribbon->show();
+
+    auto *root = new QVBoxLayout(this);
+    root->setContentsMargins(0, 0, 0, 0);
+    root->setSpacing(0);
+    root->addWidget(m_ribbon, 0);
+    root->addWidget(m_filterRow, 0);
+    root->addWidget(m_scroll, 1);
+  }
+
+  m_filterRow->show();
+  m_scroll->show();
+}
+
+void TranscriptPanel::setDockOrientation(Qt::Orientation orientation) {
+  if (m_orientation == orientation)
+    return;
+
+  m_orientation = orientation;
+
+  relayoutForOrientation();
+  updateRibbonVisibleRange();
 }
 
 void TranscriptPanel::loadPreferences() {
@@ -443,6 +487,11 @@ void TranscriptPanel::scrollToEventCard(int index) {
 void TranscriptPanel::updateRibbonVisibleRange() {
   if (!m_scroll || !m_ribbon || !m_store)
     return;
+
+  if (m_orientation == Qt::Horizontal) {
+    m_ribbon->setVisibleRange(0, 0);
+    return;
+  }
 
   const auto &events = m_store->events();
 

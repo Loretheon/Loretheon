@@ -6,24 +6,30 @@
 #include <QVector>
 
 // The conductor's request queue, backed by queue.json in the session
-// folder. The queue is FIFO. Requests are appended by the UI and
-// consumed by the conductor one at a time.
+// folder.
 class ConductorQueue : public QObject {
   Q_OBJECT
 
 public:
   explicit ConductorQueue(QObject *parent = nullptr);
 
-  // Set the file path. Loads the queue if the file exists.
   void setQueuePath(const QString &path);
 
-  // Append a new request. Emits requestAdded.
   QString enqueue(const QString &text);
 
-  // Remove a request by id. Returns true if it was present.
+  QString enqueueChild(const QString &text, const QString &parentId,
+                       Origin origin);
+
+  QString enqueueChild(const QString &text,
+                     const QString &actionJson,
+                     const QString &parentId,
+                     Origin origin);
+
+
   bool remove(const QString &id);
 
-  // Advance the state of a request. Persists on every change.
+  QStringList removeChildren(const QString &parentId);
+
   void setState(const QString &id, const QString &state);
 
   void setWorker(const QString &id, const QString &workerId,
@@ -33,17 +39,35 @@ public:
 
   void setRejectReason(const QString &id, const QString &reason);
 
-  // Increment the retry count for a request and put it back in the
-  // inbox so it is picked up again. Used for the single automatic
-  // retry after a failure.
+  void setDeferred(const QString &id, bool deferred);
+
+  // Record the ids of the dependencies this request is waiting on.
+  // Pass an empty list to clear.
+  void setBlockedOn(const QString &id, const QStringList &blockedOn);
+
+  void clearAllDeferred();
+
+  // Automatic retry: bumps retryCount. Used by the failure paths that
+  // want the "max N attempts" cap to apply.
   void retry(const QString &id);
 
-  // The first request whose state is "inbox", or an empty request.
+  // Manual retry: resets retryCount to zero. Used when the user clicks
+  // Retry on a failed request. A manual retry is a fresh start.
+  void retryFresh(const QString &id);
+
+  // Manual skip: mark the request skipped so that its dependents
+  // continue as if the dependency had succeeded. Sets rejectReason to
+  // the supplied text so the user can see why.
+  void skip(const QString &id, const QString &reason);
+
   ConductorRequest nextInbox() const;
+  ConductorRequest nextReadyInbox() const;
 
   QVector<ConductorRequest> all() const { return m_requests; }
 
   ConductorRequest byId(const QString &id) const;
+
+  QVector<ConductorRequest> children(const QString &parentId) const;
 
   signals:
     void requestAdded(const QString &id);

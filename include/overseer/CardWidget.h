@@ -27,21 +27,19 @@ public:
   bool isFocusedCard() const { return m_focused; }
   void setFocusedCard(bool focused);
 
-signals:
-  void clicked();
+  QSize sizeHint() const override;
+  QSize minimumSizeHint() const override;
+
+  signals:
+    void clicked();
   void doubleClicked();
   void closeRequested();
 
 protected:
-  // Subclasses call buildBody() at the *end* of their own constructor.
-  // Never call from CardWidget's constructor: the vtable is still
-  // pointing at CardWidget at that point.
   void buildBody();
 
-  // Override to add widgets into the body layout.
   virtual void populateBody(QVBoxLayout *bodyLayout) = 0;
 
-  // Override to provide a context menu. Return nullptr for none.
   virtual QMenu *buildContextMenu(QWidget *parent);
 
   virtual void onFocusedChanged(bool focused);

@@ -10,6 +10,7 @@ class TranscriptRibbon;
 class TranscriptStore;
 
 class QVBoxLayout;
+class QHBoxLayout;
 class QScrollArea;
 class QCheckBox;
 class QLabel;
@@ -20,9 +21,6 @@ class TranscriptPanel : public QWidget {
 public:
   explicit TranscriptPanel(TranscriptStore *store, QWidget *parent = nullptr);
 
-  // Re-point at a different store. Disconnects from the old store,
-  // clears the cards, connects to the new one, and rebuilds. Used when
-  // the Overseer view switches sessions.
   void setStore(TranscriptStore *store);
   TranscriptStore *store() const { return m_store; }
 
@@ -31,6 +29,13 @@ public:
 
   void setPinToBottom(bool pin);
   bool pinToBottom() const { return m_pinToBottom; }
+
+  // Which edge of the page the panel is docked to. Determines whether
+  // the panel lays out vertically (Left/Right) or horizontally
+  // (Top/Bottom). The ribbon is hidden in horizontal mode because its
+  // vertical minimap metaphor does not translate to a short strip.
+  void setDockOrientation(Qt::Orientation orientation);
+  Qt::Orientation dockOrientation() const { return m_orientation; }
 
 signals:
   void memoryProposalAccepted(const QString &key, const QString &scope);
@@ -55,6 +60,8 @@ private:
   void loadPreferences();
   void savePreferences();
 
+  void relayoutForOrientation();
+
   bool passesFilter(const TranscriptEvent &event) const;
 
   void snapToBottom();
@@ -67,12 +74,15 @@ private:
 
   TranscriptStore *m_store = nullptr;
 
+  Qt::Orientation m_orientation = Qt::Vertical;
+
   TranscriptRibbon *m_ribbon = nullptr;
   QScrollArea *m_scroll = nullptr;
   QWidget *m_cardsHost = nullptr;
   QVBoxLayout *m_cardsLayout = nullptr;
   QLabel *m_emptyLabel = nullptr;
 
+  QWidget *m_filterRow = nullptr;
   QCheckBox *m_showUser = nullptr;
   QCheckBox *m_showAssistant = nullptr;
   QCheckBox *m_showTools = nullptr;

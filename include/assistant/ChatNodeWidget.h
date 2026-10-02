@@ -8,8 +8,10 @@
 class ChatTree;
 class MarkdownView;
 
+class QHBoxLayout;
 class QLabel;
 class QPushButton;
+class QStackedWidget;
 class QToolButton;
 class QVBoxLayout;
 
@@ -35,8 +37,17 @@ private:
   void applyState();
   void rebuildCarousel();
 
-  void openChild(int index);
-  void closeChild(const QString &childId);
+  void buildPages();
+  void ensurePage(const QString &childId);
+  void rebuildDots();
+  void updatePageChrome();
+
+  void goToPage(int index);
+  void goPrev();
+  void goNext();
+
+  void onDotClicked(int index);
+
   ChatNodeWidget *buildChildWidget(const ChatNode &child);
 
   QString m_id;
@@ -58,10 +69,23 @@ private:
   QVBoxLayout *m_bodyLayout = nullptr;
   QVBoxLayout *m_rootLayout = nullptr;
 
-  QWidget *m_arrowColumn = nullptr;
-  QVBoxLayout *m_arrowLayout = nullptr;
   QWidget *m_carouselHost = nullptr;
   QVBoxLayout *m_carouselLayout = nullptr;
 
-  QHash<QString, ChatNodeWidget *> m_openChildren;
+  QStackedWidget *m_pages = nullptr;
+  QWidget *m_chromeRow = nullptr;
+  QHBoxLayout *m_chromeLayout = nullptr;
+
+  QToolButton *m_prevButton = nullptr;
+  QToolButton *m_nextButton = nullptr;
+  QWidget *m_dotsHost = nullptr;
+  QHBoxLayout *m_dotsLayout = nullptr;
+  QLabel *m_counter = nullptr;
+
+  QHash<QString, ChatNodeWidget *> m_pagesByChildId;
+  QHash<QString, QToolButton *> m_dotsByChildId;
+
+  int m_currentPage = -1;
+  int m_lastKnownChildCount = 0;
+  bool m_followTail = true;
 };

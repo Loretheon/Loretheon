@@ -6,12 +6,17 @@
 #include "../../include/assistant/AssistantMemory.h"
 #include "../../include/assistant/AssistantProfile.h"
 #include "../../include/assistant/AssistantToolRegistry.h"
+#include "../../include/assistant/ChatTree.h"
+#include "../../include/assistant/ChatTreeStore.h"
 #include "../../include/assistant/MemoryIndex.h"
 #include "../../include/assistant/NoteEditJob.h"
+#include "../../include/assistant/ProfileEditJob.h"
 #include "../../include/assistant/SpeechAnimator.h"
 #include "../../include/assistant/tools/AssistantTools.h"
 #include "../../include/assistant/tools/NoteTools.h"
 #include "../../include/avatar/AvatarWidget.h"
+#include "../../include/ingest/IngestOptions.h"
+#include "../../include/ingest/IngestService.h"
 #include "../../include/overseer/OverseerSessionManager.h"
 #include "../../include/search/NotePromoter.h"
 #include "../../include/search/RetrievalLoop.h"
@@ -23,9 +28,14 @@
 #include <QDebug>
 #include <QDir>
 #include <QEventLoop>
+#include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QRegularExpression>
+#include <QSaveFile>
+#include <QTextStream>
 #include <QTimer>
+#include <QUuid>
 
 namespace {
 
@@ -33,6 +43,15 @@ constexpr double kTurnTemperature = 0.6;
 constexpr int kTurnTimeoutMs = 120000;
 constexpr int kMemoryRecallLimit = 4;
 constexpr int kJobWaitTimeoutMs = 180000;
+constexpr int kTurnWatchdogMs = 180000;
+
+constexpr int kPasteThresholdChars = 2000;
+
+constexpr int kRecentTailTokenBudget = 4000;
+
+int estimateTokens(const QString &text) {
+  return (text.size() + 3) / 4;
+}
 
 QString memoryContext(AssistantMemory *memory, const QString &query) {
   if (!memory) {
@@ -49,6 +68,42 @@ QString memoryContext(AssistantMemory *memory, const QString &query) {
          recalled.join(QStringLiteral("\n---\n"));
 }
 
+QString decodeMarkerInstruction(const QString &encoded) {
+  QString result;
+  result.reserve(encoded.size());
+
+  for (int i = 0; i < encoded.size(); ++i) {
+    const QChar ch = encoded.at(i);
+
+    if (ch != QChar('\\') || i + 1 >= encoded.size()) {
+      result.append(ch);
+      continue;
+    }
+
+    const QChar next = encoded.at(i + 1);
+
+    if (next == QChar('\\')) {
+      result.append(QChar('\\'));
+      ++i;
+      continue;
+    }
+
+    if (next == QChar('n')) {
+      result.append(QChar('\n'));
+      ++i;
+      continue;
+    }
+
+    result.append(ch);
+  }
+
+  return result;
+}
+
+QString makePasteId() {
+  return QUuid::createUuid().toString(QUuid::WithoutBraces).left(8);
+}
+
 } // namespace
 
 LoreAssistant::LoreAssistant(const Config &config, QObject *parent)
@@ -57,8 +112,16 @@ LoreAssistant::LoreAssistant(const Config &config, QObject *parent)
   m_memory = new AssistantMemory();
   m_activity = new AssistantActivity(this);
   m_tools = new assistant::AssistantToolRegistry();
+  m_chatStore = new ChatTreeStore(this);
 
   m_animator = new SpeechAnimator(m_config.inference, m_config.avatar, this);
+
+  m_watchdog = new QTimer(this);
+  m_watchdog->setSingleShot(false);
+  m_watchdog->setInterval(5000);
+
+  connect(m_watchdog, &QTimer::timeout, this,
+          &LoreAssistant::onTurnWatchdog);
 
   if (m_config.inference) {
     connect(m_config.inference, &InferenceService::llmDelta, this,
@@ -99,6 +162,7 @@ bool LoreAssistant::start() {
   }
 
   QDir().mkpath(m_config.root);
+  QDir().mkpath(QDir(m_config.root).filePath(QStringLiteral("pastes")));
 
   m_profile->setRoot(m_config.root);
 
@@ -114,6 +178,10 @@ bool LoreAssistant::start() {
     qWarning() << "[LoreAssistant] Memory tree could not be created under"
                << m_config.root;
     return false;
+  }
+
+  if (m_chatStore) {
+    m_chatStore->setRoot(m_config.root);
   }
 
   if (m_memoryIndex) {
@@ -139,6 +207,8 @@ bool LoreAssistant::start() {
 
   m_activity->startBatchTimer();
 
+  m_watchdog->start();
+
   m_started = true;
 
   qDebug() << "[LoreAssistant] Started. Root:" << m_config.root
@@ -155,6 +225,10 @@ void LoreAssistant::stop() {
   abortAll();
 
   m_activity->stopBatchTimer();
+
+  if (m_watchdog) {
+    m_watchdog->stop();
+  }
 
   if (m_animator) {
     m_animator->reset();
@@ -173,16 +247,126 @@ void LoreAssistant::say(const QString &text) {
   emit assistantSaid(text);
 }
 
-void LoreAssistant::setCompletionPolicy(CompletionPolicy policy) {
-  m_completionPolicy = policy;
-}
-
 const LoreAssistant::Job *LoreAssistant::job(const QString &jobId) const {
   auto it = m_jobs.constFind(jobId);
   return it == m_jobs.constEnd() ? nullptr : &it.value();
 }
 
 QStringList LoreAssistant::jobIds() const { return m_jobs.keys(); }
+
+QString LoreAssistant::pastePath(const QString &id) const {
+  if (m_config.root.isEmpty() || id.isEmpty())
+    return {};
+
+  return QDir(m_config.root)
+      .filePath(QStringLiteral("pastes/%1.txt").arg(id));
+}
+
+QString LoreAssistant::writePaste(const QString &body) {
+  if (m_config.root.isEmpty()) {
+    return {};
+  }
+
+  QDir().mkpath(QDir(m_config.root).filePath(QStringLiteral("pastes")));
+
+  const QString id = makePasteId();
+  const QString path = pastePath(id);
+
+  QSaveFile file(path);
+
+  if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+    qWarning() << "[LoreAssistant] Cannot write paste:" << path;
+    return {};
+  }
+
+  QTextStream stream(&file);
+  stream.setEncoding(QStringConverter::Utf8);
+  stream << body;
+  stream.flush();
+
+  if (stream.status() != QTextStream::Ok || !file.commit()) {
+    qWarning() << "[LoreAssistant] Paste commit failed:" << path;
+    return {};
+  }
+
+  return id;
+}
+
+bool LoreAssistant::canImport(const QString &sourcePath) const {
+  if (!m_config.ingest || sourcePath.isEmpty()) {
+    return false;
+  }
+
+  return m_config.ingest->canImport(sourcePath);
+}
+
+bool LoreAssistant::importToMemory(const QString &sourcePath,
+                                   const QString &topicName) {
+  if (!m_config.ingest) {
+    emit statusMessage(tr("Import is not available."));
+    return false;
+  }
+
+  const QFileInfo info(sourcePath);
+
+  if (!info.exists() || !info.isFile()) {
+    emit statusMessage(tr("No such file: %1").arg(sourcePath));
+    return false;
+  }
+
+  if (!m_config.ingest->canImport(sourcePath)) {
+    emit statusMessage(
+        tr("No extractor for %1.").arg(info.fileName()));
+    return false;
+  }
+
+  QString slug = topicName.trimmed();
+
+  if (slug.isEmpty()) {
+    slug = info.completeBaseName();
+  }
+
+  slug = AssistantMemory::slugify(slug);
+
+  const QString destination =
+      QDir(m_config.root)
+          .filePath(QStringLiteral("memories/topics"));
+
+  QDir().mkpath(destination);
+
+  IngestOptions options;
+  options.destinationFolder = destination;
+  options.noteNameOverride = slug;
+  options.writeProvenance = false;
+  options.sectionPerPage = false;
+
+  const QString fileName = info.fileName();
+
+  m_config.ingest->import(
+      sourcePath, options,
+      [this, fileName, destination](IngestService::Outcome outcome) {
+        if (!outcome.ok()) {
+          emit statusMessage(
+              tr("Import failed: %1").arg(outcome.error));
+          return;
+        }
+
+        // The ingest service may have uniquified the file name. Refresh
+        // the index for the exact path it wrote.
+        if (m_memoryIndex) {
+          m_memoryIndex->refreshFile(outcome.notePath);
+        }
+
+        emit knowledgeChanged();
+
+        emit statusMessage(
+            tr("Imported %1 into memory as %2.")
+                .arg(fileName, QFileInfo(outcome.notePath).fileName()));
+      },
+      nullptr);
+
+  return true;
+}
 
 void LoreAssistant::handleUserMessage(const QString &text) {
   const QString trimmed = text.trimmed();
@@ -201,27 +385,115 @@ void LoreAssistant::handleUserMessage(const QString &text) {
     return;
   }
 
-  if (m_turnActive) {
-    emit statusMessage(tr("One moment — I am still answering."));
-    return;
+  QString messageText = trimmed;
+
+  if (trimmed.size() > kPasteThresholdChars) {
+    const QString id = writePaste(trimmed);
+
+    if (id.isEmpty()) {
+      emit statusMessage(tr("Could not store the pasted text."));
+      return;
+    }
+
+    messageText = QStringLiteral(
+                      "[paste: %1 chars — id %2. Call read_paste(\"%2\") "
+                      "to read it.]")
+                      .arg(trimmed.size())
+                      .arg(id);
   }
 
-  // Reset the reply node at the start of a new exchange only.
-  m_activeReplyNode.clear();
-  m_turnReplyBuffer.clear();
+  Turn turn;
+  turn.token = QUuid::createUuid();
+  turn.replyNode = QUuid::createUuid().toString(QUuid::WithoutBraces);
+  turn.messages = buildMessages(messageText);
+  turn.toolRoundsRemaining = 8;
 
-  m_turnActive = true;
-  m_toolRoundsRemaining = 8;
+  m_turns.insert(turn.token, turn);
+  m_nodeToTurn.insert(turn.replyNode, turn.token);
+  m_turnUserText.insert(turn.token, trimmed);
 
-  m_turnMessages = buildMessages(trimmed);
-
-  const QJsonArray tools = m_tools ? m_tools->schemas() : QJsonArray();
-
-  m_turnToken = m_config.inference->sendChatRequest(
-      m_turnMessages, QString(), kTurnTemperature, kTurnTimeoutMs,
-      QString(), QJsonObject(), tools, QString());
-
+  emit assistantReplyStarted(turn.replyNode);
   emit statusChanged(tr("Thinking"));
+
+  sendTurnRequest(m_turns[turn.token]);
+}
+
+void LoreAssistant::setCurrentChat(const ChatTree *tree) {
+  m_recentTail = QJsonArray();
+
+  if (!tree)
+    return;
+
+  struct Pair {
+    QString user;
+    QString assistant;
+  };
+
+  QVector<Pair> pairs;
+
+  const QVector<QString> roots = tree->roots();
+
+  for (const QString &id : roots) {
+    const ChatNode *node = tree->node(id);
+
+    if (!node || node->kind != ChatNode::Kind::UserText)
+      continue;
+
+    Pair pair;
+    pair.user = node->text;
+
+    const int index = roots.indexOf(id);
+
+    for (int j = index + 1; j < roots.size(); ++j) {
+      const ChatNode *candidate = tree->node(roots.at(j));
+
+      if (!candidate)
+        continue;
+
+      if (candidate->kind == ChatNode::Kind::AssistantText) {
+        pair.assistant = candidate->text;
+        break;
+      }
+
+      if (candidate->kind == ChatNode::Kind::UserText)
+        break;
+    }
+
+    pairs.append(pair);
+  }
+
+  QVector<Pair> kept;
+  int total = 0;
+
+  for (int i = pairs.size() - 1; i >= 0; --i) {
+    const Pair &pair = pairs.at(i);
+
+    const int cost = estimateTokens(pair.user) +
+                     estimateTokens(pair.assistant) + 16;
+
+    if (total + cost > kRecentTailTokenBudget && !kept.isEmpty())
+      break;
+
+    kept.prepend(pair);
+    total += cost;
+  }
+
+  for (const Pair &pair : kept) {
+    QJsonObject userMessage;
+    userMessage.insert(QStringLiteral("role"), QStringLiteral("user"));
+    userMessage.insert(QStringLiteral("content"), pair.user);
+    m_recentTail.append(userMessage);
+
+    if (!pair.assistant.isEmpty()) {
+      QJsonObject assistantMessage;
+      assistantMessage.insert(QStringLiteral("role"),
+                              QStringLiteral("assistant"));
+      assistantMessage.insert(QStringLiteral("content"), pair.assistant);
+      m_recentTail.append(assistantMessage);
+    }
+  }
+
+  trimRecentTail();
 }
 
 QJsonArray LoreAssistant::buildMessages(const QString &userText) {
@@ -248,6 +520,11 @@ QJsonArray LoreAssistant::buildMessages(const QString &userText) {
 
   system.insert(QStringLiteral("content"), content);
   messages.append(system);
+
+  for (const QJsonValue &value : std::as_const(m_recentTail)) {
+    if (value.isObject())
+      messages.append(value.toObject());
+  }
 
   QJsonObject user;
   user.insert(QStringLiteral("role"), QStringLiteral("user"));
@@ -288,17 +565,35 @@ QString LoreAssistant::systemPrompt() const {
       "Keep replies short. The material above is what you already "
       "know; it is not a reference to consult.\n"
       "\n"
+      "The recent conversation is included below as real messages. "
+      "The oldest ones are trimmed when the tail grows too long. "
+      "Anything further back is not in the prompt; if you need it, "
+      "search your memories.\n"
+      "\n"
+      "## Pastes\n"
+      "\n"
+      "When the user pastes a large block of text, the message you "
+      "receive carries a placeholder like "
+      "[paste: 4821 chars — id a3f19c. Call read_paste(\"a3f19c\") "
+      "to read it.] The body is on disk and is not sent to you "
+      "automatically. Call read_paste only when you actually need "
+      "the contents.\n"
+      "\n"
       "## Jobs and the cache\n"
       "\n"
       "Anything that reaches outside this conversation — a search, "
-      "a delegate, a promote — is a job. Jobs run in the background. "
-      "A job returns a job id immediately and does not block. You "
-      "can start a job and keep talking.\n"
+      "a delegate, a promote, a profile edit — is a job. Jobs run in "
+      "the background. A job returns a job id immediately and does "
+      "not block. You can start a job and keep talking.\n"
       "\n"
       "The result of a job is stored in a cache keyed by its id. "
       "You are not told the result automatically. If you need it, "
       "call read_job with the id. If the job is still running, the "
       "call waits; the user can abort the wait at any time.\n"
+      "\n"
+      "The user may send another message while you are still "
+      "answering. Treat each message as its own turn. Do not assume "
+      "the turn you are in is the only one.\n"
       "\n"
       "## Tools\n"
       "\n"
@@ -309,6 +604,8 @@ QString LoreAssistant::systemPrompt() const {
       "immediately if the job is done. Waits if it is still "
       "running.\n"
       "\n"
+      "- read_paste: read the full text of a paste by id.\n"
+      "\n"
       "- delegate: hand a task to the worker. Returns the job id.\n"
       "\n"
       "- promote_note: copy a file the worker produced into the "
@@ -317,8 +614,12 @@ QString LoreAssistant::systemPrompt() const {
       "- list_notes, read_note, write_note, edit_note, delete_note: "
       "operate on the user's notes folder.\n"
       "\n"
-      "- remember_fact: write a durable fact about the user or "
-      "about yourself.\n"
+      "- edit_profile: edit one of your own files — identity.md, "
+      "user.md, self.md, or a topic under memories/topics/. Use "
+      "this to remember durable facts, revise what you know about "
+      "the user, or adjust your own character. Returns the job id. "
+      "There is no user review. Changes to identity.md take effect "
+      "on your next turn.\n"
       "\n"
       "- speak: say something aloud.\n"
       "\n"
@@ -343,6 +644,7 @@ assistant::AssistantToolContext LoreAssistant::buildToolContext() {
   context.promoter = m_config.promoter;
   context.scopeIndex = m_config.scopeIndex;
   context.notesRoot = m_config.notesRoot;
+  context.root = m_config.root;
   context.assistant = this;
 
   context.editor = m_config.documentArea
@@ -356,67 +658,98 @@ assistant::AssistantToolContext LoreAssistant::buildToolContext() {
   return context;
 }
 
-void LoreAssistant::onLlmDelta(const QUuid &token, const QString &text) {
-  if (!m_turnActive || token != m_turnToken) {
+void LoreAssistant::sendTurnRequest(Turn &turn) {
+  if (!m_config.inference) {
     return;
   }
 
-  if (m_activeReplyNode.isEmpty()) {
-    m_activeReplyNode =
-        QUuid::createUuid().toString(QUuid::WithoutBraces);
+  const QJsonArray tools = m_tools ? m_tools->schemas() : QJsonArray();
 
-    emit assistantReplyStarted(m_activeReplyNode);
+  const QUuid token = m_config.inference->sendChatRequest(
+      turn.messages, QString(), kTurnTemperature, kTurnTimeoutMs,
+      QString(), QJsonObject(), tools, QString());
+
+  const QUuid oldToken = turn.token;
+
+  if (oldToken != token) {
+    Turn moved = m_turns.take(oldToken);
+    moved.token = token;
+    m_turns.insert(token, moved);
+    m_nodeToTurn[moved.replyNode] = token;
+
+    if (m_turnUserText.contains(oldToken)) {
+      const QString userText = m_turnUserText.take(oldToken);
+      m_turnUserText.insert(token, userText);
+    }
+  }
+}
+
+void LoreAssistant::onLlmDelta(const QUuid &token, const QString &text) {
+  auto it = m_turns.find(token);
+
+  if (it == m_turns.end()) {
+    return;
   }
 
-  m_turnReplyBuffer += text;
+  Turn &turn = it.value();
 
-  emit assistantChunk(m_activeReplyNode, text);
+  turn.replyBuffer += text;
+
+  emit assistantChunk(turn.replyNode, text);
 }
 
 void LoreAssistant::onLlmFinished(const QUuid &token) {
-  if (!m_turnActive || token != m_turnToken) {
+  auto it = m_turns.find(token);
+
+  if (it == m_turns.end()) {
     return;
   }
 
-  finishTurn();
+  finishTurn(token);
 }
 
 void LoreAssistant::onLlmToolCalls(const QUuid &token,
                                    const QJsonArray &toolCalls) {
-  if (!m_turnActive || token != m_turnToken) {
+  auto it = m_turns.find(token);
+
+  if (it == m_turns.end()) {
     return;
   }
 
-  if (m_toolRoundsRemaining <= 0) {
+  Turn &turn = it.value();
+
+  if (turn.toolRoundsRemaining <= 0) {
     emit statusMessage(tr("Too many tool rounds; stopping."));
-    finishTurn();
+    finishTurn(token);
     return;
   }
 
-  runToolRound(toolCalls, m_turnMessages);
+  runToolRound(token, toolCalls, turn.messages);
 }
 
 void LoreAssistant::onLlmError(const QUuid &token, const QString &error) {
-  if (!m_turnActive || token != m_turnToken) {
+  auto it = m_turns.find(token);
+
+  if (it == m_turns.end()) {
     return;
   }
 
   emit statusMessage(error);
-  finishTurn();
+  finishTurn(token);
 }
 
-void LoreAssistant::runToolRound(const QJsonArray &toolCalls,
+void LoreAssistant::runToolRound(const QUuid &turnToken,
+                                 const QJsonArray &toolCalls,
                                  const QJsonArray &priorMessages) {
+  auto it = m_turns.find(turnToken);
 
-  if (m_activeReplyNode.isEmpty()) {
-    m_activeReplyNode =
-        QUuid::createUuid().toString(QUuid::WithoutBraces);
-
-    emit assistantReplyStarted(m_activeReplyNode);
+  if (it == m_turns.end()) {
+    return;
   }
 
+  Turn &turn = it.value();
 
-  --m_toolRoundsRemaining;
+  --turn.toolRoundsRemaining;
 
   const assistant::AssistantToolContext context = buildToolContext();
 
@@ -483,7 +816,26 @@ void LoreAssistant::runToolRound(const QJsonArray &toolCalls,
       const QString query =
           result.output.mid(QStringLiteral("__job_search__:").size());
 
-      const QString jobId = startSearchJob(query, m_activeReplyNode);
+      const QString jobId = startSearchJob(query, turn.replyNode);
+
+      payload = tr("Job started. id=%1. Read it with read_job when you "
+                   "need it.").arg(jobId);
+    } else if (result.output.startsWith(
+                   QStringLiteral("__job_profile_edit__:"))) {
+      const QString rest = result.output.mid(
+          QStringLiteral("__job_profile_edit__:").size());
+
+      const int newline = rest.indexOf(QChar('\n'));
+
+      const QString path = newline < 0 ? rest : rest.left(newline);
+
+      const QString encoded =
+          newline < 0 ? QString() : rest.mid(newline + 1);
+
+      const QString instruction = decodeMarkerInstruction(encoded);
+
+      const QString jobId =
+          startProfileEditJob(path, instruction, turn.replyNode);
 
       payload = tr("Job started. id=%1. Read it with read_job when you "
                    "need it.").arg(jobId);
@@ -504,16 +856,15 @@ void LoreAssistant::runToolRound(const QJsonArray &toolCalls,
       job.id = requestId;
       job.kind = ChatNode::Kind::JobDelegate;
       job.state = ChatNode::State::Running;
-      job.nodeId = m_activeReplyNode;
+      job.nodeId = turn.replyNode;
       job.summary = tr("Delegated to %1").arg(
           sessionPart.isEmpty() ? tr("the worker") : sessionPart);
       job.createdAt = QDateTime::currentDateTime();
       job.updatedAt = job.createdAt;
 
       m_jobs.insert(job.id, job);
-      m_jobPolicies.insert(job.id, m_completionPolicy);
 
-      emit jobCreated(job.id, m_activeReplyNode, job.kind,
+      emit jobCreated(job.id, turn.replyNode, job.kind,
                       tr("Delegated"), job.summary);
 
       payload = tr("Job started. id=%1. Read it with read_job when you "
@@ -532,7 +883,7 @@ void LoreAssistant::runToolRound(const QJsonArray &toolCalls,
           newline < 0 ? QString() : rest.mid(newline + 1);
 
       const QString jobId =
-          startNoteEditJob(notePath, instruction, m_activeReplyNode);
+          startNoteEditJob(notePath, instruction, turn.replyNode);
 
       payload = tr("Job started. id=%1. Read it with read_job when you "
                    "need it.").arg(jobId);
@@ -580,20 +931,18 @@ void LoreAssistant::runToolRound(const QJsonArray &toolCalls,
     messages.append(toolMessage);
   }
 
-  m_turnMessages = messages;
+  const QUuid oldToken = turn.token;
 
-  // Do not clear the reply buffer or the reply node. The tool round is
-  // a continuation of the same exchange; the final answer streams into
-  // the same node. Only the buffer that becomes the final reply text
-  // is reset, because the tool-call preamble is not part of the spoken
-  // answer.
-  m_turnReplyBuffer.clear();
+  turn.messages = messages;
+  turn.replyBuffer.clear();
 
-  const QJsonArray tools = m_tools ? m_tools->schemas() : QJsonArray();
+  const Turn updated = turn;
 
-  m_turnToken = m_config.inference->sendChatRequest(
-      m_turnMessages, QString(), kTurnTemperature, kTurnTimeoutMs,
-      QString(), QJsonObject(), tools, QString());
+  m_turns.erase(it);
+
+  m_turns.insert(oldToken, updated);
+
+  sendTurnRequest(m_turns[oldToken]);
 }
 
 QString LoreAssistant::startSearchJob(const QString &query,
@@ -611,7 +960,6 @@ QString LoreAssistant::startSearchJob(const QString &query,
   job.updatedAt = job.createdAt;
 
   m_jobs.insert(jobId, job);
-  m_jobPolicies.insert(jobId, m_completionPolicy);
 
   emit jobCreated(jobId, nodeId, ChatNode::Kind::JobSearch,
                   tr("Searching: %1").arg(query), QString());
@@ -665,7 +1013,6 @@ QString LoreAssistant::startNoteEditJob(const QString &notePath,
   job.updatedAt = job.createdAt;
 
   m_jobs.insert(jobId, job);
-  m_jobPolicies.insert(jobId, m_completionPolicy);
 
   emit jobCreated(jobId, nodeId, ChatNode::Kind::JobEdit,
                   tr("Editing: %1").arg(QFileInfo(notePath).fileName()),
@@ -699,9 +1046,6 @@ QString LoreAssistant::startNoteEditJob(const QString &notePath,
             m_noteEditJobs.remove(jobId);
 
             emit jobCompleted(jobId, summary);
-            emit statusChanged(tr("Idle"));
-
-            applyJobCompletion(*it);
           });
 
   connect(editJob, &NoteEditJob::failed, this,
@@ -719,7 +1063,90 @@ QString LoreAssistant::startNoteEditJob(const QString &notePath,
             m_noteEditJobs.remove(jobId);
 
             emit jobFailed(jobId, reason);
-            emit statusChanged(tr("Idle"));
+          });
+
+  editJob->start();
+
+  return jobId;
+}
+
+QString LoreAssistant::startProfileEditJob(const QString &path,
+                                           const QString &instruction,
+                                           const QString &nodeId) {
+  const QString jobId =
+      QStringLiteral("profile-%1").arg(m_nextJobOrdinal++);
+
+  Job job;
+  job.id = jobId;
+  job.kind = ChatNode::Kind::JobEdit;
+  job.state = ChatNode::State::Running;
+  job.nodeId = nodeId;
+  job.summary = tr("Editing %1").arg(QFileInfo(path).fileName());
+  job.createdAt = QDateTime::currentDateTime();
+  job.updatedAt = job.createdAt;
+
+  m_jobs.insert(jobId, job);
+
+  emit jobCreated(jobId, nodeId, ChatNode::Kind::JobEdit,
+                  tr("Editing: %1").arg(QFileInfo(path).fileName()),
+                  instruction);
+
+  if (!m_config.inference) {
+    m_jobs[jobId].state = ChatNode::State::Failed;
+    m_jobs[jobId].error = tr("The edit pipeline is unavailable.");
+    emit jobFailed(jobId, m_jobs[jobId].error);
+    return jobId;
+  }
+
+  auto *editJob = new ProfileEditJob(m_config.inference, path, instruction,
+                                     this);
+
+  m_profileEditJobs.insert(jobId, editJob);
+
+  connect(editJob, &ProfileEditJob::finished, this,
+          [this, jobId, path](const QString &summary) {
+            auto it = m_jobs.find(jobId);
+
+            if (it == m_jobs.end()) {
+              return;
+            }
+
+            it->state = ChatNode::State::Done;
+            it->result = summary;
+            it->updatedAt = QDateTime::currentDateTime();
+
+            m_profileEditJobs.remove(jobId);
+
+            if (m_profile) {
+              m_profile->reload();
+            }
+
+            // A topic edit under memories/ needs its index refreshed.
+            // A profile edit does not touch the index.
+            if (path.contains(QStringLiteral("/memories/")) &&
+                m_memoryIndex) {
+              m_memoryIndex->refreshFile(path);
+            }
+
+            emit knowledgeChanged();
+            emit jobCompleted(jobId, summary);
+          });
+
+  connect(editJob, &ProfileEditJob::failed, this,
+          [this, jobId](const QString &reason) {
+            auto it = m_jobs.find(jobId);
+
+            if (it == m_jobs.end()) {
+              return;
+            }
+
+            it->state = ChatNode::State::Failed;
+            it->error = reason;
+            it->updatedAt = QDateTime::currentDateTime();
+
+            m_profileEditJobs.remove(jobId);
+
+            emit jobFailed(jobId, reason);
           });
 
   editJob->start();
@@ -749,9 +1176,6 @@ void LoreAssistant::onSearchJobFinished(const QString &jobId,
   }
 
   emit jobCompleted(jobId, finalResult);
-  emit statusChanged(tr("Idle"));
-
-  applyJobCompletion(*it);
 }
 
 void LoreAssistant::onSearchJobFailed(const QString &jobId,
@@ -775,60 +1199,6 @@ void LoreAssistant::onSearchJobFailed(const QString &jobId,
   m_searchBuffers.remove(jobId);
 
   emit jobFailed(jobId, reason);
-  emit statusChanged(tr("Idle"));
-}
-
-void LoreAssistant::applyJobCompletion(const Job &job) {
-  const CompletionPolicy policy =
-      m_jobPolicies.value(job.id, CompletionPolicy::Automatic);
-
-  CompletionPolicy effective = policy;
-
-  if (policy == CompletionPolicy::Automatic) {
-    if (m_turnActive) {
-      effective = CompletionPolicy::FeedToQueue;
-    } else if (m_pendingForPrompt.isEmpty() &&
-               m_pendingForUserMessage.isEmpty()) {
-      effective = CompletionPolicy::PasteInChat;
-    } else {
-      effective = CompletionPolicy::FeedToQueue;
-    }
-  }
-
-  QString line = job.result;
-
-  if (line.isEmpty()) {
-    line = job.summary;
-  }
-
-  switch (effective) {
-  case CompletionPolicy::PasteInChat: {
-    // If a turn is in flight, the reply node exists and the result can
-    // be appended to it. If no turn is in flight — the user has sent
-    // the next message and the first delta has not yet arrived, or the
-    // exchange has already finished — there is no node to paste into.
-    // Create a fresh root for the result so it is not dropped.
-    QString target = m_activeReplyNode;
-
-    if (target.isEmpty()) {
-      target = QUuid::createUuid().toString(QUuid::WithoutBraces);
-      emit assistantReplyStarted(target);
-    }
-
-    emit assistantChunk(target, QStringLiteral("\n\n") + line);
-    break;
-  }
-  case CompletionPolicy::FeedToQueue:
-    m_pendingForPrompt.append(line);
-    emit statusMessage(tr("A background task finished."));
-    break;
-  case CompletionPolicy::AppendToNextUserMessage:
-    m_pendingForUserMessage.append(line);
-    emit statusMessage(tr("A background task finished."));
-    break;
-  case CompletionPolicy::Automatic:
-    break;
-  }
 }
 
 bool LoreAssistant::waitForJob(const QString &jobId, QString *resultOut,
@@ -909,42 +1279,71 @@ bool LoreAssistant::waitForJob(const QString &jobId, QString *resultOut,
 }
 
 void LoreAssistant::abortJob(const QString &jobId) {
-  auto it = m_jobs.find(jobId);
-
-  if (it == m_jobs.end() || it->isTerminal()) {
+  if (!m_jobs.contains(jobId)) {
     return;
   }
 
-  if (NoteEditJob *editJob = m_noteEditJobs.take(jobId)) {
+  const Job snapshot = m_jobs.value(jobId);
+
+  if (snapshot.isTerminal()) {
+    return;
+  }
+
+  // Take the child job objects out of their caches first. Both abort
+  // paths emit failed() synchronously, and the connected lambdas
+  // mutate m_jobs. Holding an iterator into m_jobs across those calls
+  // would invalidate it.
+  NoteEditJob *editJob = m_noteEditJobs.take(jobId);
+  ProfileEditJob *profileJob = m_profileEditJobs.take(jobId);
+  RetrievalLoop *loop = m_searchLoops.take(jobId);
+
+  m_searchBuffers.remove(jobId);
+
+  // Mark the job cancelled before the abort signals fire, so the
+  // connected lambdas see it as terminal and do not overwrite the
+  // state with Failed.
+  {
+    auto it = m_jobs.find(jobId);
+
+    if (it != m_jobs.end()) {
+      it->state = ChatNode::State::Cancelled;
+      it->error = tr("Cancelled.");
+      it->updatedAt = QDateTime::currentDateTime();
+    }
+  }
+
+  if (editJob) {
     editJob->abort();
   }
 
-  RetrievalLoop *loop = m_searchLoops.take(jobId);
+  if (profileJob) {
+    profileJob->abort();
+  }
 
   if (loop) {
     loop->cancel();
     loop->deleteLater();
   }
 
-  m_searchBuffers.remove(jobId);
+  emit jobFailed(jobId, tr("Cancelled."));
+}
 
-  it->state = ChatNode::State::Cancelled;
-  it->error = tr("Cancelled.");
-  it->updatedAt = QDateTime::currentDateTime();
+void LoreAssistant::abortTurn(const QString &replyNodeId) {
+  auto nodeIt = m_nodeToTurn.find(replyNodeId);
 
-  emit jobFailed(jobId, it->error);
-  emit statusChanged(tr("Idle"));
+  if (nodeIt == m_nodeToTurn.end()) {
+    return;
+  }
+
+  abandonTurn(nodeIt.value());
 }
 
 void LoreAssistant::abortAll() {
-  if (m_turnActive && m_config.inference && !m_turnToken.isNull()) {
-    m_config.inference->abortChatRequest(m_turnToken);
-  }
+  const QList<QUuid> tokens = m_turns.keys();
 
-  m_turnActive = false;
-  m_turnMessages = QJsonArray();
-  m_turnReplyBuffer.clear();
-  m_activeReplyNode.clear();
+  for (const QUuid &token : tokens) {
+    abandonTurn(token);
+  }
 
   const QStringList ids = m_jobs.keys();
 
@@ -953,27 +1352,143 @@ void LoreAssistant::abortAll() {
   }
 }
 
-void LoreAssistant::finishTurn() {
-  m_turnActive = false;
-  m_turnMessages = QJsonArray();
-  m_toolRoundsRemaining = 0;
+void LoreAssistant::recordRecentTurn(const QString &userText,
+                                     const QString &assistantText) {
+  if (userText.isEmpty() && assistantText.isEmpty()) {
+    return;
+  }
 
-  m_lastReply = m_turnReplyBuffer;
-  m_turnReplyBuffer.clear();
+  QJsonObject userMessage;
+  userMessage.insert(QStringLiteral("role"), QStringLiteral("user"));
+  userMessage.insert(QStringLiteral("content"), userText);
+  m_recentTail.append(userMessage);
 
-  // The reply node is not cleared here. It is cleared when the user
-  // sends the next message. That way every streamed delta in this
-  // exchange — including deltas after a tool round — lands in the
-  // same node and the tree does not create a second reply.
+  if (!assistantText.isEmpty()) {
+    QJsonObject assistantMessage;
+    assistantMessage.insert(QStringLiteral("role"),
+                            QStringLiteral("assistant"));
+    assistantMessage.insert(QStringLiteral("content"), assistantText);
+    m_recentTail.append(assistantMessage);
+  }
 
-  emit assistantTurnFinished(m_activeReplyNode);
-  emit statusChanged(tr("Idle"));
+  trimRecentTail();
+}
+
+void LoreAssistant::trimRecentTail() {
+  auto estimate = [](const QJsonArray &arr) {
+    int total = 0;
+
+    for (const QJsonValue &value : arr) {
+      if (!value.isObject())
+        continue;
+
+      const QJsonObject obj = value.toObject();
+
+      total += estimateTokens(
+          obj.value(QStringLiteral("content")).toString());
+      total += 8;
+    }
+
+    return total;
+  };
+
+  while (!m_recentTail.isEmpty() &&
+         estimate(m_recentTail) > kRecentTailTokenBudget) {
+    m_recentTail.removeFirst();
+
+    if (!m_recentTail.isEmpty()) {
+      const QJsonObject next = m_recentTail.first().toObject();
+
+      if (next.value(QStringLiteral("role")).toString() ==
+          QStringLiteral("assistant")) {
+        m_recentTail.removeFirst();
+      }
+    }
+  }
+}
+
+void LoreAssistant::finishTurn(const QUuid &turnToken) {
+  auto it = m_turns.find(turnToken);
+
+  if (it == m_turns.end()) {
+    return;
+  }
+
+  Turn &turn = it.value();
+
+  const QString replyText = turn.replyBuffer;
+
+  if (!replyText.isEmpty()) {
+    m_lastReply = replyText;
+  }
+
+  const QString replyNode = turn.replyNode;
+
+  const QString userText = m_turnUserText.take(turnToken);
+
+  if (!userText.isEmpty() || !replyText.isEmpty()) {
+    recordRecentTurn(userText, replyText);
+  }
 
   const Settings::AssistantSettings settings =
       Settings::getAssistantSettings();
 
   if (settings.speakResponses && !m_lastReply.isEmpty()) {
     say(m_lastReply);
+  }
+
+  m_nodeToTurn.remove(replyNode);
+  m_turns.erase(it);
+
+  emit assistantTurnFinished(replyNode);
+
+  if (m_turns.isEmpty()) {
+    emit statusChanged(tr("Idle"));
+  }
+}
+
+void LoreAssistant::abandonTurn(const QUuid &turnToken) {
+  auto it = m_turns.find(turnToken);
+
+  if (it == m_turns.end()) {
+    return;
+  }
+
+  if (m_config.inference && !turnToken.isNull()) {
+    m_config.inference->abortChatRequest(turnToken);
+  }
+
+  const QString replyNode = it.value().replyNode;
+
+  m_turnUserText.remove(turnToken);
+  m_nodeToTurn.remove(replyNode);
+  m_turns.erase(it);
+
+  emit assistantTurnFinished(replyNode);
+
+  if (m_turns.isEmpty()) {
+    emit statusChanged(tr("Idle"));
+  }
+}
+
+void LoreAssistant::onTurnWatchdog() {
+  if (m_turns.isEmpty()) {
+    return;
+  }
+
+  const QList<QUuid> tokens = m_turns.keys();
+
+  for (const QUuid &token : tokens) {
+    auto it = m_turns.find(token);
+
+    if (it == m_turns.end()) {
+      continue;
+    }
+
+    if (m_config.inference && !m_config.inference->isRequestActive(token)) {
+      emit statusMessage(tr("The model stopped responding."));
+      abandonTurn(token);
+    }
   }
 }
 
@@ -1001,7 +1516,6 @@ void LoreAssistant::onOverseerRequestFinished(
     it->updatedAt = QDateTime::currentDateTime();
 
     emit jobFailed(requestId, summary);
-    emit statusChanged(tr("Idle"));
     return;
   }
 
@@ -1010,7 +1524,4 @@ void LoreAssistant::onOverseerRequestFinished(
   it->updatedAt = QDateTime::currentDateTime();
 
   emit jobCompleted(requestId, line);
-  emit statusChanged(tr("Idle"));
-
-  applyJobCompletion(*it);
 }

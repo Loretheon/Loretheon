@@ -1,8 +1,11 @@
+// FileSystemView.h
 #ifndef EPISTEME_FILESYSTEMVIEW_H
 #define EPISTEME_FILESYSTEMVIEW_H
 
 #include <QStringList>
 #include <QTreeView>
+
+class QAbstractItemModel;
 
 class FileSystemView : public QTreeView {
   Q_OBJECT
@@ -12,14 +15,34 @@ public:
 
   static const char *notesPathMimeType();
 
+  void setModel(QAbstractItemModel *model) override;
+
   void hideColumn(int column);
   void showColumn(int column);
 
   void setImportableExtensions(const QStringList &extensions);
   QStringList importableExtensions() const;
 
+  void setPromoteToNotesEnabled(bool enabled);
+  bool promoteToNotesEnabled() const { return m_promoteToNotesEnabled; }
+
+  int preferredContentWidth() const;
+  int measuredContentWidth() const;
+  void expandAllAndMeasure();
+
+  QSize sizeHint() const override;
+  QSize minimumSizeHint() const override;
+  int fullContentWidth() const;
+
+public slots:
+  void scheduleColumnWidthRecalculation();
+
 signals:
+  void preferredContentWidthChanged(int width);
+
   void renameFinished(const QString &oldPath, const QString &newPath);
+  void openRequested(const QString &path);
+
   void newNoteRequested(const QString &parentPath);
   void newFolderRequested(const QString &parentPath);
   void deleteRequested(const QString &path);
@@ -27,14 +50,13 @@ signals:
   void convertToTextRequested(const QString &path);
   void convertToDotRequested(const QString &path);
   void convertToPlantUmlRequested(const QString &path);
+  void convertToMermaidRequested(const QString &path);
 
   void addToOverseerRequested(const QStringList &paths);
 
   void importRequested(const QString &path);
   void importAllRequested(const QStringList &paths);
 
-  // Emitted when the user picks "Promote to notes" from the context
-  // menu. Contains the absolute paths of every selected file or folder.
   void promoteToNotesRequested(const QStringList &paths);
 
 protected:
@@ -43,14 +65,25 @@ protected:
   void closeEditor(QWidget *editor,
                    QAbstractItemDelegate::EndEditHint hint) override;
   void contextMenuEvent(QContextMenuEvent *event) override;
+  void mouseMoveEvent(QMouseEvent *event) override;
   void startDrag(Qt::DropActions supportedActions) override;
+  void showEvent(QShowEvent *event) override;
 
 private:
   void saveColumnVisibility();
+  void applyColumnSizing();
+  void recalculateColumnWidths();
 
-  // Selected files, in view order. Directories are included when the
-  // caller asks for them, because promotion accepts folders as well as
-  // files.
+  int headerWidth(int column) const;
+  int contentWidth(int column) const;
+  int contentWidthRecursive(int column, const QModelIndex &parent) const;
+
+  int contentWidthForRow(int column, const QModelIndex &index,
+                         bool includeChildren) const;
+
+  int scrollbarAllowance() const;
+  int frameAllowance() const;
+
   QStringList selectedFilePaths() const;
   QStringList selectedPaths(bool includeDirectories) const;
 
@@ -58,6 +91,11 @@ private:
 
   QString editingOldPath;
   QStringList m_importableExtensions;
+  bool m_columnsConfigured = false;
+  bool m_recalcScheduled = false;
+  bool m_firstShowDone = false;
+  int m_totalContentWidth = 0;
+  bool m_promoteToNotesEnabled = false;
 };
 
 #endif // EPISTEME_FILESYSTEMVIEW_H

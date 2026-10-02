@@ -47,6 +47,16 @@ void FileAgent::logAgent(const QString &tag, const QString &content) {
                 QStringLiteral("%1/%2").arg(m_id, tag), content);
 }
 
+void FileAgent::setMemoryFacts(const QStringList &globalFacts,
+                               const QStringList &sessionFacts) {
+  m_globalFacts = globalFacts;
+  m_sessionFacts = sessionFacts;
+}
+
+void FileAgent::setToolCallDepthLimit(int limit) {
+  m_toolCallDepthLimit = qBound(1, limit, 100000);
+}
+
 void FileAgent::enqueue(const Task &task) {
   m_queue.append(task);
 
@@ -219,6 +229,27 @@ void FileAgent::dispatchTurn() {
   if (!m_inferenceService)
     return;
 
+  if (m_toolCallCount >= m_toolCallDepthLimit) {
+    const QString reason =
+        QStringLiteral("Agent %1 exceeded its tool call depth limit "
+                       "(%2 turns). Stopping.")
+            .arg(m_id)
+            .arg(m_toolCallDepthLimit);
+
+    logAgent(QStringLiteral("DEPTH_LIMIT"),
+             QStringLiteral("Task: %1\nTurns: %2\nLimit: %3")
+                 .arg(m_current.id)
+                 .arg(m_toolCallCount)
+                 .arg(m_toolCallDepthLimit));
+
+    emit depthLimitReached(m_id, m_toolCallDepthLimit);
+
+    finishCurrent(false, reason);
+    return;
+  }
+
+  ++m_toolCallCount;
+
   m_activeToken = InferenceService::RequestToken();
   m_hasActiveToken = false;
   m_pendingDispatch = true;
@@ -233,8 +264,10 @@ void FileAgent::dispatchTurn() {
       {QStringLiteral("content"), prompt}});
 
   logAgent(QStringLiteral("REQUEST"),
-           QStringLiteral("Task: %1\nTurn tool calls: %2\n\nPrompt:\n%3")
+           QStringLiteral("Task: %1\nTurn count: %2\nTurn tool calls: %3\n\n"
+                          "Prompt:\n%4")
                .arg(m_current.id)
+               .arg(m_toolCallCount)
                .arg(m_taskToolCalls.size())
                .arg(prompt));
 
@@ -329,9 +362,6 @@ void FileAgent::onResponseFinished(
              QStringLiteral("Task: %1\nError: %2\nRaw response:\n%3")
                  .arg(m_current.id, parseError.errorString(), response));
 
-    // Count how many parse errors this task has already recovered
-    // from. A parse error is recoverable: record the offending reply
-    // in the transcript and give the model one correction turn.
     int parseErrors = 0;
 
     for (const QJsonObject &call : std::as_const(m_taskToolCalls)) {
@@ -591,20 +621,27 @@ QString FileAgent::buildPrompt(const Task &task) const {
   QString prompt;
 
   prompt += QStringLiteral(
-      "You are a file-manipulation agent. Your domain is the "
-      "directory: %1\n"
+      "You are a file-manipulation agent. Your domain is: %1\n"
       "\n"
       "You handle read, write, create, and list operations for files "
       "under your domain.\n"
       "\n"
-      "You do not perform structural edits on existing files. If a "
-      "task requires an insert, replace, or delete on the content of "
-      "an existing file, you delegate it to a scoped edit agent.\n"
+      "write_file is for creating a file that does not exist yet. It "
+      "is NOT for changing a file that already exists.\n"
       "\n"
-      "Creating a new file is NOT a structural edit. Use write_file "
-      "for any task that creates a file that does not exist yet. Do "
-      "not delegate a new-file creation to a scoped edit agent, "
-      "because a scoped edit agent needs an existing file to edit.\n"
+      "If write_file is called with a path that already exists, it "
+      "OVERWRITES the file. That is a structural edit, and structural "
+      "edits are not your job, whether you created the file earlier "
+      "or not, and whether it was created in this task or a previous "
+      "one. Do not overwrite an existing file. Do not append to an "
+      "existing file by rewriting its full contents. Both are "
+      "structural edits.\n"
+      "\n"
+      "Any change to a file that already exists -- append, insert, "
+      "replace, delete, or rewrite -- must be delegated to a scoped "
+      "edit agent with the delegate_scoped_edit action. Check whether "
+      "the path exists before you write. If it exists, delegate. If "
+      "it does not exist, write it.\n"
       "\n"
       "You may call multiple tools to complete a task. Each response "
       "is exactly one JSON object naming one tool call or one "
@@ -612,6 +649,18 @@ QString FileAgent::buildPrompt(const Task &task) const {
       "with the result of that call shown below, until you answer "
       "with \"done\" or \"fail\". Do not repeat a tool call whose "
       "result is already shown.\n"
+      "\n"
+      "\"done\" is a claim that the work is complete. It is not a\n"
+      "summary of what you intend to do, and it is not a description\n"
+      "of the task. Before you answer \"done\", every operation the\n"
+      "task requires must already have been performed by a tool call.\n"
+      "If the task says to create a file, you must have called\n"
+      "write_file for that file. If the task says to append to a file,\n"
+      "you must have called the tool that appends. If the task names\n"
+      "N files and you have made zero tool calls, you are not done --\n"
+      "call the tool. Answering \"done\" with no tool calls, or with\n"
+      "fewer tool calls than the task needs, is a failure of the\n"
+      "task.\n"
       "\n"
       "Respond with exactly one JSON object. No markdown fences. No "
       "explanatory text. No trailing commentary of any kind.\n"
@@ -636,10 +685,11 @@ QString FileAgent::buildPrompt(const Task &task) const {
       "\n"
       "  {\"action\": \"delegate_scoped_edit\",\n"
       "   \"file\": \"<path relative to the session output folder of "
-      "an EXISTING file>\",\n"
+      "an EXISTING file you did not create>\",\n"
       "   \"instruction\": \"...\"}\n"
       "\n"
       "  {\"action\": \"done\", \"summary\": \"...\"}\n"
+      "    (only after every tool call the task requires has been made)\n"
       "\n"
       "  {\"action\": \"fail\", \"reason\": \"...\"}\n"
       "\n"
@@ -647,7 +697,32 @@ QString FileAgent::buildPrompt(const Task &task) const {
       "properly escaped. Newlines must be written as \\n, quotes as "
       "\\\", and backslashes as \\\\. An unescaped newline inside a "
       "JSON string will make the whole response invalid and the task "
-      "will fail.\n");
+      "will fail.\n")
+      .arg(m_domain);
+
+  const bool hasGlobal = !m_globalFacts.isEmpty();
+  const bool hasSession = !m_sessionFacts.isEmpty();
+
+  if (hasGlobal || hasSession) {
+    prompt += QStringLiteral(
+        "\n"
+        "Facts you may draw on when the task depends on knowing "
+        "something about the user:\n");
+
+    if (hasGlobal) {
+      prompt += QStringLiteral("\nGlobal:\n");
+
+      for (const QString &fact : std::as_const(m_globalFacts))
+        prompt += QStringLiteral("- %1\n").arg(fact);
+    }
+
+    if (hasSession) {
+      prompt += QStringLiteral("\nThis session:\n");
+
+      for (const QString &fact : std::as_const(m_sessionFacts))
+        prompt += QStringLiteral("- %1\n").arg(fact);
+    }
+  }
 
   if (!m_taskToolCalls.isEmpty()) {
     prompt += QStringLiteral(

@@ -1,35 +1,35 @@
 @theme overseer
 
-@base           #100E18
-@surface0       #171422
-@surface1       #1F1B2E
-@surface2       #292440
-@surface-raised #171422
-@structure      #2E2560
+@base           #050A15
+@surface0       #0D1420
+@surface1       #141F30
+@surface2       #1D2A40
+@surface-raised #0D1420
+@structure      #141F30
 
-@text           #E0DCF0
-@text-muted     #9C90B8
-@text-subtle    #7064A0
-@text-disabled  #4A4060
+@text           #D8E0E8
+@text-muted     #8A9DB0
+@text-subtle    #6A7F98
+@text-disabled  #4A6080
 
-@accent         #6B4BA8
-@accent-hover   #7B5BB8
-@accent-pressed #5A3B98
-@accent-muted   #5A4A8A
-@accent-fg      #F0E8FF
+@accent         #E69F00
+@accent-hover   #F0AE1A
+@accent-pressed #D89000
+@accent-muted   #F5C44D
+@accent-fg      #050A15
 
-@hint-cool      #98A8E0
-@hint-warm      #E0A0B8
-@hint-neutral   #A898D8
+@hint-cool      #56B4E9
+@hint-warm      #D55E00
+@hint-neutral   #009E73
 
-@border         #2E2560
-@border-strong  #6B4BA8
-@divider        #241F40
+@border         #1D2A40
+@border-strong  #E69F00
+@divider        #141F30
 
-@success        #6BB66B
-@warning        #D8B85B
-@error          #D85C7A
-@info           #98A8E0
+@success        #009E73
+@warning        #F0E442
+@error          #D55E00
+@info           #56B4E9
 
 QLabel#overseerTag {
     background-color: @surface1;

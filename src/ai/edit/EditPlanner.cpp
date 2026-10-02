@@ -14,6 +14,7 @@
 #include <QMetaObject>
 #include <QRegularExpression>
 #include <QSet>
+#include <QTimer>
 
 #include <algorithm>
 
@@ -465,20 +466,33 @@ EditPlanner::EditPlanner(InferenceService *inferenceService, QObject *parent)
             if (!m_active)
               return;
 
+            // The stream closed. Either a complete JSON value was
+            // already extracted by processStream and the planner is
+            // mid-transition, or the buffer is incomplete. If the
+            // buffer is incomplete and a retry is available, re-issue
+            // the same request once. Otherwise report the failure.
+            if (retryCurrentRequest())
+              return;
+
             m_active = false;
+            disarmWatchdog();
 
             m_payloadLogger.log(
                 QStringLiteral("EDIT_PLAN_STREAM_INCOMPLETE"),
                 QStringLiteral("Received %1 bytes without a complete JSON "
-                               "value.\n\nBuffer:\n%2")
+                               "value after %2 attempt(s).\n\nBuffer:\n%3")
                     .arg(m_streamingResponse.size())
+                    .arg(m_retryCount + 1)
                     .arg(m_streamingResponse));
 
             m_streamingResponse.clear();
 
-            emit failed(
-                QStringLiteral("Edit planner did not produce a complete "
-                               "plan."));
+            if (!m_terminalEmitted) {
+              m_terminalEmitted = true;
+              emit failed(
+                  QStringLiteral("Edit planner did not produce a complete "
+                                 "plan."));
+            }
           });
 
   connect(m_inferenceService, &InferenceService::llmError, this,
@@ -493,10 +507,18 @@ EditPlanner::EditPlanner(InferenceService *inferenceService, QObject *parent)
               return;
 
             m_active = false;
+            disarmWatchdog();
             m_streamingResponse.clear();
 
-            emit failed(QStringLiteral("LLM error: %1").arg(error));
+            if (!m_terminalEmitted) {
+              m_terminalEmitted = true;
+              emit failed(QStringLiteral("LLM error: %1").arg(error));
+            }
           });
+}
+
+void EditPlanner::setWatchdogMs(int ms) {
+  m_watchdogMs = qBound(1000, ms, 3600000);
 }
 
 void EditPlanner::start(TextEdit *editor, const QString &userRequest) {
@@ -505,34 +527,74 @@ void EditPlanner::start(TextEdit *editor, const QString &userRequest) {
 
 void EditPlanner::start(TextEdit *editor, const QString &userRequest,
                         ScopeMode mode) {
-  if (!m_inferenceService) {
-    emit failed(QStringLiteral("Inference service is unavailable."));
-    return;
-  }
-
   if (!editor) {
-    emit failed(QStringLiteral("No active document."));
+    if (!m_terminalEmitted) {
+      m_terminalEmitted = true;
+      emit failed(QStringLiteral("No active document."));
+    }
     return;
   }
 
   auto *document = qobject_cast<TextDocument *>(editor->document());
 
   if (!document) {
-    emit failed(QStringLiteral("Active editor does not use TextDocument."));
+    if (!m_terminalEmitted) {
+      m_terminalEmitted = true;
+      emit failed(QStringLiteral("Active editor does not use TextDocument."));
+    }
+    return;
+  }
+
+  m_editor = editor;
+
+  startOnDocument(document, userRequest, mode);
+}
+
+void EditPlanner::start(TextDocument *document, const QString &userRequest) {
+  start(document, userRequest, ScopeMode::Scoped);
+}
+
+void EditPlanner::start(TextDocument *document, const QString &userRequest,
+                        ScopeMode mode) {
+  m_editor = nullptr;
+
+  startOnDocument(document, userRequest, mode);
+}
+
+void EditPlanner::startOnDocument(TextDocument *document,
+                                  const QString &userRequest,
+                                  ScopeMode mode) {
+  // Any prior terminal emission belongs to a prior start. Clear it
+  // before this run can emit anything.
+  m_terminalEmitted = false;
+  m_retryCount = 0;
+  m_lastMessages = QJsonArray();
+  m_lastScopeIds.clear();
+  m_lastSessionId.clear();
+
+  if (!m_inferenceService) {
+    m_terminalEmitted = true;
+    emit failed(QStringLiteral("Inference service is unavailable."));
+    return;
+  }
+
+  if (!document) {
+    m_terminalEmitted = true;
+    emit failed(QStringLiteral("No active document."));
     return;
   }
 
   if (m_active)
     abort();
 
-  m_editor = editor;
+  m_document = document;
   m_userRequest = userRequest.trimmed();
   m_streamingResponse.clear();
   m_scopeMode = mode;
 
   document->rebuildStructure();
 
-  const QString documentText = editor->toPlainText();
+  const QString documentText = document->toPlainText();
 
   const QVector<SectionInfo> sections =
       collectSections(document->structure(), documentText);
@@ -549,12 +611,7 @@ void EditPlanner::start(TextEdit *editor, const QString &userRequest,
                            .arg(section->title, section->scopeId));
   }
 
-  const QString selectedText = editor->textCursor().selectedText();
-
-  const QString selectionContext =
-      selectedText.isEmpty()
-          ? QString()
-          : QStringLiteral("\nCurrent selection:\n%1\n").arg(selectedText);
+  const QString selectionContext = QString();
 
   QString prompt;
 
@@ -563,7 +620,8 @@ void EditPlanner::start(TextEdit *editor, const QString &userRequest,
         QStringLiteral(
             "You are planning a whole-file rewrite.\n"
             "\n"
-            "Return exactly one JSON array containing exactly one edit.\n"
+            "Return exactly one JSON object with a single \"edits\" array "
+            "containing exactly one edit.\n"
             "Do not return markdown fences.\n"
             "Do not return explanatory text.\n"
             "\n"
@@ -596,7 +654,7 @@ void EditPlanner::start(TextEdit *editor, const QString &userRequest,
         QStringLiteral(
             "You are planning edits to a document.\n"
             "\n"
-            "Return exactly one JSON array.\n"
+            "Return exactly one JSON object with a single \"edits\" array.\n"
             "Do not return markdown fences.\n"
             "Do not return explanatory text.\n"
             "\n"
@@ -718,18 +776,110 @@ void EditPlanner::start(TextEdit *editor, const QString &userRequest,
 
   emit contextScopes(contextScopeIds);
 
+  // Retain everything a retry needs.
+  m_lastMessages = messages;
+  m_lastScopeIds = scopeIds;
+  m_lastTimeoutMs = 120000;
+  m_lastSessionId.clear();
+
+  armWatchdog();
+
+  // The JSON schema is the sole constraint. It is forwarded in both
+  // local and remote mode; llama.cpp converts it to a GBNF grammar
+  // internally on the local path.
   m_activeToken = m_inferenceService->sendChatRequest(
-      messages, QString(), 0.7, 120000, EditGrammar::gbnf(scopeIds));
+      messages, QString(), 0.7, m_lastTimeoutMs,
+      QString(),
+      EditGrammar::jsonResponseFormat(scopeIds),
+      QJsonArray(), m_lastSessionId);
+}
+
+bool EditPlanner::retryCurrentRequest() {
+  if (!m_active)
+    return false;
+
+  if (m_retryCount >= kMaxRetries)
+    return false;
+
+  if (m_lastMessages.isEmpty())
+    return false;
+
+  ++m_retryCount;
+
+  m_payloadLogger.log(
+      QStringLiteral("EDIT_PLAN_RETRY"),
+      QStringLiteral("Attempt %1. Re-issuing the same request.")
+          .arg(m_retryCount + 1));
+
+  // Discard the partial buffer. The retry starts from an empty
+  // stream.
+  m_streamingResponse.clear();
+
+  // Re-arm the watchdog for the retry. The first watchdog was
+  // disarmed by the llmFinished handler before this call.
+  armWatchdog();
+
+  m_activeToken = m_inferenceService->sendChatRequest(
+      m_lastMessages, QString(), 0.7, m_lastTimeoutMs,
+      QString(),
+      EditGrammar::jsonResponseFormat(m_lastScopeIds),
+      QJsonArray(), m_lastSessionId);
+
+  return true;
 }
 
 void EditPlanner::abort() {
   m_active = false;
   m_streamingResponse.clear();
+  m_lastMessages = QJsonArray();
+  m_lastScopeIds.clear();
+  m_lastSessionId.clear();
+  m_retryCount = 0;
+
+  disarmWatchdog();
 
   if (m_inferenceService && !m_activeToken.isNull())
     m_inferenceService->abortChatRequest(m_activeToken);
 
   m_activeToken = InferenceService::RequestToken();
+}
+
+void EditPlanner::armWatchdog() {
+  if (!m_watchdog) {
+    m_watchdog = new QTimer(this);
+    m_watchdog->setSingleShot(true);
+
+    connect(m_watchdog, &QTimer::timeout, this, [this]() {
+      if (!m_active)
+        return;
+
+      m_active = false;
+
+      if (m_inferenceService && !m_activeToken.isNull())
+        m_inferenceService->abortChatRequest(m_activeToken);
+
+      m_activeToken = InferenceService::RequestToken();
+      m_streamingResponse.clear();
+
+      m_payloadLogger.log(
+          QStringLiteral("EDIT_PLAN_WATCHDOG_TIMEOUT"),
+          QStringLiteral("No terminal event within %1 ms. Aborting plan.")
+              .arg(m_watchdogMs));
+
+      if (!m_terminalEmitted) {
+        m_terminalEmitted = true;
+        emit failed(QStringLiteral(
+            "Edit planner timed out without producing a plan."));
+      }
+    });
+  }
+
+  m_watchdog->start(m_watchdogMs);
+}
+
+void EditPlanner::disarmWatchdog() {
+  if (m_watchdog && m_watchdog->isActive())
+    m_watchdog->stop();
 }
 
 bool EditPlanner::takeCompleteJsonValue(QString &buffer, QString &jsonText) {
@@ -827,6 +977,36 @@ bool EditPlanner::takeCompleteJsonValue(QString &buffer, QString &jsonText) {
   return false;
 }
 
+QJsonArray EditPlanner::extractEdits(const QJsonDocument &document,
+                                     QString *error) {
+  if (error)
+    error->clear();
+
+  if (document.isArray())
+    return document.array();
+
+  if (document.isObject()) {
+    const QJsonObject root = document.object();
+
+    const QJsonValue editsValue = root.value(QStringLiteral("edits"));
+
+    if (editsValue.isArray())
+      return editsValue.toArray();
+
+    if (error) {
+      *error =
+          QStringLiteral("The response object has no \"edits\" array.");
+    }
+
+    return {};
+  }
+
+  if (error)
+    *error = QStringLiteral("The response is neither an object nor an array.");
+
+  return {};
+}
+
 void EditPlanner::processStream() {
   if (!m_active)
     return;
@@ -838,6 +1018,8 @@ void EditPlanner::processStream() {
 
   m_active = false;
 
+  disarmWatchdog();
+
   if (m_inferenceService && !m_activeToken.isNull()) {
     m_inferenceService->abortChatRequest(m_activeToken);
     m_activeToken = InferenceService::RequestToken();
@@ -848,35 +1030,51 @@ void EditPlanner::processStream() {
   const QJsonDocument json =
       QJsonDocument::fromJson(jsonText.toUtf8(), &parseError);
 
-  if (parseError.error != QJsonParseError::NoError || !json.isArray()) {
+  if (parseError.error != QJsonParseError::NoError) {
     m_payloadLogger.log(QStringLiteral("EDIT_PLAN_PARSE_ERROR"),
                         QStringLiteral("Error: %1 | Received JSON: %2")
                             .arg(parseError.errorString(), jsonText));
 
-    emit failed(
-        QStringLiteral("Invalid edit plan: %1").arg(parseError.errorString()));
+    if (!m_terminalEmitted) {
+      m_terminalEmitted = true;
+      emit failed(
+          QStringLiteral("Invalid edit plan: %1").arg(parseError.errorString()));
+    }
 
     m_streamingResponse.clear();
     return;
   }
 
-  if (!m_editor) {
-    emit failed(QStringLiteral("No active editor."));
+  QString shapeError;
+  const QJsonArray items = extractEdits(json, &shapeError);
+
+  if (!shapeError.isEmpty()) {
+    m_payloadLogger.log(QStringLiteral("EDIT_PLAN_SHAPE_ERROR"),
+                        QStringLiteral("Error: %1 | Received JSON: %2")
+                            .arg(shapeError, jsonText));
+
+    if (!m_terminalEmitted) {
+      m_terminalEmitted = true;
+      emit failed(QStringLiteral("Invalid edit plan: %1").arg(shapeError));
+    }
+
+    m_streamingResponse.clear();
     return;
   }
 
-  auto *textDocument = qobject_cast<TextDocument *>(m_editor->document());
-
-  if (!textDocument) {
-    emit failed(QStringLiteral("Active editor does not use TextDocument."));
+  if (!m_document) {
+    if (!m_terminalEmitted) {
+      m_terminalEmitted = true;
+      emit failed(QStringLiteral("No active document."));
+    }
     return;
   }
 
-  textDocument->rebuildStructure();
+  m_document->rebuildStructure();
 
-  const DocumentStructure &structure = textDocument->structure();
+  const DocumentStructure &structure = m_document->structure();
 
-  const QString documentText = m_editor->toPlainText();
+  const QString documentText = m_document->toPlainText();
   const int documentLength = documentText.size();
 
   const QVector<SectionInfo> sections =
@@ -885,8 +1083,6 @@ void EditPlanner::processStream() {
   const QVector<const SectionInfo *> targets =
       resolveRequestedSections(m_userRequest, sections);
 
-  const QJsonArray items = json.array();
-
   QVector<EditCommand> edits;
   edits.reserve(items.size());
 
@@ -894,8 +1090,11 @@ void EditPlanner::processStream() {
     const QJsonObject object = items.at(i).toObject();
 
     if (object.isEmpty()) {
-      emit failed(
-          QStringLiteral("Edit plan item %1 is not an object.").arg(i + 1));
+      if (!m_terminalEmitted) {
+        m_terminalEmitted = true;
+        emit failed(
+            QStringLiteral("Edit plan item %1 is not an object.").arg(i + 1));
+      }
       return;
     }
 
@@ -910,9 +1109,12 @@ void EditPlanner::processStream() {
     if (!operationValue.isString() || !scopeValue.isString() ||
         !positionValue.isString() || !findValue.isString() ||
         !allValue.isBool() || !instructionValue.isString()) {
-      emit failed(
-          QStringLiteral("Edit plan item %1 is missing a required field.")
-              .arg(i + 1));
+      if (!m_terminalEmitted) {
+        m_terminalEmitted = true;
+        emit failed(
+            QStringLiteral("Edit plan item %1 is missing a required field.")
+                .arg(i + 1));
+      }
       return;
     }
 
@@ -921,14 +1123,20 @@ void EditPlanner::processStream() {
     const QString scopeId = scopeValue.toString().trimmed();
 
     if (operation.isEmpty()) {
-      emit failed(QStringLiteral(
-          "Edit plan item %1 has an empty operation.").arg(i + 1));
+      if (!m_terminalEmitted) {
+        m_terminalEmitted = true;
+        emit failed(QStringLiteral(
+            "Edit plan item %1 has an empty operation.").arg(i + 1));
+      }
       return;
     }
 
     if (position.isEmpty()) {
-      emit failed(QStringLiteral(
-          "Edit plan item %1 has an empty position.").arg(i + 1));
+      if (!m_terminalEmitted) {
+        m_terminalEmitted = true;
+        emit failed(QStringLiteral(
+            "Edit plan item %1 has an empty position.").arg(i + 1));
+      }
       return;
     }
 
@@ -943,8 +1151,11 @@ void EditPlanner::processStream() {
     } else if (operation == QStringLiteral("replace_scope")) {
       command.operation = EditCommand::Operation::ReplaceScope;
     } else {
-      emit failed(QStringLiteral("Edit plan item %1 has an invalid operation.")
-                      .arg(i + 1));
+      if (!m_terminalEmitted) {
+        m_terminalEmitted = true;
+        emit failed(QStringLiteral("Edit plan item %1 has an invalid operation.")
+                        .arg(i + 1));
+      }
       return;
     }
 
@@ -955,8 +1166,11 @@ void EditPlanner::processStream() {
     } else if (position == QStringLiteral("inside")) {
       command.position = EditCommand::Position::Inside;
     } else {
-      emit failed(QStringLiteral("Edit plan item %1 has an invalid position.")
-                      .arg(i + 1));
+      if (!m_terminalEmitted) {
+        m_terminalEmitted = true;
+        emit failed(QStringLiteral("Edit plan item %1 has an invalid position.")
+                        .arg(i + 1));
+      }
       return;
     }
 
@@ -967,28 +1181,43 @@ void EditPlanner::processStream() {
 
     if (m_scopeMode == ScopeMode::WholeFile) {
       if (command.operation != EditCommand::Operation::ReplaceScope) {
-        emit failed(QStringLiteral(
-            "Whole-file mode requires operation 'replace_scope'."));
+        if (!m_terminalEmitted) {
+          m_terminalEmitted = true;
+          emit failed(QStringLiteral(
+              "Whole-file mode requires operation 'replace_scope'."));
+        }
         return;
       }
       if (command.scopeId != QStringLiteral("document")) {
-        emit failed(QStringLiteral(
-            "Whole-file mode requires scope 'document'."));
+        if (!m_terminalEmitted) {
+          m_terminalEmitted = true;
+          emit failed(QStringLiteral(
+              "Whole-file mode requires scope 'document'."));
+        }
         return;
       }
       if (command.position != EditCommand::Position::Inside) {
-        emit failed(QStringLiteral(
-            "Whole-file mode requires position 'inside'."));
+        if (!m_terminalEmitted) {
+          m_terminalEmitted = true;
+          emit failed(QStringLiteral(
+              "Whole-file mode requires position 'inside'."));
+        }
         return;
       }
       if (!command.findString.isEmpty()) {
-        emit failed(QStringLiteral(
-            "Whole-file mode requires an empty find string."));
+        if (!m_terminalEmitted) {
+          m_terminalEmitted = true;
+          emit failed(QStringLiteral(
+              "Whole-file mode requires an empty find string."));
+        }
         return;
       }
       if (command.replaceAll) {
-        emit failed(QStringLiteral(
-            "Whole-file mode requires all=false."));
+        if (!m_terminalEmitted) {
+          m_terminalEmitted = true;
+          emit failed(QStringLiteral(
+              "Whole-file mode requires all=false."));
+        }
         return;
       }
     }
@@ -1000,31 +1229,43 @@ void EditPlanner::processStream() {
 
     if (!isDocumentRoot && !section && command.scopeId.isEmpty()) {
       if (command.operation != EditCommand::Operation::Insert) {
-        emit failed(QStringLiteral("Edit plan item %1 uses an empty scope but "
-                                   "is not an insertion.")
-                        .arg(i + 1));
+        if (!m_terminalEmitted) {
+          m_terminalEmitted = true;
+          emit failed(QStringLiteral("Edit plan item %1 uses an empty scope but "
+                                     "is not an insertion.")
+                          .arg(i + 1));
+        }
         return;
       }
 
       if (!documentText.isEmpty()) {
-        emit failed(QStringLiteral("Edit plan item %1 uses an empty scope but "
-                                   "the document is not empty.")
-                        .arg(i + 1));
+        if (!m_terminalEmitted) {
+          m_terminalEmitted = true;
+          emit failed(QStringLiteral("Edit plan item %1 uses an empty scope but "
+                                     "the document is not empty.")
+                          .arg(i + 1));
+        }
         return;
       }
     } else if (!isDocumentRoot && !section) {
-      emit failed(
-          QStringLiteral("Edit plan item %1 contains an invalid scope ID: %2")
-              .arg(i + 1)
-              .arg(command.scopeId));
+      if (!m_terminalEmitted) {
+        m_terminalEmitted = true;
+        emit failed(
+            QStringLiteral("Edit plan item %1 contains an invalid scope ID: %2")
+                .arg(i + 1)
+                .arg(command.scopeId));
+      }
       return;
     }
 
     if (command.replaceAll && !explicitlyRequestsAll(m_userRequest)) {
-      emit failed(
-          QStringLiteral("Edit plan item %1 uses all=true without an explicit "
-                         "request to affect all occurrences.")
-              .arg(i + 1));
+      if (!m_terminalEmitted) {
+        m_terminalEmitted = true;
+        emit failed(
+            QStringLiteral("Edit plan item %1 uses all=true without an explicit "
+                           "request to affect all occurrences.")
+                .arg(i + 1));
+      }
       return;
     }
 
@@ -1040,78 +1281,108 @@ void EditPlanner::processStream() {
       }
 
       if (!validTarget) {
-        emit failed(
-            QStringLiteral("Edit plan item %1 targets a section that was "
-                           "not requested by the user.")
-                .arg(i + 1));
+        if (!m_terminalEmitted) {
+          m_terminalEmitted = true;
+          emit failed(
+              QStringLiteral("Edit plan item %1 targets a section that was "
+                             "not requested by the user.")
+                  .arg(i + 1));
+        }
         return;
       }
     }
 
     if (command.operation == EditCommand::Operation::Insert) {
       if (!command.findString.isEmpty()) {
-        emit failed(QStringLiteral("Edit plan item %1 is an insert but has a "
-                                   "non-empty find string.")
-                        .arg(i + 1));
+        if (!m_terminalEmitted) {
+          m_terminalEmitted = true;
+          emit failed(QStringLiteral("Edit plan item %1 is an insert but has a "
+                                     "non-empty find string.")
+                          .arg(i + 1));
+        }
         return;
       }
 
       if (command.replaceAll) {
-        emit failed(
-            QStringLiteral("Edit plan item %1 is an insert with all=true.")
-                .arg(i + 1));
+        if (!m_terminalEmitted) {
+          m_terminalEmitted = true;
+          emit failed(
+              QStringLiteral("Edit plan item %1 is an insert with all=true.")
+                  .arg(i + 1));
+        }
         return;
       }
     } else if (command.operation == EditCommand::Operation::ReplaceScope) {
       if (!command.findString.isEmpty()) {
-        emit failed(
-            QStringLiteral("Edit plan item %1 is a replace_scope but has a "
-                           "non-empty find string.")
-                .arg(i + 1));
+        if (!m_terminalEmitted) {
+          m_terminalEmitted = true;
+          emit failed(
+              QStringLiteral("Edit plan item %1 is a replace_scope but has a "
+                             "non-empty find string.")
+                  .arg(i + 1));
+        }
         return;
       }
 
       if (command.position != EditCommand::Position::Inside) {
-        emit failed(
-            QStringLiteral("Edit plan item %1 is a replace_scope but its "
-                           "position is not inside.")
-                .arg(i + 1));
+        if (!m_terminalEmitted) {
+          m_terminalEmitted = true;
+          emit failed(
+              QStringLiteral("Edit plan item %1 is a replace_scope but its "
+                             "position is not inside.")
+                  .arg(i + 1));
+        }
         return;
       }
 
       if (command.replaceAll) {
-        emit failed(
-            QStringLiteral("Edit plan item %1 is a replace_scope with "
-                           "all=true.")
-                .arg(i + 1));
+        if (!m_terminalEmitted) {
+          m_terminalEmitted = true;
+          emit failed(
+              QStringLiteral("Edit plan item %1 is a replace_scope with "
+                             "all=true.")
+                  .arg(i + 1));
+        }
         return;
       }
     } else {
       if (command.findString.trimmed().isEmpty()) {
-        emit failed(
-            QStringLiteral("Edit plan item %1 requires find text.").arg(i + 1));
+        if (!m_terminalEmitted) {
+          m_terminalEmitted = true;
+          emit failed(
+              QStringLiteral("Edit plan item %1 requires find text.").arg(i + 1));
+        }
         return;
       }
 
       if (!isDocumentRoot &&
           (!section || !findExistsInScope(command, *section, documentText))) {
-        emit failed(QStringLiteral("Edit plan item %1 uses find text that does "
-                                   "not exist in the selected scope.")
-                        .arg(i + 1));
+        if (!m_terminalEmitted) {
+          m_terminalEmitted = true;
+          emit failed(QStringLiteral("Edit plan item %1 uses find text that does "
+                                     "not exist in the selected scope.")
+                          .arg(i + 1));
+        }
         return;
       }
     }
 
     if (command.instruction.isEmpty()) {
-      emit failed(QStringLiteral("Edit plan item %1 has an empty instruction.")
-                      .arg(i + 1));
+      if (!m_terminalEmitted) {
+        m_terminalEmitted = true;
+        emit failed(QStringLiteral("Edit plan item %1 has an empty instruction.")
+                        .arg(i + 1));
+      }
       return;
     }
 
     if (!command.isCommandValid()) {
-      emit failed(
-          QStringLiteral("Edit plan item %1 violates the edit protocol.")
-              .arg(i + 1));
+      if (!m_terminalEmitted) {
+        m_terminalEmitted = true;
+        emit failed(
+            QStringLiteral("Edit plan item %1 violates the edit protocol.")
+                .arg(i + 1));
+      }
       return;
     }
 
@@ -1120,13 +1391,19 @@ void EditPlanner::processStream() {
 
   if (m_scopeMode == ScopeMode::WholeFile) {
     if (edits.size() != 1) {
-      emit failed(QStringLiteral(
-          "Whole-file mode requires exactly one edit."));
+      if (!m_terminalEmitted) {
+        m_terminalEmitted = true;
+        emit failed(QStringLiteral(
+            "Whole-file mode requires exactly one edit."));
+      }
       return;
     }
   } else if (!targets.isEmpty()) {
     if (edits.isEmpty()) {
-      emit failed(QStringLiteral("No edits required."));
+      if (!m_terminalEmitted) {
+        m_terminalEmitted = true;
+        emit failed(QStringLiteral("No edits required."));
+      }
       return;
     }
 
@@ -1145,8 +1422,11 @@ void EditPlanner::processStream() {
       }
 
       if (seenScopes.contains(key)) {
-        emit failed(QStringLiteral(
-            "The planner produced multiple edits for the same section."));
+        if (!m_terminalEmitted) {
+          m_terminalEmitted = true;
+          emit failed(QStringLiteral(
+              "The planner produced multiple edits for the same section."));
+        }
         return;
       }
 
@@ -1165,8 +1445,11 @@ void EditPlanner::processStream() {
       }
 
       if (!coversTarget) {
-        emit failed(QStringLiteral(
-            "The planner targeted a section the user did not name."));
+        if (!m_terminalEmitted) {
+          m_terminalEmitted = true;
+          emit failed(QStringLiteral(
+              "The planner targeted a section the user did not name."));
+        }
         return;
       }
     }
@@ -1178,7 +1461,10 @@ void EditPlanner::processStream() {
   m_streamingResponse.clear();
 
   if (edits.isEmpty()) {
-    emit failed(QStringLiteral("No edits required."));
+    if (!m_terminalEmitted) {
+      m_terminalEmitted = true;
+      emit failed(QStringLiteral("No edits required."));
+    }
     return;
   }
 
@@ -1197,6 +1483,11 @@ void EditPlanner::processStream() {
   }
 
   emit contextScopes(referencedScopes);
+
+  if (m_terminalEmitted)
+    return;
+
+  m_terminalEmitted = true;
 
   QMetaObject::invokeMethod(
       this, [this, edits]() { emit planValidated(edits); },

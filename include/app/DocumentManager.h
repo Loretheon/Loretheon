@@ -24,10 +24,19 @@ public slots:
   void newTextFile();
   void newMarkdownFile();
   void newPlantUmlFile();
+  void newDotFile();
+  void newMermaidFile();
+  void newHtmlFile();
+
   void newTextFileIn(const QString &parentPath);
   void newMarkdownFileIn(const QString &parentPath);
   void newPlantUmlFileIn(const QString &parentPath);
+  void newDotFileIn(const QString &parentPath);
+  void newMermaidFileIn(const QString &parentPath);
+  void newHtmlFileIn(const QString &parentPath);
+
   void newFolderIn(const QString &parentPath);
+
   bool openFile(const QString &path);
   bool save();
   bool saveDocument(TextDocument *document);
@@ -37,6 +46,7 @@ public slots:
   bool convertToText(const QString &path);
   bool convertToDot(const QString &path);
   bool convertToPlantUml(const QString &path);
+  bool convertToMermaid(const QString &path);
   void closeCurrent();
   void closeDocument(TextDocument *document);
 
@@ -45,15 +55,7 @@ signals:
   void documentOpened(TextDocument *document);
   void documentClosed(TextDocument *document);
   void documentChanged(TextDocument *document);
-
-  // Emitted after a document's contents are written to disk
-  // successfully. Carries the document so the receiver can read its
-  // path and its body.
   void documentSaved(TextDocument *document);
-
-  // Emitted when openFile() is asked for a media file. The manager does
-  // not open a tab; whoever listens (DocumentArea, or MainWindow) is
-  // responsible for showing the file.
   void mediaFileRequested(const QString &absolutePath);
   void unsupportedFileRequested(const QString &absolutePath,
                                 const QString &reason);

@@ -45,6 +45,13 @@ public:
   bool load();
   int rebuild();
 
+  // Add or replace the entries for one file. Removes every existing
+  // entry whose filePath equals `absolutePath`, re-extracts the file
+  // from disk, embeds the new scopes, and persists. Cheaper than a
+  // full rebuild when one file changes. Returns the number of scopes
+  // added, or -1 on failure.
+  int refreshFile(const QString &absolutePath);
+
   bool isReady() const;
 
   int64_t vectorCount() const;
@@ -70,6 +77,7 @@ private:
                     const QString &filePath,
                     QVector<Entry> &out) const;
 
+  bool saveIndex() const;
   bool saveSidecar(const QString &path) const;
   bool loadSidecar(const QString &path);
 

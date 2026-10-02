@@ -1,11 +1,6 @@
 #include "OverseerWidget.h"
 #include "PathUtils.h"
 #include "AutomationStrip.h"
-#include "ConductorBoard.h"
-#include "ConductorDock.h"
-#include "ConductorQueue.h"
-#include "ConductorRoster.h"
-#include "DependencyGraph.h"
 #include "OverseerRunner.h"
 #include "OverseerSession.h"
 #include "OverseerSessionList.h"
@@ -21,55 +16,37 @@
 
 #include <QInputDialog>
 #include <QLabel>
-#include <QLineEdit>
 #include <QMessageBox>
-#include <QPushButton>
-#include <QSpinBox>
-#include <QToolButton>
 #include <QVBoxLayout>
 
 OverseerWidget::OverseerWidget(OverseerSessionManager *manager,
                                QWidget *parent)
     : QWidget(parent), m_manager(manager) {
   m_sessionListPanel = new OverseerSessionList(this);
-  m_transcriptPanel = new TranscriptPanel(nullptr, this);
+  m_transcriptPanel = new TranscriptPanel(nullptr, nullptr);
   m_sidePanel = new OverseerSidePanel(this);
 
-  auto *centerPanel = new QWidget(this);
-  auto *centerLayout = new QVBoxLayout(centerPanel);
-  centerLayout->setContentsMargins(6, 6, 6, 6);
-  centerLayout->setSpacing(6);
+  // The session header and the automation strip are created here but
+  // laid out by OverseerPage, inside the bottom dock. This widget
+  // keeps the pointers so it can keep updating them; it does not own
+  // their geometry.
+  m_sessionHeader = new QLabel(tr("No session"), nullptr);
+  {
+    QFont headerFont = m_sessionHeader->font();
+    headerFont.setBold(true);
+    m_sessionHeader->setFont(headerFont);
+  }
 
-  m_sessionHeader = new QLabel(tr("No session"), centerPanel);
-  QFont headerFont = m_sessionHeader->font();
-  headerFont.setBold(true);
-  m_sessionHeader->setFont(headerFont);
-  centerLayout->addWidget(m_sessionHeader);
-
-  m_automationStrip = new AutomationStrip(centerPanel);
+  m_automationStrip = new AutomationStrip(nullptr);
   m_automationStrip->setEnabledState(false);
-  centerLayout->addWidget(m_automationStrip);
 
-  auto *inputRow = new QHBoxLayout;
-  m_input = new QLineEdit(centerPanel);
-  m_input->setPlaceholderText(tr("Describe a task…"));
-  m_sendButton = new QPushButton(tr("Send"), centerPanel);
-
-  auto *depthLabel = new QLabel(tr("Tool depth:"), centerPanel);
-  m_toolCallDepthSpin = new QSpinBox(centerPanel);
-  m_toolCallDepthSpin->setRange(1, 64);
-  m_toolCallDepthSpin->setValue(Settings::getOverseerToolCallDepthLimit());
-
-  inputRow->addWidget(m_input, 1);
-  inputRow->addWidget(m_sendButton);
-  inputRow->addSpacing(12);
-  inputRow->addWidget(depthLabel);
-  inputRow->addWidget(m_toolCallDepthSpin);
-  centerLayout->addLayout(inputRow);
-
+  // The OverseerWidget itself now has no centre column. Everything
+  // that used to be there (session header, automation strip, composer)
+  // has moved into the bottom dock. This widget is a thin aggregator
+  // whose only job is to hold the pieces and to route runner signals.
   auto *rootLayout = new QVBoxLayout(this);
   rootLayout->setContentsMargins(0, 0, 0, 0);
-  rootLayout->addWidget(centerPanel);
+  rootLayout->setSpacing(0);
 
   connect(m_sessionListPanel, &OverseerSessionList::newSessionRequested, this,
           &OverseerWidget::onNewSessionRequested);
@@ -82,30 +59,6 @@ OverseerWidget::OverseerWidget(OverseerSessionManager *manager,
 
   connect(m_automationStrip, &AutomationStrip::settingsChanged, this,
           &OverseerWidget::onAutomationSettingsChanged);
-
-  connect(m_sendButton, &QPushButton::clicked, this, [this]() {
-    const QString text = m_input->text().trimmed();
-
-    if (text.isEmpty())
-      return;
-
-    m_input->clear();
-    submitRequest(text);
-  });
-
-  connect(m_input, &QLineEdit::returnPressed, this, [this]() {
-    const QString text = m_input->text().trimmed();
-
-    if (text.isEmpty())
-      return;
-
-    m_input->clear();
-    submitRequest(text);
-  });
-
-  connect(m_toolCallDepthSpin,
-          QOverload<int>::of(&QSpinBox::valueChanged), this,
-          &OverseerWidget::onToolCallDepthChanged);
 
   connect(m_transcriptPanel, &TranscriptPanel::memoryProposalAccepted, this,
           &OverseerWidget::onProposalAccepted);
@@ -125,6 +78,24 @@ OverseerWidget::OverseerWidget(OverseerSessionManager *manager,
   connect(m_transcriptPanel, &TranscriptPanel::planCancelRequested, this,
           &OverseerWidget::onPlanCancelRequested);
 
+  // The side panel's User actions tab drives the exact same slots as
+  // the transcript panel. Both views are projections of the runner's
+  // source-of-truth lists, and both converge on the runner's mutators.
+  connect(m_sidePanel, &OverseerSidePanel::memoryProposalAccepted, this,
+          &OverseerWidget::onProposalAccepted);
+
+  connect(m_sidePanel, &OverseerSidePanel::memoryProposalRejected, this,
+          &OverseerWidget::onProposalRejected);
+
+  connect(m_sidePanel, &OverseerSidePanel::editPlanApplyRequested, this,
+          &OverseerWidget::onPlanApplyRequested);
+
+  connect(m_sidePanel, &OverseerSidePanel::editPlanCancelRequested, this,
+          &OverseerWidget::onPlanCancelRequested);
+
+  connect(m_sidePanel, &OverseerSidePanel::editPlanOpenRequested, this,
+          &OverseerWidget::focusPlanInTranscript);
+
   if (m_manager) {
     connect(m_manager, &OverseerSessionManager::sessionOpened, this,
             &OverseerWidget::onManagerSessionOpened);
@@ -138,8 +109,7 @@ OverseerWidget::OverseerWidget(OverseerSessionManager *manager,
 
   rebuildSessionList();
 
-  m_input->setEnabled(false);
-  m_sendButton->setEnabled(false);
+  emit composerEnabledChanged(false);
 }
 
 OverseerWidget::~OverseerWidget() = default;
@@ -186,8 +156,10 @@ void OverseerWidget::bindToRunner(OverseerRunner *runner) {
 
   m_boundRunner = runner;
 
-  if (!m_boundRunner)
+  if (!m_boundRunner) {
+    emit runnerBound(nullptr);
     return;
+  }
 
   connect(m_boundRunner, &OverseerRunner::changed, this,
           &OverseerWidget::onRunnerChanged);
@@ -216,6 +188,9 @@ void OverseerWidget::bindToRunner(OverseerRunner *runner) {
   connect(m_boundRunner, &OverseerRunner::planFailed, this,
           &OverseerWidget::planFailed);
 
+  connect(m_boundRunner, &OverseerRunner::agentDepthLimitReached, this,
+          &OverseerWidget::onAgentDepthLimitReached);
+
   if (m_transcriptPanel)
     m_transcriptPanel->setStore(m_boundRunner->transcriptStore());
 
@@ -230,12 +205,20 @@ void OverseerWidget::bindToRunner(OverseerRunner *runner) {
   if (m_workstation)
     m_boundRunner->setWorkstation(m_workstation);
 
-  m_sessionHeader->setText(tr("Session: %1").arg(m_boundRunner->sessionName()));
+  if (m_sessionHeader) {
+    m_sessionHeader->setText(
+        tr("Session: %1").arg(m_boundRunner->sessionName()));
+  }
 
-  m_input->setEnabled(true);
-  m_sendButton->setEnabled(true);
+  emit composerEnabledChanged(true);
+
+  // Populate the side panel from the runner's current state before
+  // the runner has a chance to emit more changes.
+  refreshUserActions();
 
   m_boundRunner->drainQueue();
+
+  emit runnerBound(m_boundRunner);
 }
 
 void OverseerWidget::unbindFromRunner(OverseerRunner *runner) {
@@ -282,18 +265,22 @@ void OverseerWidget::onSessionCleared() {
   if (m_transcriptPanel)
     m_transcriptPanel->setStore(nullptr);
 
-  if (m_sidePanel)
+  if (m_sidePanel) {
     m_sidePanel->setSession(nullptr);
+    m_sidePanel->setPendingActions({});
+  }
 
-  m_sessionHeader->setText(tr("No session"));
+  if (m_sessionHeader)
+    m_sessionHeader->setText(tr("No session"));
 
   if (m_automationStrip) {
     m_automationStrip->setSettings(SessionSettings());
     m_automationStrip->setEnabledState(false);
   }
 
-  m_input->setEnabled(false);
-  m_sendButton->setEnabled(false);
+  emit composerEnabledChanged(false);
+
+  emit runnerBound(nullptr);
 }
 
 void OverseerWidget::onNewSessionRequested() {
@@ -343,7 +330,15 @@ void OverseerWidget::onNewSessionRequested() {
   rebuildSessionList();
   m_sessionListPanel->selectByName(trimmedName);
 }
+void OverseerWidget::retryRequest(const QString &requestId) {
+  if (m_boundRunner)
+    m_boundRunner->retryFailedRequest(requestId);
+}
 
+void OverseerWidget::skipRequest(const QString &requestId) {
+  if (m_boundRunner)
+    m_boundRunner->skipFailedRequest(requestId);
+}
 
 void OverseerWidget::setFocusedFilePath(const QString &absolutePath) {
   if (m_boundRunner)
@@ -448,7 +443,7 @@ void OverseerWidget::onAutomationSettingsChanged(
 }
 
 void OverseerWidget::onToolCallDepthChanged(int value) {
-  const int clamped = qBound(1, value, 64);
+  const int clamped = qBound(1, value, 100000);
   Settings::setOverseerToolCallDepthLimit(clamped);
 
   if (m_boundRunner)
@@ -466,20 +461,54 @@ void OverseerWidget::onManagerSessionListChanged() {
 }
 
 void OverseerWidget::onRunnerChanged() {
-  // The view re-reads the queue, the roster, and the side panel from
-  // the bound runner on demand. The signal is here so that future
-  // changes (a live queue view, a live roster view) have a hook.
+  if (!m_boundRunner)
+    return;
+
+  if (m_sidePanel)
+    m_sidePanel->setSession(m_boundRunner->session());
+
+  refreshUserActions();
 }
 
-void OverseerWidget::onRunnerRequestFinished(const QString &sessionName,
-                                             const QString &requestId,
-                                             bool ok,
-                                             const QString &summary,
-                                             const QString &filePath) {
-  Q_UNUSED(sessionName);
+void OverseerWidget::refreshUserActions() {
+  if (!m_sidePanel)
+    return;
+
+  if (!m_boundRunner) {
+    m_sidePanel->setPendingActions({});
+    return;
+  }
+
+  m_sidePanel->setPendingActions(m_boundRunner->pendingActions());
+}
+
+void OverseerWidget::focusPlanInTranscript(const QString &planId) {
+  if (planId.isEmpty())
+    return;
+
+  if (m_sidePanel && m_sidePanel->sectionPicker())
+    m_sidePanel->sectionPicker()->setCurrentIndex(4);
+
+  Q_UNUSED(planId);
+}
+
+void OverseerWidget::onRunnerRequestFinished(
+    const QString &sessionName, const QString &requestId, bool ok,
+    const QString &summary, const QString &filePath) {
   Q_UNUSED(requestId);
-  Q_UNUSED(ok);
-  Q_UNUSED(summary);
   Q_UNUSED(filePath);
+
+  const QString prefix = ok ? tr("Done") : tr("Failed");
+
+  emit statusMessage(
+      tr("%1 — %2: %3").arg(sessionName, prefix, summary), 4000);
 }
 
+void OverseerWidget::onAgentDepthLimitReached(const QString &agentId,
+                                              int limit) {
+  emit statusMessage(
+      tr("Agent %1 stopped: exceeded its tool call depth limit (%2).")
+          .arg(agentId)
+          .arg(limit),
+      6000);
+}

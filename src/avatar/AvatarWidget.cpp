@@ -13,43 +13,50 @@
 #include <QResizeEvent>
 #include <QTimer>
 #include <QUrl>
+#include <QSurfaceFormat>
+#include <QOpenGLContext>
+#include <QCursor>
+#include <QWheelEvent>
 
 namespace {
 
-constexpr auto kAvatarMeshPath = ":/avatar/ccbase/Lore.glb";
-constexpr auto kAvatarSkeletonPath = ":/avatar/ccbase/skeleton.ozz";
-constexpr auto kAvatarClipDir = ":/avatar/ccbase";
+constexpr auto kAvatarMeshPath = ":/avatar/julia/julia.glb";
+constexpr auto kAvatarSkeletonPath = ":/avatar/julia/skeleton.ozz";
+constexpr auto kAvatarClipDir = ":/avatar/julia";
 
-constexpr int kCornerBand = 16;
-constexpr int kEdgeBand = 8;
+constexpr int kCornerBand = 18;
+constexpr int kEdgeBand = 10;
 
 constexpr bool kInteractionEnabled = true;
 
-} // namespace
+constexpr double kResizeStepFactor = 0.05;
+
+}
 
 AvatarWidget::AvatarWidget(QWidget *parent) : QQuickWidget(parent) {
-  // The widget must be translucent so the QML scene's transparent
-  // background reaches the screen instead of being composited over
-  // black. WA_AlwaysStackOnTop forces the QQuickWidget to composite
-  // its FBO with alpha rather than as an opaque blit.
-  setAttribute(Qt::WA_AlwaysStackOnTop, true);
   setAttribute(Qt::WA_TranslucentBackground, true);
   setAttribute(Qt::WA_NoSystemBackground, true);
+  setAttribute(Qt::WA_OpaquePaintEvent, false);
+  setAttribute(Qt::WA_AlwaysStackOnTop, true);
 
   setAutoFillBackground(false);
 
-  {
-    QPalette pal = palette();
-    pal.setColor(QPalette::Window, Qt::transparent);
-    setPalette(pal);
-  }
+  QPalette pal = palette();
+  pal.setColor(QPalette::Window, Qt::transparent);
+  setPalette(pal);
 
   setClearColor(Qt::transparent);
 
   setResizeMode(QQuickWidget::SizeRootObjectToView);
-
   setMouseTracking(true);
 
+  QSurfaceFormat format = QSurfaceFormat::defaultFormat();
+  format.setAlphaBufferSize(8);
+  format.setDepthBufferSize(24);
+  format.setStencilBufferSize(8);
+  format.setColorSpace(QSurfaceFormat::sRGBColorSpace);
+  format.setSwapBehavior(QSurfaceFormat::TripleBuffer);
+  setFormat(format);
 
   m_controller = new AvatarController(this);
 
@@ -61,6 +68,7 @@ AvatarWidget::AvatarWidget(QWidget *parent) : QQuickWidget(parent) {
                 for (const QQmlError &error : errors()) {
                   qWarning() << "  " << error.toString();
                 }
+                emit modelFailed(tr("QML load failed."));
               }
               return;
             }
@@ -73,6 +81,7 @@ AvatarWidget::AvatarWidget(QWidget *parent) : QQuickWidget(parent) {
 
             if (!root) {
               qWarning() << "[AvatarWidget] No QML root after Ready.";
+              emit modelFailed(tr("No QML root after Ready."));
               return;
             }
 
@@ -84,6 +93,7 @@ AvatarWidget::AvatarWidget(QWidget *parent) : QQuickWidget(parent) {
 
             if (!m_surface) {
               qWarning() << "[AvatarWidget] No AvatarSurface found in QML.";
+              emit modelFailed(tr("No AvatarSurface found in QML."));
               return;
             }
 
@@ -96,6 +106,7 @@ AvatarWidget::AvatarWidget(QWidget *parent) : QQuickWidget(parent) {
             if (!AvatarMeshLoader::load(QString::fromLatin1(kAvatarMeshPath),
                                         meshData, &error)) {
               qWarning() << "[AvatarWidget] Mesh load failed:" << error;
+              emit modelFailed(error);
               return;
             }
 
@@ -103,10 +114,13 @@ AvatarWidget::AvatarWidget(QWidget *parent) : QQuickWidget(parent) {
 
             if (!surface) {
               qWarning() << "[AvatarWidget] AvatarSurface cast failed.";
+              emit modelFailed(tr("AvatarSurface cast failed."));
               return;
             }
 
             surface->setMeshData(meshData);
+
+            m_controller->setMeshData(meshData);
           });
 
   setSource(QUrl(QStringLiteral("qrc:/avatar/AvatarOverlay.qml")));
@@ -132,23 +146,26 @@ void AvatarWidget::onSurfaceReady() {
 
   m_controller->setSurface(surface);
 
-  if (!m_controller->loadArchives(QString::fromLatin1(kAvatarSkeletonPath),
-                                  QString::fromLatin1(kAvatarClipDir))) {
-    qWarning() << "[AvatarWidget] Controller failed to load archives.";
-    return;
+  const bool archivesOk = m_controller->loadArchives(
+      QString::fromLatin1(kAvatarSkeletonPath),
+      QString::fromLatin1(kAvatarClipDir));
+
+  if (!archivesOk) {
+    qWarning() << "[AvatarWidget] Controller failed to load archives;"
+               << "continuing without animations.";
   }
 
   m_controller->start();
 
-  m_controller->playClip(QStringLiteral("idle"));
-
   emit modelLoaded();
 }
+
 void AvatarWidget::setSpeaking(bool speaking) {
   if (m_controller) {
     m_controller->setSpeaking(speaking);
   }
 }
+
 void AvatarWidget::applyConfig(const AvatarConfig &config) {
   m_config = config;
 }
@@ -223,7 +240,12 @@ void AvatarWidget::mousePressEvent(QMouseEvent *event) {
   }
 
   const QPoint local = event->position().toPoint();
-  const DragKind kind = bandFor(local);
+  DragKind kind = bandFor(local);
+
+  // Right-button anywhere in the interior drags the widget.
+  if (event->button() == Qt::RightButton && kind == DragKind::None) {
+    kind = DragKind::Move;
+  }
 
   const bool isResize =
       kind == DragKind::ResizeTopLeft || kind == DragKind::ResizeTopRight ||
@@ -252,11 +274,46 @@ void AvatarWidget::mousePressEvent(QMouseEvent *event) {
   m_originTopLeft = pos();
   m_originSize = size();
 
+  if (m_drag == DragKind::Move) {
+    setCursor(Qt::ClosedHandCursor);
+  }
+
   event->accept();
 }
 
 void AvatarWidget::mouseMoveEvent(QMouseEvent *event) {
-  if (!kInteractionEnabled || m_drag == DragKind::None) {
+  if (!kInteractionEnabled) {
+    QQuickWidget::mouseMoveEvent(event);
+    return;
+  }
+
+  const QPoint local = event->position().toPoint();
+
+  if (m_drag == DragKind::None) {
+    const DragKind hover = bandFor(local);
+
+    switch (hover) {
+    case DragKind::ResizeTopLeft:
+      setCursor(Qt::SizeFDiagCursor);
+      break;
+    case DragKind::ResizeTopRight:
+      setCursor(Qt::SizeBDiagCursor);
+      break;
+    case DragKind::ResizeBottomLeft:
+      setCursor(Qt::SizeBDiagCursor);
+      break;
+    case DragKind::ResizeBottomRight:
+      setCursor(Qt::SizeFDiagCursor);
+      break;
+    case DragKind::Move:
+      setCursor(Qt::OpenHandCursor);
+      break;
+    case DragKind::None:
+    default:
+      unsetCursor();
+      break;
+    }
+
     QQuickWidget::mouseMoveEvent(event);
     return;
   }
@@ -280,7 +337,48 @@ void AvatarWidget::mouseReleaseEvent(QMouseEvent *event) {
   }
 
   m_drag = DragKind::None;
+  unsetCursor();
   emit geometryChanged();
+
+  event->accept();
+}
+
+void AvatarWidget::mouseDoubleClickEvent(QMouseEvent *event) {
+  if (!kInteractionEnabled) {
+    QQuickWidget::mouseDoubleClickEvent(event);
+    return;
+  }
+
+  if (event->button() == Qt::LeftButton) {
+    const QPoint local = event->position().toPoint();
+
+    if (bandFor(local) == DragKind::None) {
+      event->accept();
+      return;
+    }
+  }
+
+  QQuickWidget::mouseDoubleClickEvent(event);
+}
+
+void AvatarWidget::wheelEvent(QWheelEvent *event) {
+  if (!kInteractionEnabled || !m_resizable) {
+    QQuickWidget::wheelEvent(event);
+    return;
+  }
+
+  const int steps = event->angleDelta().y() / 120;
+
+  if (steps == 0) {
+    QQuickWidget::wheelEvent(event);
+    return;
+  }
+
+  int side = width() + qRound(width() * kResizeStepFactor * steps);
+
+  side = qBound(m_config.minSize.width(), side, m_config.maxSize.width());
+
+  applyResizeToSide(side);
 
   event->accept();
 }
@@ -309,42 +407,12 @@ void AvatarWidget::applyResize(const QPoint &globalDelta) {
   const QSize minSize = m_config.minSize;
   const QSize maxSize = m_config.maxSize;
 
-  const QSize raw(m_originSize.width() + dx,
-                  m_originSize.height() + dy);
+  int side = m_originSize.width() +
+             (qAbs(dx) >= qAbs(dy) ? dx : dy);
 
-  const double aspect =
-      (m_originSize.height() > 0)
-          ? static_cast<double>(m_originSize.width()) / m_originSize.height()
-          : 1.0;
+  side = qBound(minSize.width(), side, maxSize.width());
 
-  double w = raw.width();
-  double h = raw.height();
-
-  if (qAbs(raw.width() - m_originSize.width()) >=
-      qAbs(raw.height() - m_originSize.height())) {
-    h = w / aspect;
-  } else {
-    w = h * aspect;
-  }
-
-  if (w < minSize.width()) {
-    w = minSize.width();
-    h = w / aspect;
-  }
-  if (h < minSize.height()) {
-    h = minSize.height();
-    w = h * aspect;
-  }
-  if (w > maxSize.width()) {
-    w = maxSize.width();
-    h = w / aspect;
-  }
-  if (h > maxSize.height()) {
-    h = maxSize.height();
-    w = h * aspect;
-  }
-
-  const QSize newSize(qRound(w), qRound(h));
+  const QSize newSize(side, side);
 
   QPoint newTopLeft = m_originTopLeft;
 
@@ -368,6 +436,17 @@ void AvatarWidget::applyResize(const QPoint &globalDelta) {
   default:
     return;
   }
+
+  setGeometry(QRect(newTopLeft, newSize));
+}
+
+void AvatarWidget::applyResizeToSide(int side) {
+  const QPoint center = pos() + QPoint(width() / 2, height() / 2);
+
+  const QSize newSize(side, side);
+
+  const QPoint newTopLeft =
+      center - QPoint(newSize.width() / 2, newSize.height() / 2);
 
   setGeometry(QRect(newTopLeft, newSize));
 }

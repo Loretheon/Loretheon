@@ -12,21 +12,33 @@ class ToastStack;
 // calls ToastStack directly, and nothing else fires a QSystemTrayIcon
 // notification.
 //
-// Severity tiers (industry standard):
+// Severity tiers:
 //
-//   Info     — a fact the user may want. Transient toast. Expires.
-//   Warning  — something needs attention but is not blocking. Toast with
-//              longer lifetime. Stays in the top-window "Recent" list
-//              until dismissed.
-//   Error    — something failed. Same persistence as Warning, plus the
-//              top window shows a count badge.
-//   Critical — the app cannot proceed without the user. Fires a native
-//              OS notification. Persists until acknowledged. Appears in
-//              the top window under "Awaiting you."
+//   Info           — a fact the user may want. Transient in-app toast.
+//                    No OS notification, ever. Expires and is not kept.
+//   Warning        — something needs attention but is not blocking.
+//                    In-app toast with longer lifetime. Retained in
+//                    the top-window "Recent" list.
+//   Error          — something failed. Same retention as Warning, plus
+//                    the top window shows a count badge. No OS
+//                    notification; errors are usually only meaningful
+//                    while the user is looking at the app.
+//   NeedsUserInput — the app cannot proceed without the user, or the
+//                    user is expected to accept/reject something. An
+//                    in-app toast always fires. An OS-level
+//                    notification fires *only when the application is
+//                    not focused*. Persists until acknowledged.
+//                    Appears in the top window under "Awaiting you".
 //
-// A notification may carry a target file path and a target card ID so
-// that the top window can route the user to the right place when they
-// click it. Those fields are optional and are used by later drops.
+// The focus gate exists because an OS-level notification on top of a
+// visible app is noise. If the user is already looking at Lore, a toast
+// is enough. If they are in another window, the OS notification is the
+// only way to reach them.
+//
+// A notification may carry a target file path, a target card ID, and a
+// target session name so that the top window and the OS notification
+// click handler can route the user to the right place. Those fields are
+// optional.
 class NotificationService : public QObject {
   Q_OBJECT
 
@@ -35,7 +47,7 @@ public:
     Info,
     Warning,
     Error,
-    Critical,
+    NeedsUserInput,
   };
 
   Q_ENUM(Severity)
@@ -47,11 +59,18 @@ public:
     QString body;
     QString targetFilePath;  // optional
     QString targetCardId;    // optional
+    QString targetSessionName; // optional
     QDateTime createdAt;
     bool acknowledged = false;
   };
 
   static NotificationService &instance();
+
+  // True when the application owns the focused top-level window. Used
+  // by notify() to decide whether a NeedsUserInput notification also
+  // fires an OS-level alert. Exposed as a free function so tests can
+  // exercise the gate without touching the singleton.
+  static bool applicationHasFocus();
 
   // Called once at app start with the ToastStack that will render
   // toasts. The service does not own the stack; it drives it. The
@@ -63,7 +82,8 @@ public:
   // notification so that callers can later acknowledge it.
   QString notify(Severity severity, const QString &title,
                  const QString &body, const QString &targetFilePath = QString(),
-                 const QString &targetCardId = QString());
+                 const QString &targetCardId = QString(),
+                 const QString &targetSessionName = QString());
 
   // Convenience wrappers. Use these in preference to notify() where the
   // severity is obvious.
@@ -73,25 +93,29 @@ public:
                   const QString &targetFilePath = QString());
   QString error(const QString &title, const QString &body,
                 const QString &targetFilePath = QString());
-  QString critical(const QString &title, const QString &body,
-                   const QString &targetFilePath = QString(),
-                   const QString &targetCardId = QString());
 
-  // Acknowledge a critical notification. Removes it from "Awaiting you"
-  // and stops the OS notification from re-firing.
+  // A NeedsUserInput notification: the user must do something. Fires an
+  // OS-level alert only when the application does not have focus.
+  QString needsUserInput(const QString &title, const QString &body,
+                         const QString &targetFilePath = QString(),
+                         const QString &targetCardId = QString(),
+                         const QString &targetSessionName = QString());
+
+  // Acknowledge a NeedsUserInput notification. Removes it from
+  // "Awaiting you" and stops the OS notification from re-firing.
   void acknowledge(const QString &id);
 
-  // Acknowledge every critical notification whose target is the given
-  // file. Used when a file's blocking condition resolves itself, e.g.
-  // a scoped edit completes.
+  // Acknowledge every NeedsUserInput notification whose target is the
+  // given file. Used when a file's blocking condition resolves itself,
+  // e.g. a scoped edit completes.
   void acknowledgeForFile(const QString &absolutePath);
 
   // Recent notifications, newest first. Includes every severity except
   // Info (Info expires and is not retained).
   QVector<Notification> recent() const;
 
-  // Critical notifications that have not been acknowledged. These are
-  // what the top window shows under "Awaiting you."
+  // NeedsUserInput notifications that have not been acknowledged. These
+  // are what the top window shows under "Awaiting you."
   QVector<Notification> pending() const;
 
   // Settings-backed enable flags. Defaults are on. Changing one takes

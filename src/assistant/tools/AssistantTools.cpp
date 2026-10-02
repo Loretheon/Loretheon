@@ -13,8 +13,10 @@
 #include "inference/InferenceService.h"
 
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QJsonArray>
+#include <QTextStream>
 
 namespace assistant {
 
@@ -79,8 +81,6 @@ AssistantTool::Result SearchTool::execute(
     return makeError(QStringLiteral("'query' is required."));
   }
 
-  // The conductor intercepts this marker, starts the job, and returns
-  // the job id to the model. Nothing blocks.
   return makeOk(QStringLiteral("__job_search__:") + query);
 }
 
@@ -241,117 +241,97 @@ AssistantTool::Result DelegateTool::execute(
 }
 
 // ---------------------------------------------------------------------
-// RememberFactTool
+// EditProfileTool
 // ---------------------------------------------------------------------
 
-QString RememberFactTool::description() const {
+QString EditProfileTool::description() const {
   return QStringLiteral(
-      "Remember a fact. Use this when the user tells you something "
-      "about themselves or about you that should persist. The scope "
-      "argument decides where it goes: 'user' for facts about the "
-      "user, 'self' for facts about you, 'memory' for everything "
-      "else. The fact is written immediately; the user does not need "
-      "to approve it.");
+      "Edit one of your own files with a scoped edit. The target is "
+      "loaded, edited by the scoped-edit pipeline, and written back. "
+      "There is no user review. Use this to remember facts, revise "
+      "your understanding of the user, adjust your own character, or "
+      "update a topic file.\n"
+      "\n"
+      "Targets:\n"
+      "  'identity' — identity.md, who you are. Use sparingly. Changes "
+      "take effect on your next turn.\n"
+      "  'user'     — user.md, what you know about the user.\n"
+      "  'self'     — self.md, what you know about yourself.\n"
+      "  'topic'    — a topic file under memories/topics/. Requires "
+      "'topic' as a short name. Creates the file if it does not exist.\n"
+      "\n"
+      "The instruction is a plain-language description of the change, "
+      "as if instructing a human editor. Examples: 'add that the user "
+      "prefers British spelling', 'replace the Known section's first "
+      "line with the user's name', 'append a note about the project "
+      "they mentioned today'. The pipeline chooses the edit. Do not "
+      "attempt to write the whole file.\n"
+      "\n"
+      "Returns a job id. The edit runs in the background. Call "
+      "read_job to see the result.");
 }
 
-QJsonObject RememberFactTool::parametersSchema() const {
-  QJsonObject scope;
-  scope.insert(QStringLiteral("type"), QStringLiteral("string"));
-  scope.insert(
+QJsonObject EditProfileTool::parametersSchema() const {
+  QJsonObject target;
+  target.insert(QStringLiteral("type"), QStringLiteral("string"));
+  target.insert(
       QStringLiteral("description"),
-      QStringLiteral("Where the fact belongs. One of: 'user' (a fact "
-                     "about the user), 'self' (a fact about you), "
-                     "'memory' (a topic fact that may grow)."));
+      QStringLiteral("One of: 'identity', 'user', 'self', 'topic'."));
 
   QJsonObject topic;
   topic.insert(QStringLiteral("type"), QStringLiteral("string"));
   topic.insert(
       QStringLiteral("description"),
-      QStringLiteral("Short topic name, e.g. 'programming'. Required "
-                     "only when scope is 'memory'."));
+      QStringLiteral("Short topic name. Required only when target is "
+                     "'topic'. Normalised to a filesystem slug."));
 
-  QJsonObject fact;
-  fact.insert(QStringLiteral("type"), QStringLiteral("string"));
-  fact.insert(QStringLiteral("description"),
-              QStringLiteral("A single sentence stating the fact."));
+  QJsonObject instruction;
+  instruction.insert(QStringLiteral("type"), QStringLiteral("string"));
+  instruction.insert(
+      QStringLiteral("description"),
+      QStringLiteral("A plain-language description of the edit."));
 
   QJsonObject properties;
-  properties.insert(QStringLiteral("scope"), scope);
+  properties.insert(QStringLiteral("target"), target);
   properties.insert(QStringLiteral("topic"), topic);
-  properties.insert(QStringLiteral("fact"), fact);
+  properties.insert(QStringLiteral("instruction"), instruction);
 
   QJsonObject schema;
   schema.insert(QStringLiteral("type"), QStringLiteral("object"));
   schema.insert(QStringLiteral("properties"), properties);
   schema.insert(QStringLiteral("required"),
-                QJsonArray{QStringLiteral("scope"),
-                           QStringLiteral("fact")});
+                QJsonArray{QStringLiteral("target"),
+                           QStringLiteral("instruction")});
 
   return schema;
 }
 
-AssistantTool::Result RememberFactTool::execute(
+AssistantTool::Result EditProfileTool::execute(
     const QJsonObject &arguments,
     const AssistantToolContext &context) const {
-  const QString scope =
-      arguments.value(QStringLiteral("scope")).toString().trimmed().toLower();
-
-  const QString fact =
-      arguments.value(QStringLiteral("fact")).toString().trimmed();
-
-  if (fact.isEmpty()) {
-    return makeError(QStringLiteral("'fact' is empty."));
+  if (!context.profile) {
+    return makeError(QStringLiteral("The profile is not available."));
   }
 
-  if (scope == QStringLiteral("user")) {
-    if (!context.profile) {
-      return makeError(QStringLiteral("Profile is not available."));
-    }
+  const QString target =
+      arguments.value(QStringLiteral("target")).toString().trimmed().toLower();
 
-    QString body = context.profile->user();
+  const QString instruction =
+      arguments.value(QStringLiteral("instruction")).toString().trimmed();
 
-    if (!body.endsWith(QChar('\n'))) {
-      body += QChar('\n');
-    }
-
-    body += QStringLiteral("\n- ");
-    body += fact;
-    body += QChar('\n');
-
-    context.profile->setUser(body);
-
-    if (!context.profile->save()) {
-      return makeError(QStringLiteral("Could not write user.md."));
-    }
-
-    return makeOk(QStringLiteral("Noted about you: %1").arg(fact));
+  if (instruction.isEmpty()) {
+    return makeError(QStringLiteral("'instruction' is required."));
   }
 
-  if (scope == QStringLiteral("self")) {
-    if (!context.profile) {
-      return makeError(QStringLiteral("Profile is not available."));
-    }
+  QString path;
 
-    QString body = context.profile->self();
-
-    if (!body.endsWith(QChar('\n'))) {
-      body += QChar('\n');
-    }
-
-    body += QStringLiteral("\n- ");
-    body += fact;
-    body += QChar('\n');
-
-    context.profile->setSelf(body);
-
-    if (!context.profile->save()) {
-      return makeError(QStringLiteral("Could not write self.md."));
-    }
-
-    return makeOk(QStringLiteral("Noted about me: %1").arg(fact));
-  }
-
-  if (scope == QStringLiteral("memory")) {
+  if (target == QStringLiteral("identity")) {
+    path = context.profile->identityPath();
+  } else if (target == QStringLiteral("user")) {
+    path = context.profile->userPath();
+  } else if (target == QStringLiteral("self")) {
+    path = context.profile->selfPath();
+  } else if (target == QStringLiteral("topic")) {
     if (!context.memory) {
       return makeError(QStringLiteral("Memory is not available."));
     }
@@ -361,21 +341,108 @@ AssistantTool::Result RememberFactTool::execute(
 
     if (topic.isEmpty()) {
       return makeError(
-          QStringLiteral("'topic' is required when scope is 'memory'."));
+          QStringLiteral("'topic' is required when target is 'topic'."));
     }
 
     const QString slug = AssistantMemory::slugify(topic);
+    path = context.memory->topicPath(slug);
 
-    if (!context.memory->appendToTopic(slug, fact)) {
-      return makeError(QStringLiteral("Could not write to memory."));
+    if (!QFileInfo::exists(path)) {
+      if (!context.memory->appendToTopic(slug, QStringLiteral("(empty)"))) {
+        return makeError(
+            QStringLiteral("Could not create the topic file."));
+      }
     }
-
-    return makeOk(QStringLiteral("Remembered under '%1'.").arg(slug));
+  } else {
+    return makeError(
+        QStringLiteral("Unknown target '%1'. Use 'identity', 'user', "
+                       "'self', or 'topic'.").arg(target));
   }
 
-  return makeError(
-      QStringLiteral("Unknown scope '%1'. Use 'user', 'self', or "
-                     "'memory'.").arg(scope));
+  if (path.isEmpty()) {
+    return makeError(QStringLiteral("Could not resolve the target path."));
+  }
+
+  QString encoded = instruction;
+  encoded.replace(QChar('\\'), QStringLiteral("\\\\"));
+  encoded.replace(QChar('\n'), QStringLiteral("\\n"));
+
+  return makeOk(QStringLiteral("__job_profile_edit__:") + path +
+                QStringLiteral("\n") + encoded);
+}
+
+// ---------------------------------------------------------------------
+// ReadPasteTool
+// ---------------------------------------------------------------------
+
+QString ReadPasteTool::description() const {
+  return QStringLiteral(
+      "Read the full text of a paste the user dropped into the "
+      "composer. The user's message carries a placeholder like "
+      "[paste: config.yaml, 4821 chars — id a3f19c]; the full body is "
+      "on disk and is not sent to you automatically. Call this only "
+      "when you actually need the contents. The id is the last token "
+      "of the placeholder.");
+}
+
+QJsonObject ReadPasteTool::parametersSchema() const {
+  QJsonObject id;
+  id.insert(QStringLiteral("type"), QStringLiteral("string"));
+  id.insert(QStringLiteral("description"),
+            QStringLiteral("The paste id from the placeholder."));
+
+  QJsonObject properties;
+  properties.insert(QStringLiteral("id"), id);
+
+  QJsonObject schema;
+  schema.insert(QStringLiteral("type"), QStringLiteral("object"));
+  schema.insert(QStringLiteral("properties"), properties);
+  schema.insert(QStringLiteral("required"),
+                QJsonArray{QStringLiteral("id")});
+
+  return schema;
+}
+
+AssistantTool::Result ReadPasteTool::execute(
+    const QJsonObject &arguments,
+    const AssistantToolContext &context) const {
+  if (context.root.isEmpty()) {
+    return makeError(QStringLiteral("The assistant root is not available."));
+  }
+
+  const QString id =
+      arguments.value(QStringLiteral("id")).toString().trimmed();
+
+  if (id.isEmpty()) {
+    return makeError(QStringLiteral("'id' is required."));
+  }
+
+  static const QRegularExpression safe(QStringLiteral("^[A-Za-z0-9_-]+$"));
+
+  if (!safe.match(id).hasMatch()) {
+    return makeError(QStringLiteral("Invalid paste id."));
+  }
+
+  const QString path = QDir(context.root)
+                           .filePath(QStringLiteral("pastes/%1.txt").arg(id));
+
+  QFile file(path);
+
+  if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+    return makeError(
+        QStringLiteral("No paste with id '%1'.").arg(id));
+  }
+
+  QTextStream stream(&file);
+  stream.setEncoding(QStringConverter::Utf8);
+
+  const QString body = stream.readAll();
+
+  if (stream.status() != QTextStream::Ok) {
+    return makeError(QStringLiteral("Could not read the paste."));
+  }
+
+  return makeOk(body);
 }
 
 // ---------------------------------------------------------------------
@@ -627,7 +694,8 @@ AssistantTool::Result ReadJobTool::execute(
 void AssistantTools::installAll(AssistantToolRegistry &registry) {
   registry.registerTool(std::make_unique<SearchTool>());
   registry.registerTool(std::make_unique<DelegateTool>());
-  registry.registerTool(std::make_unique<RememberFactTool>());
+  registry.registerTool(std::make_unique<EditProfileTool>());
+  registry.registerTool(std::make_unique<ReadPasteTool>());
   registry.registerTool(std::make_unique<SpeakTool>());
   registry.registerTool(std::make_unique<PromoteNoteTool>());
   registry.registerTool(std::make_unique<ReadJobTool>());

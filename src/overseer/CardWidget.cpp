@@ -16,6 +16,13 @@ CardWidget::CardWidget(QWidget *parent) : QWidget(parent) {
   setAttribute(Qt::WA_StyledBackground, true);
   setMouseTracking(true);
 
+  // The card must never force its host wider than the viewport. An
+  // Ignored horizontal policy tells the parent layout that this
+  // widget's size hint is not a floor. Combined with word wrap on the
+  // labels, that is what lets cards reflow instead of bleeding off the
+  // edge of a narrow panel.
+  setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+
   m_header = new QWidget(this);
   m_header->setObjectName(QStringLiteral("cardWidgetHeader"));
   m_header->setAttribute(Qt::WA_StyledBackground, true);
@@ -32,15 +39,25 @@ CardWidget::CardWidget(QWidget *parent) : QWidget(parent) {
 
   m_titleLabel = new QLabel(m_header);
   m_titleLabel->setObjectName(QStringLiteral("cardWidgetTitle"));
+  m_titleLabel->setWordWrap(true);
+  m_titleLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+  m_titleLabel->setMinimumWidth(0);
 
   m_subtitleLabel = new QLabel(m_header);
   m_subtitleLabel->setObjectName(QStringLiteral("cardWidgetSubtitle"));
+  m_subtitleLabel->setWordWrap(true);
+  m_subtitleLabel->setSizePolicy(QSizePolicy::Ignored,
+                                 QSizePolicy::Preferred);
+  m_subtitleLabel->setMinimumWidth(0);
 
   m_closeButton = new QToolButton(m_header);
   m_closeButton->setObjectName(QStringLiteral("cardWidgetClose"));
-  m_closeButton->setText(QStringLiteral("\u2715"));
+  m_closeButton->setText(QStringLiteral("\u00D7"));
+  m_closeButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
   m_closeButton->setAutoRaise(true);
+  m_closeButton->setFocusPolicy(Qt::NoFocus);
   m_closeButton->setCursor(Qt::PointingHandCursor);
+  m_closeButton->setFixedSize(20, 20);
   m_closeButton->hide();
 
   m_headerLayout = new QHBoxLayout(m_header);
@@ -48,9 +65,8 @@ CardWidget::CardWidget(QWidget *parent) : QWidget(parent) {
   m_headerLayout->setSpacing(6);
   m_headerLayout->addWidget(m_leadingIcon);
   m_headerLayout->addWidget(m_statusDot);
-  m_headerLayout->addWidget(m_titleLabel);
-  m_headerLayout->addWidget(m_subtitleLabel);
-  m_headerLayout->addStretch(1);
+  m_headerLayout->addWidget(m_titleLabel, 1);
+  m_headerLayout->addWidget(m_subtitleLabel, 0);
   m_headerLayout->addWidget(m_closeButton);
 
   m_body = new QWidget(this);
@@ -69,6 +85,17 @@ CardWidget::CardWidget(QWidget *parent) : QWidget(parent) {
 }
 
 CardWidget::~CardWidget() = default;
+
+QSize CardWidget::sizeHint() const {
+  // Do not advertise a preferred width. The host decides how wide the
+  // card gets.
+  return QSize(0, QWidget::sizeHint().height());
+}
+
+QSize CardWidget::minimumSizeHint() const {
+  // Absolute floor: enough for the close button plus a few characters.
+  return QSize(120, QWidget::minimumSizeHint().height());
+}
 
 void CardWidget::buildBody() {
   if (m_bodyBuilt)

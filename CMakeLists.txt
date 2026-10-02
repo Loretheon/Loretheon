@@ -318,9 +318,8 @@ add_executable(Lore
         include/ai/chat/ChatWidgetEditFlow.h
         resources/themes/resources.qrc
         resources/icons/resources.qrc
-        resources/avatar/vita/resources.qrc
         resources/avatar/resources.qrc
-        resources/avatar/ccbase/resources.qrc
+        resources/avatar/julia/resources.qrc
         src/file/DirectoryExplorerSettings.cpp
         include/file/DirectoryExplorerSettings.h
         src/text/formats/DotSyntaxHighlighter.cpp
@@ -418,10 +417,10 @@ add_executable(Lore
         include/overseer/MarkdownView.h
         src/overseer/WorkstationBar.cpp
         include/overseer/WorkstationBar.h
-        src/overseer/AutoHideDock.cpp
-        include/overseer/AutoHideDock.h
-        src/overseer/DockReservation.cpp
-        include/overseer/DockReservation.h
+        src/ui/AutoHideDock.cpp
+        include/ui/AutoHideDock.h
+        src/ui/DockReservation.cpp
+        include/ui/DockReservation.h
         src/overseer/OpenFileTool.cpp
         include/overseer/OpenFileTool.h
         src/overseer/CloseFileTool.cpp
@@ -441,7 +440,6 @@ add_executable(Lore
         include/app/theme/ThemeRegistry.h
         src/ui/SettingsDialog.cpp
         include/ui/SettingsDialog.h
-        src/overseer/ConductorTypes.cpp
         include/overseer/ConductorTypes.h
         src/overseer/ConductorQueue.cpp
         include/overseer/ConductorQueue.h
@@ -562,10 +560,6 @@ add_executable(Lore
         include/avatar/AvatarMoveGrip.h
         src/avatar/VisemeTable.cpp
         include/avatar/VisemeTable.h
-        src/assistant/AssistantWidget.cpp
-        include/assistant/AssistantWidget.h
-        src/assistant/AssistantIcon.cpp
-        include/assistant/AssistantIcon.h
         src/overseer/OverseerRunner.cpp
         include/overseer/OverseerRunner.h
         src/overseer/OverseerSessionManager.cpp
@@ -590,6 +584,18 @@ add_executable(Lore
         include/assistant/ChatNodeWidget.h
         src/assistant/NoteEditJob.cpp
         include/assistant/NoteEditJob.h
+        src/app/CustomTitleBar.cpp
+        include/app/CustomTitleBar.h
+        src/overseer/MemoryAgent.cpp
+        include/overseer/MemoryAgent.h
+        src/overseer/OverseerBottomPanel.cpp
+        include/overseer/OverseerBottomPanel.h
+        include/assistant/AssistantShell.h
+        src/assistant/AssistantShell.cpp
+        include/assistant/ProfileEditJob.h
+        src/assistant/ProfileEditJob.cpp
+        include/assistant/ChatTreeStore.h
+        src/assistant/ChatTreeStore.cpp
 )
 
 add_dependencies(Lore

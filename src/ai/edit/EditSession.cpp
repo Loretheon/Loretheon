@@ -5,8 +5,8 @@
 
 #include "inference/InferenceService.h"
 #include "PayloadLogger.h"
-#include "TextEdit.h"
 #include "TextDocument.h"
+#include "TextEdit.h"
 
 #include <QDateTime>
 #include <QDebug>
@@ -20,10 +20,8 @@ namespace {
 constexpr int InvalidRevision = -1;
 constexpr int ShortFragmentThreshold = 120;
 
-QString noActiveEditorError() { return QStringLiteral("No active editor."); }
-
-QString invalidDocumentError() {
-  return QStringLiteral("Active editor does not use TextDocument.");
+QString noActiveDocumentError() {
+  return QStringLiteral("No active document.");
 }
 
 QString sanitizeGeneratedText(const QString &raw, bool isShortFragment) {
@@ -98,6 +96,28 @@ EditSession::EditSession(TextEdit *editor, QObject *parent)
       m_candidateView(new EditCandidateView()),
       m_historyModel(new HistoryModel(this)),
       m_payloadLogger(new PayloadLogger(this)) {
+  if (m_editor)
+    m_document = qobject_cast<TextDocument *>(m_editor->document());
+
+  connect(m_candidateView, &EditCandidateView::candidateSelected, this,
+          &EditSession::onCandidateSelected);
+
+  connect(m_applier, &EditApplier::applied, this, &EditSession::applied);
+
+  connect(m_applier, &EditApplier::failed, this, &EditSession::failed);
+}
+
+EditSession *EditSession::forDocument(TextDocument *document,
+                                      QObject *parent) {
+  return new EditSession(DocumentTag{}, document, parent);
+}
+
+EditSession::EditSession(DocumentTag, TextDocument *document, QObject *parent)
+    : QObject(parent), m_editor(nullptr), m_document(document),
+      m_applier(new EditApplier(this)),
+      m_candidateView(new EditCandidateView()),
+      m_historyModel(new HistoryModel(this)),
+      m_payloadLogger(new PayloadLogger(this)) {
   connect(m_candidateView, &EditCandidateView::candidateSelected, this,
           &EditSession::onCandidateSelected);
 
@@ -112,6 +132,9 @@ void EditSession::setEditor(TextEdit *editor) {
 
   abort();
   m_editor = editor;
+
+  if (m_editor)
+    m_document = qobject_cast<TextDocument *>(m_editor->document());
 }
 
 void EditSession::setInferenceService(InferenceService *service) {
@@ -236,6 +259,7 @@ void EditSession::setInferenceService(InferenceService *service) {
             }
           });
 }
+
 bool EditSession::hasConflicts() const {
   return std::any_of(m_pendingEdits.cbegin(), m_pendingEdits.cend(),
                      [](const PendingEdit &edit) { return edit.hasConflict; });
@@ -272,14 +296,8 @@ void EditSession::detectConflicts() {
 bool EditSession::validatePlan(const QJsonArray &planArray) {
   abort();
 
-  if (!m_editor) {
-    emit failed(noActiveEditorError());
-    return false;
-  }
-
-  TextDocument *document = qobject_cast<TextDocument *>(m_editor->document());
-  if (!document) {
-    emit failed(invalidDocumentError());
+  if (!m_document) {
+    emit failed(noActiveDocumentError());
     return false;
   }
 
@@ -317,9 +335,9 @@ bool EditSession::validatePlan(const QJsonArray &planArray) {
     return false;
   }
 
-  document->rebuildStructure();
+  m_document->rebuildStructure();
 
-  const DocumentStructure &structure = document->structure();
+  const DocumentStructure &structure = m_document->structure();
 
   for (int i = 0; i < commands.size(); ++i) {
     const EditCommand &command = commands.at(i);
@@ -346,7 +364,7 @@ bool EditSession::validatePlan(const QJsonArray &planArray) {
     }
   }
 
-  m_documentRevision = document->revision();
+  m_documentRevision = m_document->revision();
 
   setState(State::AwaitingPlanApproval);
 
@@ -355,14 +373,8 @@ bool EditSession::validatePlan(const QJsonArray &planArray) {
 }
 
 bool EditSession::executePlan(const QVector<EditCommand> &commands) {
-  if (!m_editor) {
-    emit failed(noActiveEditorError());
-    return false;
-  }
-
-  TextDocument *document = qobject_cast<TextDocument *>(m_editor->document());
-  if (!document) {
-    emit failed(invalidDocumentError());
+  if (!m_document) {
+    emit failed(noActiveDocumentError());
     return false;
   }
 
@@ -371,10 +383,10 @@ bool EditSession::executePlan(const QVector<EditCommand> &commands) {
     return false;
   }
 
-  document->rebuildStructure();
+  m_document->rebuildStructure();
 
   if (m_documentRevision != InvalidRevision &&
-      document->revision() != m_documentRevision) {
+      m_document->revision() != m_documentRevision) {
     setState(State::Idle);
     emit failed(QStringLiteral(
         "Document changed after plan validation. Please re-plan."));
@@ -388,7 +400,7 @@ bool EditSession::executePlan(const QVector<EditCommand> &commands) {
 
   setState(State::Matching);
 
-  m_documentRevision = document->revision();
+  m_documentRevision = m_document->revision();
 
   for (int index = 0; index < commands.size(); ++index) {
     const EditCommand &command = commands.at(index);
@@ -445,8 +457,8 @@ bool EditSession::resolvePlan(const QJsonArray &planArray) {
 bool EditSession::propose(const EditCommand &command) {
   abort();
 
-  if (!m_editor) {
-    emit failed(noActiveEditorError());
+  if (!m_document) {
+    emit failed(noActiveDocumentError());
     return false;
   }
 
@@ -455,16 +467,10 @@ bool EditSession::propose(const EditCommand &command) {
     return false;
   }
 
-  TextDocument *document = qobject_cast<TextDocument *>(m_editor->document());
-  if (!document) {
-    emit failed(invalidDocumentError());
-    return false;
-  }
-
   setState(State::Matching);
 
-  document->rebuildStructure();
-  m_documentRevision = document->revision();
+  m_document->rebuildStructure();
+  m_documentRevision = m_document->revision();
 
   m_pendingCommand = command;
   m_pendingCandidates.clear();
@@ -481,7 +487,7 @@ bool EditSession::propose(const EditCommand &command) {
 
     result.candidates.append(match);
   } else {
-    result = m_matcher.find(*document, command);
+    result = m_matcher.find(*m_document, command);
   }
 
   if (result.candidates.isEmpty()) {
@@ -506,19 +512,13 @@ bool EditSession::propose(const EditCommand &command) {
 bool EditSession::proposeMany(const QVector<EditCommand> &commands) {
   abort();
 
-  if (!m_editor) {
-    emit failed(noActiveEditorError());
+  if (!m_document) {
+    emit failed(noActiveDocumentError());
     return false;
   }
 
   if (commands.isEmpty()) {
     emit failed(QStringLiteral("Edit batch is empty."));
-    return false;
-  }
-
-  TextDocument *document = qobject_cast<TextDocument *>(m_editor->document());
-  if (!document) {
-    emit failed(invalidDocumentError());
     return false;
   }
 
@@ -532,8 +532,8 @@ bool EditSession::proposeMany(const QVector<EditCommand> &commands) {
 
   setState(State::Matching);
 
-  document->rebuildStructure();
-  m_documentRevision = document->revision();
+  m_document->rebuildStructure();
+  m_documentRevision = m_document->revision();
 
   QVector<EditMatch> matches;
 
@@ -544,7 +544,7 @@ bool EditSession::proposeMany(const QVector<EditCommand> &commands) {
 
   setState(State::Applying);
 
-  const bool applied = m_applier->applyBatch(*document, commands, matches);
+  const bool applied = m_applier->applyBatch(*m_document, commands, matches);
 
   m_pendingCandidates.clear();
   setState(State::Idle);
@@ -554,8 +554,8 @@ bool EditSession::proposeMany(const QVector<EditCommand> &commands) {
 
 bool EditSession::prepareStreaming(const EditCommand &command,
                                    int pendingEditId) {
-  if (!m_editor) {
-    emit failed(noActiveEditorError());
+  if (!m_document) {
+    emit failed(noActiveDocumentError());
     return false;
   }
 
@@ -567,14 +567,8 @@ bool EditSession::prepareStreaming(const EditCommand &command,
   if (m_applier && m_applier->isStreaming())
     m_applier->cancelStreaming();
 
-  TextDocument *document = qobject_cast<TextDocument *>(m_editor->document());
-  if (!document) {
-    emit failed(invalidDocumentError());
-    return false;
-  }
-
-  document->rebuildStructure();
-  m_documentRevision = document->revision();
+  m_document->rebuildStructure();
+  m_documentRevision = m_document->revision();
 
   m_pendingCommand = command;
   m_pendingCandidates.clear();
@@ -588,7 +582,7 @@ bool EditSession::prepareStreaming(const EditCommand &command,
     return false;
   }
 
-  if (document->revision() != m_documentRevision) {
+  if (m_document->revision() != m_documentRevision) {
     setState(State::Idle);
     emit failed(QStringLiteral("Document changed before streaming started."));
     return false;
@@ -688,9 +682,9 @@ void EditSession::dispatchGeneration(PendingEdit &edit) {
   }
 
   const InferenceService::RequestToken token =
-    m_inferenceService->sendChatRequest(messages, QString(), 0.7, 120000,
-                                        QString(), QJsonObject(),
-                                        QJsonArray(), m_sessionId);
+      m_inferenceService->sendChatRequest(messages, QString(), 0.7, 120000,
+                                          QString(), QJsonObject(),
+                                          QJsonArray(), m_sessionId);
 
   m_generationTokens.insert(edit.id, token);
   m_tokenToEditId.insert(token, edit.id);
@@ -823,20 +817,13 @@ void EditSession::setState(State state) {
 }
 
 void EditSession::applyCandidate(const EditMatch &match) {
-  if (!m_editor) {
+  if (!m_document) {
     setState(State::Idle);
-    emit failed(noActiveEditorError());
+    emit failed(noActiveDocumentError());
     return;
   }
 
-  TextDocument *document = qobject_cast<TextDocument *>(m_editor->document());
-  if (!document) {
-    setState(State::Idle);
-    emit failed(invalidDocumentError());
-    return;
-  }
-
-  if (document->revision() != m_documentRevision) {
+  if (m_document->revision() != m_documentRevision) {
     m_pendingCandidates.clear();
     setState(State::Idle);
     emit failed(
@@ -852,21 +839,15 @@ void EditSession::applyCandidate(const EditMatch &match) {
 
   setState(State::Applying);
 
-  m_applier->apply(*document, m_pendingCommand, match);
+  m_applier->apply(*m_document, m_pendingCommand, match);
 
   m_pendingCandidates.clear();
   setState(State::Idle);
 }
 
 bool EditSession::resolveCommand(const EditCommand &command, EditMatch &match) {
-  if (!m_editor) {
-    emit failed(noActiveEditorError());
-    return false;
-  }
-
-  TextDocument *document = qobject_cast<TextDocument *>(m_editor->document());
-  if (!document) {
-    emit failed(invalidDocumentError());
+  if (!m_document) {
+    emit failed(noActiveDocumentError());
     return false;
   }
 
@@ -874,7 +855,7 @@ bool EditSession::resolveCommand(const EditCommand &command, EditMatch &match) {
     return createInsertionMatch(command, match);
 
   if (command.operation == EditCommand::Operation::ReplaceScope) {
-    const EditMatcher::Result result = m_matcher.find(*document, command);
+    const EditMatcher::Result result = m_matcher.find(*m_document, command);
 
     if (result.candidates.isEmpty()) {
       emit failed(QStringLiteral("Scope body for '%1' could not be located.")
@@ -886,7 +867,7 @@ bool EditSession::resolveCommand(const EditCommand &command, EditMatch &match) {
     return true;
   }
 
-  const EditMatcher::Result result = m_matcher.find(*document, command);
+  const EditMatcher::Result result = m_matcher.find(*m_document, command);
 
   if (result.candidates.isEmpty()) {
     emit failed(QStringLiteral("No matching text found in scope '%1'.")
@@ -911,14 +892,8 @@ bool EditSession::resolveSingle(const EditCommand &command, EditMatch &match) {
 
 bool EditSession::resolveBatch(const QVector<EditCommand> &commands,
                                QVector<EditMatch> &matches) {
-  if (!m_editor) {
-    emit failed(noActiveEditorError());
-    return false;
-  }
-
-  TextDocument *document = qobject_cast<TextDocument *>(m_editor->document());
-  if (!document) {
-    emit failed(invalidDocumentError());
+  if (!m_document) {
+    emit failed(noActiveDocumentError());
     return false;
   }
 
@@ -938,7 +913,7 @@ bool EditSession::resolveBatch(const QVector<EditCommand> &commands,
     return false;
   }
 
-  if (document->revision() != m_documentRevision) {
+  if (m_document->revision() != m_documentRevision) {
     emit failed(QStringLiteral("Document changed while resolving edits."));
     return false;
   }
@@ -948,23 +923,17 @@ bool EditSession::resolveBatch(const QVector<EditCommand> &commands,
 
 bool EditSession::createInsertionMatch(const EditCommand &command,
                                        EditMatch &match) {
-  if (!m_editor) {
-    emit failed(noActiveEditorError());
+  if (!m_document) {
+    emit failed(noActiveDocumentError());
     return false;
   }
 
-  TextDocument *document = qobject_cast<TextDocument *>(m_editor->document());
-  if (!document) {
-    emit failed(invalidDocumentError());
-    return false;
-  }
+  m_document->rebuildStructure();
 
-  document->rebuildStructure();
-
-  const QString documentText = document->toPlainText();
+  const QString documentText = m_document->toPlainText();
   const int documentLength = documentText.size();
 
-  const DocumentStructure &structure = document->structure();
+  const DocumentStructure &structure = m_document->structure();
   const DocumentNode *scope = nullptr;
 
   if (command.scopeId.isEmpty()) {
@@ -1085,14 +1054,8 @@ void EditSession::rejectAllPendingEdits() {
 }
 
 bool EditSession::applyPendingEdit(PendingEdit &edit) {
-  if (!m_editor) {
-    emit failed(noActiveEditorError());
-    return false;
-  }
-
-  TextDocument *document = qobject_cast<TextDocument *>(m_editor->document());
-  if (!document) {
-    emit failed(invalidDocumentError());
+  if (!m_document) {
+    emit failed(noActiveDocumentError());
     return false;
   }
 
@@ -1112,18 +1075,12 @@ bool EditSession::applyPendingEdit(PendingEdit &edit) {
     return false;
   }
 
-  return m_applier->apply(*document, edit.command, edit.match);
+  return m_applier->apply(*m_document, edit.command, edit.match);
 }
 
 bool EditSession::applyAcceptedPendingEdits() {
-  if (!m_editor) {
-    emit failed(noActiveEditorError());
-    return false;
-  }
-
-  TextDocument *document = qobject_cast<TextDocument *>(m_editor->document());
-  if (!document) {
-    emit failed(invalidDocumentError());
+  if (!m_document) {
+    emit failed(noActiveDocumentError());
     return false;
   }
 
@@ -1159,7 +1116,7 @@ bool EditSession::applyAcceptedPendingEdits() {
     historyEntries.append(entry);
   }
 
-  document->rebuildStructure();
+  m_document->rebuildStructure();
 
   m_pendingEdits.clear();
 
@@ -1198,20 +1155,13 @@ void EditSession::onCandidateSelected(int index) {
   if (m_state != State::AwaitingSelection)
     return;
 
-  if (!m_editor) {
+  if (!m_document) {
     abort();
-    emit failed(noActiveEditorError());
+    emit failed(noActiveDocumentError());
     return;
   }
 
-  TextDocument *document = qobject_cast<TextDocument *>(m_editor->document());
-  if (!document) {
-    abort();
-    emit failed(invalidDocumentError());
-    return;
-  }
-
-  if (document->revision() != m_documentRevision) {
+  if (m_document->revision() != m_documentRevision) {
     m_pendingCandidates.clear();
     setState(State::Idle);
     emit failed(QStringLiteral("Document changed before candidate selection."));
@@ -1250,9 +1200,9 @@ bool EditSession::completeInsertFromInstruction(int pendingEditId) {
   }
 
   static const QRegularExpression metaRe(
-     QStringLiteral(
-         R"(^\s*(?:Insert|Add|Append|Create|Write)\b[^\n]*?(?:content|following|below)\s*:\s*\n)"),
-     QRegularExpression::CaseInsensitiveOption);
+      QStringLiteral(
+          R"(^\s*(?:Insert|Add|Append|Create|Write)\b[^\n]*?(?:content|following|below)\s*:\s*\n)"),
+      QRegularExpression::CaseInsensitiveOption);
 
   const auto metaMatch = metaRe.match(content);
 

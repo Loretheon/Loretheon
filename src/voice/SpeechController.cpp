@@ -63,7 +63,7 @@ SpeechController::SpeechController(InferenceService *inference,
 
 SpeechController::~SpeechController() = default;
 
-bool SpeechController::beginCapture() {
+bool SpeechController::beginCapture(Origin origin) {
   if (m_capturing || m_liveCapturing || m_liveStarting) return false;
   if (!m_recorder) {
     emit transcriptionFailed(tr("No audio recorder available."));
@@ -73,6 +73,8 @@ bool SpeechController::beginCapture() {
     emit transcriptionFailed(tr("Speech recognition is not ready."));
     return false;
   }
+
+  m_captureOrigin = origin;
 
   ++m_captureToken;
   m_recorder->startRecording();
@@ -136,7 +138,7 @@ bool SpeechController::isTranscribing() const { return m_transcribing; }
 bool SpeechController::isLiveCapturing() const { return m_liveCapturing; }
 bool SpeechController::isLiveStarting() const { return m_liveStarting; }
 
-void SpeechController::startLiveCapture() {
+void SpeechController::startLiveCapture(Origin origin) {
   if (m_liveCapturing || m_liveStarting) return;
   if (m_capturing || m_transcribing) return;
   if (!m_inference || !m_inference->isSttReady()) {
@@ -148,6 +150,8 @@ void SpeechController::startLiveCapture() {
     emit transcriptionFailed(tr("Could not start live streaming."));
     return;
   }
+
+  m_captureOrigin = origin;
 
   m_liveStarting = true;
   m_liveCapturing = false;
@@ -197,7 +201,7 @@ void SpeechController::onAudioChunkReady(const std::vector<float> &chunk) {
 
 void SpeechController::onLiveSegment(const QString &text, bool isFinal) {
   if (text.isEmpty()) return;
-  emit liveTranscribed(text, isFinal);
+  emit liveTranscribed(text, isFinal, m_captureOrigin);
 }
 
 void SpeechController::onTranscriptionReady(const QString &text,
@@ -210,7 +214,7 @@ void SpeechController::onTranscriptionReady(const QString &text,
     return;
   }
 
-  emit transcribed(text);
+  emit transcribed(text, m_captureOrigin);
 }
 
 void SpeechController::speakText(const QString &text) {

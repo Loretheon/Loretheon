@@ -5,33 +5,37 @@ namespace ChatWidgetSerialization {
 QString operationString(const EditCommand &command) {
   switch (command.operation) {
   case EditCommand::Operation::Insert:
-
     return QStringLiteral("insert");
 
   case EditCommand::Operation::Replace:
-
     return QStringLiteral("replace");
 
-  case EditCommand::Operation::Delete:
+  case EditCommand::Operation::ReplaceScope:
+    return QStringLiteral("replace_scope");
 
+  case EditCommand::Operation::Delete:
     return QStringLiteral("delete");
+
+  case EditCommand::Operation::Unknown:
+    return QStringLiteral("unknown");
   }
 
-  return {};
+  return QStringLiteral("unknown");
 }
 
 QString positionString(const EditCommand &command) {
   switch (command.position) {
   case EditCommand::Position::Before:
-
     return QStringLiteral("before");
 
   case EditCommand::Position::After:
-
     return QStringLiteral("after");
+
+  case EditCommand::Position::Inside:
+    return QStringLiteral("inside");
   }
 
-  return {};
+  return QStringLiteral("inside");
 }
 
 QJsonObject editCommandToJson(const EditCommand &command) {

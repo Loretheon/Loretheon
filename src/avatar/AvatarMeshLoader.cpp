@@ -4,12 +4,12 @@
 #include <QFile>
 #include <QFileInfo>
 
-
 #define TINYGLTF_IMPLEMENTATION
 #define TINYGLTF_NO_STB_IMAGE
 #define TINYGLTF_NO_STB_IMAGE_WRITE
 #define TINYGLTF_NO_EXTERNAL_IMAGE
 #include <tiny_gltf.h>
+
 namespace {
 
 bool readFloatAccessor(const tinygltf::Model &model, int accessorIndex,
@@ -421,7 +421,6 @@ QString morphTargetName(const tinygltf::Mesh &mesh,
   return {};
 }
 
-
 bool loadImageDataNoOp(tinygltf::Image *image, const int /*imageIndex*/,
                        std::string * /*err*/, std::string * /*warn*/,
                        int /*reqWidth*/, int /*reqHeight*/,
@@ -438,12 +437,10 @@ bool loadImageDataNoOp(tinygltf::Image *image, const int /*imageIndex*/,
   return true;
 }
 
-
 } // namespace
 
 bool AvatarMeshLoader::load(const QString &path, AvatarMeshData &out,
                             QString *error) {
-
 
   auto fail = [&](const QString &reason) {
     if (error) {
@@ -494,17 +491,9 @@ bool AvatarMeshLoader::load(const QString &path, AvatarMeshData &out,
                     .arg(path, QString::fromStdString(err)));
   }
 
-
   if (model.meshes.empty()) {
     return fail(QStringLiteral("GLB has no meshes: %1").arg(path));
   }
-
-  // -----------------------------------------------------------------
-  // Textures. The images are read straight out of the buffer views,
-  // not through tinygltf's image loader, because the loader is a no-op
-  // in this build. The encoded bytes are kept as-is; decoding is the
-  // renderer's job.
-  // -----------------------------------------------------------------
 
   out.textures.clear();
   out.textures.reserve(static_cast<int>(model.images.size()));
@@ -543,8 +532,6 @@ bool AvatarMeshLoader::load(const QString &path, AvatarMeshData &out,
     out.textures.append(tex);
   }
 
-  // Material list. Each material keeps its name and the index of its
-  // base color texture, or -1.
   out.materials.clear();
   out.materials.reserve(static_cast<int>(model.materials.size()));
 
@@ -584,10 +571,6 @@ bool AvatarMeshLoader::load(const QString &path, AvatarMeshData &out,
 
   qDebug() << "[AvatarMeshLoader] Textures:" << out.textures.size()
            << "materials:" << out.materials.size();
-
-  // -----------------------------------------------------------------
-  // Meshes and primitives.
-  // -----------------------------------------------------------------
 
   out.meshes.clear();
   out.meshes.reserve(static_cast<int>(model.meshes.size()));
@@ -688,10 +671,6 @@ bool AvatarMeshLoader::load(const QString &path, AvatarMeshData &out,
     out.meshes.append(outMesh);
   }
 
-  // -----------------------------------------------------------------
-  // Skins.
-  // -----------------------------------------------------------------
-
   out.skins.clear();
   out.skins.reserve(static_cast<int>(model.skins.size()));
 
@@ -742,14 +721,66 @@ bool AvatarMeshLoader::load(const QString &path, AvatarMeshData &out,
                << "will not be possible.";
   }
 
+  // Face mesh: prefer a mesh whose name contains "Head" (matches the
+  // renderer's own face detection). Fall back to the mesh with the
+  // most morph targets.
   out.faceMeshIndex = -1;
 
   for (int i = 0; i < out.meshes.size(); ++i) {
-    if (out.meshes.at(i).name == QStringLiteral("CC_Base_Body")) {
+    if (out.meshes.at(i).name.contains(QStringLiteral("Head"),
+                                       Qt::CaseInsensitive)) {
       out.faceMeshIndex = i;
       break;
     }
   }
+
+  if (out.faceMeshIndex < 0) {
+    int bestCount = 0;
+
+    for (int i = 0; i < out.meshes.size(); ++i) {
+      int count = 0;
+
+      for (const AvatarPrimitive &p : out.meshes.at(i).primitives) {
+        count += p.morphTargetCount();
+      }
+
+      if (count > bestCount) {
+        bestCount = count;
+        out.faceMeshIndex = i;
+      }
+    }
+  }
+
+  float minX = 1e30f, minY = 1e30f, minZ = 1e30f;
+  float maxX = -1e30f, maxY = -1e30f, maxZ = -1e30f;
+
+  for (const AvatarMesh &m : out.meshes) {
+    for (const AvatarPrimitive &p : m.primitives) {
+      for (int i = 0; i + 2 < p.positions.size(); i += 3) {
+        const float x = p.positions[i + 0];
+        const float y = p.positions[i + 1];
+        const float z = p.positions[i + 2];
+
+        minX = std::min(minX, x);
+        minY = std::min(minY, y);
+        minZ = std::min(minZ, z);
+
+        maxX = std::max(maxX, x);
+        maxY = std::max(maxY, y);
+        maxZ = std::max(maxZ, z);
+      }
+    }
+  }
+
+  out.boundsMin = QVector3D(minX, minY, minZ);
+  out.boundsMax = QVector3D(maxX, maxY, maxZ);
+  out.boundsCenter = (out.boundsMin + out.boundsMax) * 0.5f;
+
+  qDebug() << "[AvatarMeshLoader] bounds:"
+           << "min" << out.boundsMin
+           << "max" << out.boundsMax
+           << "center" << out.boundsCenter
+           << "size" << (out.boundsMax - out.boundsMin);
 
   qDebug() << "[AvatarMeshLoader] Loaded" << out.meshes.size()
            << "meshes," << out.totalPrimitives() << "primitives,"
@@ -761,12 +792,14 @@ bool AvatarMeshLoader::load(const QString &path, AvatarMeshData &out,
       out.faceMeshIndex < out.meshes.size()) {
     const AvatarMesh &face = out.meshes.at(out.faceMeshIndex);
 
+    qDebug() << "[AvatarMeshLoader] Face mesh:" << face.name;
+
     if (!face.primitives.isEmpty()) {
       const AvatarPrimitive &prim = face.primitives.first();
 
       qDebug() << "[AvatarMeshLoader] Face mesh first prim morph names:";
 
-      for (int t = 0; t < qMin(8, prim.morphTargetNames.size()); ++t) {
+      for (int t = 0; t < qMin(16, prim.morphTargetNames.size()); ++t) {
         qDebug() << "    " << t << prim.morphTargetNames.at(t);
       }
     }

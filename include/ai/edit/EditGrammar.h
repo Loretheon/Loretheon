@@ -7,152 +7,20 @@
 
 namespace EditGrammar {
 
-inline QString escapeLiteral(const QString &text) {
-  QString escaped = text;
-
-  escaped.replace(QStringLiteral("\\"), QStringLiteral("\\\\"));
-
-  escaped.replace(QStringLiteral("\""), QStringLiteral("\\\""));
-
-  return escaped;
-}
-
-inline QString makeAlternatives(const QStringList &values) {
-  QStringList alternatives;
-
-  alternatives.reserve(values.size());
-
-  for (const QString &value : values) {
-    alternatives.append(QStringLiteral("\"%1\"").arg(escapeLiteral(value)));
-  }
-
-  if (alternatives.isEmpty()) {
-    return QStringLiteral("\"\"");
-  }
-
-  return alternatives.join(QStringLiteral(" | "));
-}
-
 inline constexpr int kMaxEditsPerPlan = 8;
-
-inline QString makeBoundedTailChain() {
-  QString rules;
-
-  for (int i = 0; i < kMaxEditsPerPlan - 1; ++i) {
-    const int nextIndex = i + 1;
-
-    if (nextIndex < kMaxEditsPerPlan - 1) {
-      rules += QStringLiteral("commandTail%1 ::= "
-                              "\"\" | ws \",\" ws command commandTail%2\n")
-                   .arg(i)
-                   .arg(nextIndex);
-    } else {
-      rules += QStringLiteral("commandTail%1 ::= \"\"\n").arg(i);
-    }
-  }
-
-  return rules;
-}
-
-/*
- * Local llama.cpp grammar.
- *
- * This is deliberately retained for local inference.
- */
-inline QString gbnf(const QStringList &scopeIds) {
-  QString grammar = QStringLiteral("root ::= ws \"[\" ws editList ws \"]\" ws\n"
-
-                                   "editList ::= "
-                                   "\"\" | command commandTail0\n");
-
-  grammar += makeBoundedTailChain();
-
-  grammar += QStringLiteral(
-      "command ::= insert | replace | delete | replace_scope\n"
-
-      "insert ::= \"{\" ws "
-      "\"\\\"operation\\\"\" ws \":\" ws "
-      "\"\\\"insert\\\"\" ws \",\" ws "
-      "\"\\\"scope\\\"\" ws \":\" ws "
-      "\"\\\"\" scopeValue \"\\\"\" ws \",\" ws "
-      "\"\\\"position\\\"\" ws \":\" ws "
-      "\"\\\"\" positionValue \"\\\"\" ws \",\" ws "
-      "\"\\\"find\\\"\" ws \":\" ws "
-      "\"\\\"\\\"\" ws \",\" ws "
-      "\"\\\"all\\\"\" ws \":\" ws "
-      "boolean ws \",\" ws "
-      "\"\\\"instruction\\\"\" ws \":\" ws "
-      "string ws \"}\"\n"
-
-      "replace ::= \"{\" ws "
-      "\"\\\"operation\\\"\" ws \":\" ws "
-      "\"\\\"replace\\\"\" ws \",\" ws "
-      "\"\\\"scope\\\"\" ws \":\" ws "
-      "\"\\\"\" scopeValue \"\\\"\" ws \",\" ws "
-      "\"\\\"position\\\"\" ws \":\" ws "
-      "\"\\\"\" positionValue \"\\\"\" ws \",\" ws "
-      "\"\\\"find\\\"\" ws \":\" ws "
-      "string ws \",\" ws "
-      "\"\\\"all\\\"\" ws \":\" ws "
-      "boolean ws \",\" ws "
-      "\"\\\"instruction\\\"\" ws \":\" ws "
-      "string ws \"}\"\n"
-
-      "delete ::= \"{\" ws "
-      "\"\\\"operation\\\"\" ws \":\" ws "
-      "\"\\\"delete\\\"\" ws \",\" ws "
-      "\"\\\"scope\\\"\" ws \":\" ws "
-      "\"\\\"\" scopeValue \"\\\"\" ws \",\" ws "
-      "\"\\\"position\\\"\" ws \":\" ws "
-      "\"\\\"\" positionValue \"\\\"\" ws \",\" ws "
-      "\"\\\"find\\\"\" ws \":\" ws "
-      "string ws \",\" ws "
-      "\"\\\"all\\\"\" ws \":\" ws "
-      "boolean ws \",\" ws "
-      "\"\\\"instruction\\\"\" ws \":\" ws "
-      "string ws \"}\"\n"
-
-      "replace_scope ::= \"{\" ws "
-      "\"\\\"operation\\\"\" ws \":\" ws "
-      "\"\\\"replace_scope\\\"\" ws \",\" ws "
-      "\"\\\"scope\\\"\" ws \":\" ws "
-      "\"\\\"\" scopeValue \"\\\"\" ws \",\" ws "
-      "\"\\\"position\\\"\" ws \":\" ws "
-      "\"\\\"inside\\\"\" ws \",\" ws "
-      "\"\\\"find\\\"\" ws \":\" ws "
-      "\"\\\"\\\"\" ws \",\" ws "
-      "\"\\\"all\\\"\" ws \":\" ws "
-      "\"false\" ws \",\" ws "
-      "\"\\\"instruction\\\"\" ws \":\" ws "
-      "string ws \"}\"\n"
-
-      "scopeValue ::= %1\n"
-
-      "positionValue ::= "
-      "\"before\" | "
-      "\"after\"\n"
-
-      "boolean ::= "
-      "\"true\" | "
-      "\"false\"\n"
-
-      "string ::= "
-      "\"\\\"\" char* \"\\\"\"\n"
-
-      "char ::= "
-      "[^\"\\\\\\x7F\\x00-\\x1F] | "
-      "\"\\\\\" "
-      "([\"\\\\/bfnrt] | "
-      "\"u\" [0-9a-fA-F]{4})\n"
-
-      "ws ::= [ \\t]*\n")
-                 .arg(makeAlternatives(scopeIds));
-
-  return grammar;
-}
 
 /*
  * Canonical edit-plan schema for OpenAI-compatible structured output.
+ *
+ * The schema is the sole constraint on the model's output. It is used
+ * in both local and remote mode: llama.cpp's server converts a
+ * json_schema response_format into a GBNF grammar internally, so the
+ * same contract applies on both sides and there is only one code path
+ * to keep correct.
+ *
+ * The top-level value is an object with a required "edits" array. This
+ * is the shape OpenAI-compatible providers expect, and it is what
+ * EditPlanner unwraps.
  */
 inline QJsonObject jsonSchema(const QStringList &scopeIds) {
   QJsonObject operation;

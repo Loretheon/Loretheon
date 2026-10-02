@@ -1,7 +1,6 @@
 #ifndef MAINWINDOW_H
 #define MAINWINDOW_H
 
-
 #include <QHash>
 #include <QMainWindow>
 #include <QSet>
@@ -15,8 +14,6 @@
 #include "inference/InferenceService.h"
 
 class OverseerSessionManager;
-class AssistantIcon;
-class AssistantWidget;
 class DocumentArea;
 class TextEdit;
 class TextDocument;
@@ -31,6 +28,10 @@ class OverseerPage;
 class ToastStack;
 class AvatarWidget;
 class LoreAssistant;
+class CustomTitleBar;
+class AutoHideDock;
+class DockReservation;
+class AssistantShell;
 
 class IngestRegistry;
 class IngestService;
@@ -45,16 +46,12 @@ class ScopeIndex;
 class SearchPage;
 class SearchService;
 
-class QAction;
-class QActionGroup;
 class QEvent;
-class QMenu;
 class QProgressDialog;
 class QResizeEvent;
+class QShortcut;
 class QStackedWidget;
 class QTimer;
-class QToolBar;
-class QToolButton;
 
 class MainWindow : public QMainWindow {
   Q_OBJECT
@@ -69,16 +66,13 @@ protected:
   void resizeEvent(QResizeEvent *event) override;
   void showEvent(QShowEvent *event) override;
   void moveEvent(QMoveEvent *event) override;
+
 private slots:
   void about();
   void aboutQt();
   void manageModels();
   void openLlmSettings();
   void openSettings();
-  void onThemeSelected(const QString &theme);
-  void onOverseerThemeSelected(const QString &theme);
-
-  void onModeActionTriggered(QAction *action);
 
   void onImportRequested(const QString &path);
   void onImportAllRequested(const QStringList &paths);
@@ -93,26 +87,26 @@ private slots:
                              const QString &scopeId);
 
   void onAssistantMessageSubmitted(const QString &text);
-  void onAssistantIconClicked();
-  void onTalkToLoreClicked();
   void onDocumentSaved(TextDocument *document);
+
+  void enterAssistantShell();
+  void leaveAssistantShell();
 
 private:
   enum class Mode { Normal = 0, Overseer = 1, Search = 2 };
-  bool m_avatarPlaced = false;
-  void createActions();
-  void createMenus();
-  void createToolbar();
+  enum class Shell { Assistant = 0, Workspace = 1 };
+
+  void buildAssistantShell();
+
+  void createCustomTitleBar();
+  void wireTitleBar();
 
   void buildNormalPage();
   void buildOverseerPage();
   void buildSearchLayer();
 
-  void createAvatarOverlay();
-  void positionAvatarOverlay();
-  void positionAssistantIcon();
-
   void setMode(Mode mode);
+  void setShell(Shell shell);
 
   bool loadThemeFromResource(const QString &name);
   bool loadAllThemes();
@@ -138,6 +132,7 @@ private:
   void reportImportSummary(int succeeded, int failed, int total);
 
   QString importDialogFilter() const;
+
   struct ImportCandidate {
     QString absolutePath;
     QString relativeSubpath;
@@ -155,7 +150,6 @@ private:
 
   void buildSpeechLayer();
 
-
   QWidget *m_normalPage = nullptr;
   DocumentArea *m_documentArea = nullptr;
   FileWidget *m_fileWidget = nullptr;
@@ -167,15 +161,29 @@ private:
   SearchPage *m_searchPage = nullptr;
 
   QStackedWidget *m_centralStack = nullptr;
-  QToolBar *m_topToolBar = nullptr;
-  QToolButton *m_modeButton = nullptr;
+  QWidget *m_workspacePage = nullptr;
+
+  AssistantShell *m_assistantShell = nullptr;
+  QWidget *m_assistantShellPage = nullptr;
+
+  QStackedWidget *m_shellStack = nullptr;
+
+  AutoHideDock *m_fileTreeDock = nullptr;
+  DockReservation *m_fileTreeReservation = nullptr;
+
+  AutoHideDock *m_chatDock = nullptr;
+  DockReservation *m_chatReservation = nullptr;
+
+  QWidget *m_normalCenterRow = nullptr;
+
+  CustomTitleBar *m_titleBar = nullptr;
 
   ToastStack *m_toastStack = nullptr;
+
   AvatarWidget *m_avatar = nullptr;
 
   LoreAssistant *m_assistant = nullptr;
-  AssistantWidget *m_assistantWidget = nullptr;
-  AssistantIcon *m_assistantIcon = nullptr;
+  QString m_assistantShellBuffer;
 
   InferenceService *m_inferenceService = nullptr;
   ModelDialog *m_modelDialog = nullptr;
@@ -186,40 +194,6 @@ private:
 
   QString m_currentNormalTheme;
   QString m_currentOverseerTheme;
-
-
-  QMenu *m_fileMenu = nullptr;
-  QMenu *m_newMenu = nullptr;
-  QMenu *m_toolsMenu = nullptr;
-  QMenu *m_themeMenu = nullptr;
-  QMenu *m_viewMenu = nullptr;
-  QMenu *m_modeMenu = nullptr;
-  QMenu *m_helpMenu = nullptr;
-
-  QAction *m_newTextAct = nullptr;
-  QAction *m_newMarkdownAct = nullptr;
-  QAction *m_newPlantUmlAct = nullptr;
-  QAction *m_openAct = nullptr;
-  QAction *m_importFilesAct = nullptr;
-  QAction *m_importFolderAct = nullptr;
-  QAction *m_saveAct = nullptr;
-  QAction *m_saveAllAct = nullptr;
-  QAction *m_exitAct = nullptr;
-  QAction *m_manageModelsAct = nullptr;
-  QAction *m_llmSettingsAct = nullptr;
-  QAction *m_settingsAct = nullptr;
-
-  QActionGroup *m_modeGroup = nullptr;
-  QAction *m_normalModeAct = nullptr;
-  QAction *m_overseerModeAct = nullptr;
-  QAction *m_searchModeAct = nullptr;
-
-  QAction *m_toggleSpeechAct = nullptr;
-  QAction *m_rebuildIndexAct = nullptr;
-  QAction *m_aboutAct = nullptr;
-  QAction *m_aboutQtAct = nullptr;
-
-  QAction *m_talkToLoreAct = nullptr;
 
   std::unique_ptr<IngestRegistry> m_ingestRegistry;
   std::unique_ptr<NoteWriter> m_noteWriter;
@@ -252,6 +226,11 @@ private:
   QSet<QString> m_dirtyNotePaths;
   QTimer *m_noteIndexTimer = nullptr;
   bool m_searchIndexNeedsBuild = false;
+
+  QShortcut *m_escapeShortcut = nullptr;
+  QShortcut *m_summonShortcut = nullptr;
+
+  Shell m_shell = Shell::Assistant;
 };
 
 #endif // MAINWINDOW_H

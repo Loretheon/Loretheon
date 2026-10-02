@@ -14,6 +14,8 @@ constexpr float kOrbitDegreesPerPixel = 0.4f;
 constexpr float kZoomFactorPerNotch = 0.9f;
 constexpr float kPanFractionPerPixel = 0.0035f;
 
+constexpr float kReferenceAspect = 1.0f;
+
 float clampPitch(float pitch) {
   return qBound(-89.0f, pitch, 89.0f);
 }
@@ -210,7 +212,7 @@ void AvatarSurface::rebuildProjection() {
   }
 
   QMatrix4x4 projection;
-  projection.perspective(m_cameraFov, w / h, 0.01f, 1000.0f);
+  projection.perspective(m_cameraFov, kReferenceAspect, 0.01f, 1000.0f);
 
   const float yawRad = qDegreesToRadians(m_cameraYaw);
   const float pitchRad = qDegreesToRadians(m_cameraPitch);
@@ -242,10 +244,12 @@ void AvatarSurface::rebuildProjection() {
 
   qDebug() << "[AvatarSurface] rebuild:"
            << "w:" << w << "h:" << h
-           << "aspect:" << (w / h)
+           << "aspect:" << kReferenceAspect
            << "dist:" << m_cameraDistance
            << "target:" << m_targetX << m_targetY << m_targetZ;
-}void AvatarSurface::setMeshData(const AvatarMeshData &meshData) {
+}
+
+void AvatarSurface::setMeshData(const AvatarMeshData &meshData) {
   QMutexLocker locker(&m_meshMutex);
   m_pendingMeshData = meshData;
   m_meshDataPending = true;
@@ -280,17 +284,10 @@ QSGNode *AvatarSurface::updatePaintNode(
     if (!m_rendererReady) {
       m_rendererReady = true;
 
-      // Rebuild the projection against the size the item actually
-      // has now. The constructor ran before layout, when the size was
-      // zero, so m_viewProjection has never been built with a real
-      // aspect. Doing it here means the first frame the scene graph
-      // draws is against the final size.
       rebuildProjection();
 
       emit ready();
 
-      // Start the per-frame update only now. Before this point the
-      // item had no size, so update() would be a no-op.
       m_frameTimer->start();
     }
   }
@@ -320,6 +317,8 @@ QSGNode *AvatarSurface::updatePaintNode(
   node->setSkinningMatrices(skinning);
   node->setMorphWeights(morphWeights);
   node->setViewProjection(viewProjection);
+  node->setItemOrigin(mapToScene(QPointF(0.0, 0.0)));
+  node->setItemSize(QSizeF(width(), height()));
 
   return node;
 }

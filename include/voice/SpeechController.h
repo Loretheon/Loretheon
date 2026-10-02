@@ -15,17 +15,27 @@ class SpeechController : public QObject {
   Q_OBJECT
 
 public:
+  // Where a capture was requested from. The composer in the assistant
+  // shell and the editor in Normal mode are the only two destinations.
+  // A capture is tagged when it begins and the tag travels with the
+  // transcribed text so that only the originator acts on it.
+  enum class Origin {
+    Composer,
+    Editor,
+  };
+  Q_ENUM(Origin)
+
   explicit SpeechController(InferenceService *inference,
                             QObject *parent = nullptr);
   ~SpeechController() override;
 
-  bool beginCapture();
+  bool beginCapture(Origin origin = Origin::Editor);
   void endCapture();
   void cancelCapture();
   bool isCapturing() const;
   bool isTranscribing() const;
 
-  void startLiveCapture();
+  void startLiveCapture(Origin origin = Origin::Editor);
   void stopLiveCapture();
   bool isLiveCapturing() const;
   bool isLiveStarting() const;
@@ -34,13 +44,14 @@ public:
   void stopSpeaking();
   bool isSpeaking() const;
 
-  signals:
-    void transcribed(const QString &text);
+signals:
+  void transcribed(const QString &text, SpeechController::Origin origin);
   void transcriptionFailed(const QString &error);
 
   // isFinal is true when the utterance is complete and the text will
   // not change again. false while the runtime may still refine it.
-  void liveTranscribed(const QString &text, bool isFinal);
+  void liveTranscribed(const QString &text, bool isFinal,
+                       SpeechController::Origin origin);
 
   void speakingStarted();
   void speakingFinished();
@@ -63,6 +74,8 @@ private:
   bool m_transcribing = false;
   bool m_liveCapturing = false;
   bool m_liveStarting = false;
+
+  Origin m_captureOrigin = Origin::Editor;
 
   QStringList m_sentenceQueue;
   QString m_currentSentence;

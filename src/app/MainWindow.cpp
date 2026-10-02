@@ -1,8 +1,10 @@
 #include "MainWindow.h"
 
 #include "../../include/assistant/LoreAssistant.h"
+#include "../../include/assistant/AssistantShell.h"
 #include "../../include/avatar/AvatarConfig.h"
 #include "../../include/avatar/AvatarWidget.h"
+#include "../../include/file/FileSystemView.h"
 #include "../../include/ingest/Extractors.h"
 #include "../../include/ingest/IngestRegistry.h"
 #include "../../include/ingest/IngestService.h"
@@ -20,15 +22,17 @@
 #include "../../include/voice/SpeechController.h"
 #include "../../include/voice/SpeechPanel.h"
 #include "../../include/voice/VoiceCommandRegistry.h"
-#include "AssistantIcon.h"
-#include "AssistantWidget.h"
+#include "AutoHideDock.h"
 #include "ChatWidget.h"
+#include "CustomTitleBar.h"
+#include "DockReservation.h"
 #include "DocumentArea.h"
 #include "EditSession.h"
 #include "FileWidget.h"
 #include "LlmSettingsPanel.h"
 #include "NotificationService.h"
 #include "OverseerPage.h"
+#include "OverseerSessionManager.h"
 #include "Settings.h"
 #include "SettingsDialog.h"
 #include "TextEdit.h"
@@ -39,21 +43,15 @@
 #include "app/QfPaths.h"
 #include "inference/InferenceService.h"
 #include "ui/ModelDialog.h"
-#include "OverseerSessionManager.h"
-#include <QDir>
-#include <QDirIterator>
-#include <QStandardPaths>
-#include <QAction>
-#include <QActionGroup>
 #include <QApplication>
 #include <QCloseEvent>
 #include <QDir>
+#include <QDirIterator>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QHBoxLayout>
 #include <QIcon>
-#include <QMenu>
-#include <QMenuBar>
 #include <QMessageBox>
 #include <QPalette>
 #include <QProgressDialog>
@@ -61,17 +59,17 @@
 #include <QResizeEvent>
 #include <QScreen>
 #include <QSettings>
-#include <QSplitter>
+#include <QShortcut>
 #include <QStackedWidget>
+#include <QStandardPaths>
 #include <QStatusBar>
 #include <QTextCursor>
 #include <QThreadPool>
 #include <QTimer>
-#include <QToolBar>
-#include <QToolButton>
-#include <QUrl>
 #include <QVBoxLayout>
 #include <QWidget>
+
+#include <algorithm>
 
 namespace {
 
@@ -79,14 +77,9 @@ constexpr auto NormalThemeKey = "theme";
 constexpr auto OverseerThemeKey = "overseer/theme";
 constexpr auto ModeKey = "ui/mode";
 
-constexpr auto AvatarSizeKey = "avatar/size";
-constexpr auto AvatarOffsetKey = "avatar/offset";
-
 constexpr int ImportConcurrency = 4;
 
 const AvatarConfig kAvatarConfig{};
-
-constexpr double kMinVisibleFraction = 0.35;
 
 InferenceService::LlmConfig configuredLlm() {
   InferenceService::LlmConfig config;
@@ -146,84 +139,18 @@ QString expandTokens(const QString &qss,
   return out;
 }
 
-bool avatarIsMostlyVisible(const QRect &window, const QRect &avatar) {
-  if (window.isEmpty() || avatar.isEmpty()) {
-    return false;
-  }
-
-  const QRect overlap = window.intersected(avatar);
-
-  if (overlap.isEmpty()) {
-    return false;
-  }
-
-  const double avatarArea =
-      static_cast<double>(avatar.width()) * avatar.height();
-
-  const double overlapArea =
-      static_cast<double>(overlap.width()) * overlap.height();
-
-  return overlapArea / avatarArea >= kMinVisibleFraction;
-}
-
-QPoint clampAvatarOffset(const QSize &windowSize, const QSize &avatarSize,
-                         const QPoint &offset) {
-  if (windowSize.isEmpty() || avatarSize.isEmpty()) {
-    return offset;
-  }
-
-  const int x = windowSize.width() - avatarSize.width() - offset.x();
-  const int y = windowSize.height() - avatarSize.height() - offset.y();
-
-  const QRect avatarRect(QPoint(x, y), avatarSize);
-  const QRect windowRect(QPoint(0, 0), windowSize);
-
-  if (avatarIsMostlyVisible(windowRect, avatarRect)) {
-    return offset;
-  }
-
-  const int minOverlapX =
-      static_cast<int>(avatarSize.width() * kMinVisibleFraction);
-  const int minOverlapY =
-      static_cast<int>(avatarSize.height() * kMinVisibleFraction);
-
-  int clampedX = x;
-  clampedX = qMax(clampedX, -avatarSize.width() + minOverlapX);
-  clampedX = qMin(clampedX, windowSize.width() - minOverlapX);
-
-  int clampedY = y;
-  clampedY = qMax(clampedY, -avatarSize.height() + minOverlapY);
-  clampedY = qMin(clampedY, windowSize.height() - minOverlapY);
-
-  return QPoint(windowSize.width() - avatarSize.width() - clampedX,
-                windowSize.height() - avatarSize.height() - clampedY);
-}
-
 } // namespace
 
 MainWindow::~MainWindow() {
   if (m_assistant) {
     m_assistant->stop();
   }
-
-  if (m_assistantWidget) {
-    m_assistantWidget->hide();
-  }
-
-  if (m_assistantIcon) {
-    m_assistantIcon->hide();
-    delete m_assistantIcon;
-    m_assistantIcon = nullptr;
-  }
-
-  if (m_avatar) {
-    m_avatar->close();
-    delete m_avatar;
-    m_avatar = nullptr;
-  }
 }
 
 MainWindow::MainWindow() {
+  setWindowFlags(Qt::FramelessWindowHint | Qt::WindowMinimizeButtonHint);
+  setAttribute(Qt::WA_TranslucentBackground, false);
+
   setCorner(Qt::TopLeftCorner, Qt::LeftDockWidgetArea);
   setCorner(Qt::BottomLeftCorner, Qt::LeftDockWidgetArea);
   setCorner(Qt::TopRightCorner, Qt::RightDockWidgetArea);
@@ -241,6 +168,7 @@ MainWindow::MainWindow() {
   m_editSession = new EditSession(nullptr, this);
 
   m_editSession->setInferenceService(m_inferenceService);
+
   if (!loadAllThemes()) {
     QMessageBox::critical(
         this, tr("Theme load failure"),
@@ -256,21 +184,38 @@ MainWindow::MainWindow() {
   buildSpeechLayer();
   buildSearchLayer();
 
+  // ---- workspace: title bar + the three working modes ----
+
   m_centralStack = new QStackedWidget(this);
   m_centralStack->addWidget(m_normalPage);
   m_centralStack->addWidget(m_overseerPage);
   m_centralStack->addWidget(m_searchPage);
 
-  setCentralWidget(m_centralStack);
+  m_workspacePage = new QWidget(this);
+  auto *workspaceLayout = new QVBoxLayout(m_workspacePage);
+  workspaceLayout->setContentsMargins(0, 0, 0, 0);
+  workspaceLayout->setSpacing(0);
+
+  createCustomTitleBar();
+  workspaceLayout->addWidget(m_titleBar);
+  workspaceLayout->addWidget(m_centralStack, 1);
+
+  // ---- assistant shell: avatar, prompt, no chrome ----
+
+  buildAssistantShell();
+
+  // ---- the top-level shell stack ----
+
+  m_shellStack = new QStackedWidget(this);
+  m_shellStack->addWidget(m_assistantShellPage);
+  m_shellStack->addWidget(m_workspacePage);
+
+  setCentralWidget(m_shellStack);
 
   m_toastStack = new ToastStack(this);
   NotificationService::instance().setToastHost(m_toastStack);
 
-  createActions();
-  createToolbar();
-  createMenus();
-
-  createAvatarOverlay();
+  wireTitleBar();
 
   {
     LoreAssistant::Config config;
@@ -283,6 +228,7 @@ MainWindow::MainWindow() {
     config.promoter = m_notePromoter;
     config.scopeIndex = m_scopeIndex.get();
     config.notesRoot = notesRootPath();
+    config.ingest = m_ingestService;
     config.root = QStandardPaths::writableLocation(
                       QStandardPaths::AppDataLocation) +
                   QStringLiteral("/assistant");
@@ -290,91 +236,14 @@ MainWindow::MainWindow() {
     m_assistant = new LoreAssistant(config, this);
     m_assistant->start();
 
-    m_assistantWidget = new AssistantWidget(nullptr);
-    m_assistantIcon = new AssistantIcon(nullptr);
+    m_assistantShell->setAssistant(m_assistant);
+    m_assistantShell->setSpeechController(m_speechController);
 
-    m_assistantWidget->setAssistant(m_assistant);
-    m_assistantWidget->setSpeechController(m_speechController);
-
-    connect(m_assistantWidget, &AssistantWidget::messageSubmitted,
+    connect(m_assistantShell, &AssistantShell::messageSubmitted,
             this, &MainWindow::onAssistantMessageSubmitted);
 
-    connect(m_assistantWidget, &AssistantWidget::abortRequested,
-            m_assistant, &LoreAssistant::abortAll);
-
-    connect(m_assistantIcon, &AssistantIcon::clicked,
-            this, &MainWindow::onAssistantIconClicked);
-
-    connect(m_assistant, &LoreAssistant::assistantReplyStarted,
-            m_assistantWidget, &AssistantWidget::onAssistantReplyStarted);
-
-    connect(m_assistant, &LoreAssistant::assistantChunk,
-            m_assistantWidget,
-            [this](const QString &nodeId, const QString &text) {
-              if (m_assistantWidget) {
-                m_assistantWidget->appendAssistantChunk(nodeId, text);
-              }
-            });
-
-    connect(m_assistant, &LoreAssistant::jobCreated,
-            m_assistantWidget,
-            [this](const QString &jobId, const QString &nodeId,
-                   ChatNode::Kind kind, const QString &title,
-                   const QString &detail) {
-              if (m_assistantWidget) {
-                m_assistantWidget->beginJob(nodeId, kind, title, detail,
-                                            jobId);
-              }
-            });
-
-    connect(m_assistant, &LoreAssistant::jobCompleted,
-            m_assistantWidget,
-            [this](const QString &jobId, const QString &result) {
-              if (!m_assistantWidget) {
-                return;
-              }
-
-              const QString nodeId =
-                  m_assistantWidget->jobIdFor(jobId);
-
-              if (!nodeId.isEmpty()) {
-                m_assistantWidget->setJobResult(nodeId, result);
-              }
-            });
-
-    connect(m_assistant, &LoreAssistant::jobFailed,
-            m_assistantWidget,
-            [this](const QString &jobId, const QString &error) {
-              if (!m_assistantWidget) {
-                return;
-              }
-
-              const QString nodeId =
-                  m_assistantWidget->jobIdFor(jobId);
-
-              if (!nodeId.isEmpty()) {
-                m_assistantWidget->setJobError(nodeId, error);
-              }
-            });
-
-    connect(m_assistant, &LoreAssistant::statusMessage,
-            m_assistantWidget, &AssistantWidget::appendStatusMessage);
-
-    connect(m_assistant, &LoreAssistant::statusChanged,
-            m_assistantWidget, &AssistantWidget::setStatus);
-
-    connect(m_assistant, &LoreAssistant::assistantTurnFinished,
-            m_assistantWidget,
-            [this](const QString &nodeId) {
-              Q_UNUSED(nodeId);
-
-              if (m_assistantWidget) {
-                m_assistantWidget->setBusy(false);
-              }
-            });
-
-    // The icon is deliberately not shown here. It is shown by
-    // changeEvent when the main window is minimised.
+    connect(m_assistantShell, &AssistantShell::dismissed,
+            this, &MainWindow::leaveAssistantShell);
   }
 
   connect(m_inferenceService, &InferenceService::ttsReady, this,
@@ -415,22 +284,18 @@ MainWindow::MainWindow() {
 
   switch (storedMode) {
   case 1:
-    m_overseerModeAct->setChecked(true);
+    setMode(Mode::Overseer);
     break;
   case 2:
-    m_searchModeAct->setChecked(true);
+    setMode(Mode::Search);
     break;
   default:
-    m_normalModeAct->setChecked(true);
+    setMode(Mode::Normal);
     break;
   }
 
   applyNormalTheme(m_currentNormalTheme);
   applyOverseerTheme(m_currentOverseerTheme);
-
-  ThemeRegistry::instance().setActiveTheme(
-      m_centralStack->currentIndex() == 1 ? m_currentOverseerTheme
-                                          : m_currentNormalTheme);
 
   setWindowTitle(tr("Lore"));
   setMinimumSize(800, 800);
@@ -439,67 +304,150 @@ MainWindow::MainWindow() {
   if (screen)
     setGeometry(screen->availableGeometry());
 
-  positionAvatarOverlay();
+  setShell(Shell::Assistant);
+
+  m_escapeShortcut = new QShortcut(QKeySequence(Qt::Key_Escape), this);
+  m_escapeShortcut->setContext(Qt::ApplicationShortcut);
+  connect(m_escapeShortcut, &QShortcut::activated, this,
+          &MainWindow::leaveAssistantShell);
+
+  m_summonShortcut = new QShortcut(
+      QKeySequence(Qt::CTRL | Qt::Key_Space), this);
+  m_summonShortcut->setContext(Qt::ApplicationShortcut);
+  connect(m_summonShortcut, &QShortcut::activated, this,
+          &MainWindow::enterAssistantShell);
 }
 
-void MainWindow::createAvatarOverlay() {
-  m_avatar = new AvatarWidget(nullptr);
+void MainWindow::buildAssistantShell() {
+  m_assistantShell = new AssistantShell(this);
 
-  m_avatar->setWindowFlags(Qt::Tool |
-                           Qt::FramelessWindowHint |
-                           Qt::NoDropShadowWindowHint |
-                           Qt::WindowStaysOnTopHint |
-                           Qt::WindowDoesNotAcceptFocus);
-
-  m_avatar->setAttribute(Qt::WA_TranslucentBackground, true);
-
+  m_avatar = new AvatarWidget(m_assistantShell);
   m_avatar->applyConfig(kAvatarConfig);
+  m_avatar->setModel(QStringLiteral("qrc:/avatar/julia/julia.glb"));
 
-  QSettings settings;
+  m_assistantShell->setAvatar(m_avatar);
+  m_assistantShell->setOverseerManager(m_overseerSessionManager);
 
-  QSize storedSize =
-      settings.value(AvatarSizeKey, kAvatarConfig.widgetSize).toSize();
-
-  if (storedSize.width() < kAvatarConfig.minSize.width() ||
-      storedSize.height() < kAvatarConfig.minSize.height() ||
-      storedSize.width() > kAvatarConfig.maxSize.width() ||
-      storedSize.height() > kAvatarConfig.maxSize.height()) {
-    storedSize = kAvatarConfig.widgetSize;
-  }
-
-  m_avatar->resize(storedSize);
-  m_avatar->setResizable(true);
-
-  m_avatar->setModel(QStringLiteral("qrc:/avatar/ccbase/Lore.glb"));
+  m_assistantShellPage = m_assistantShell;
 }
-
-void MainWindow::positionAvatarOverlay() {
-  if (!m_avatar) {
+void MainWindow::setShell(Shell shell) {
+  if (!m_shellStack)
     return;
-  }
 
-  const QRect frame = frameGeometry();
+  m_shell = shell;
+  m_shellStack->setCurrentIndex(static_cast<int>(shell));
 
-  const int margin = kAvatarConfig.margin;
+  if (shell == Shell::Assistant) {
+    if (m_speechPanel && m_speechPanel->isVisible()) {
+      m_speechPanel->hide();
+    }
 
-  const QPoint topLeft(frame.right() - m_avatar->width() - margin,
-                       frame.bottom() - m_avatar->height() - margin);
-
-  m_avatar->move(topLeft);
-
-  if (!m_avatarPlaced) {
-    m_avatarPlaced = true;
-    m_avatar->show();
-    m_avatar->raise();
+    if (m_assistantShell) {
+      m_assistantShell->focusPrompt();
+    }
   }
 }
 
-void MainWindow::positionAssistantIcon() {
-  if (!m_assistantIcon) {
-    return;
-  }
+void MainWindow::enterAssistantShell() {
+  setShell(Shell::Assistant);
+}
 
-  m_assistantIcon->anchorToScreen();
+void MainWindow::leaveAssistantShell() {
+  setShell(Shell::Workspace);
+}
+
+void MainWindow::createCustomTitleBar() {
+  m_titleBar = new CustomTitleBar(this);
+
+  connect(m_titleBar, &CustomTitleBar::minimizeRequested, this,
+          &QWidget::showMinimized);
+
+  connect(m_titleBar, &CustomTitleBar::maximizeRequested, this, [this]() {
+    if (isMaximized()) {
+      showNormal();
+    } else {
+      showMaximized();
+    }
+  });
+
+  connect(m_titleBar, &CustomTitleBar::closeRequested, this,
+          &QWidget::close);
+}
+
+void MainWindow::wireTitleBar() {
+  CustomTitleBar::Callbacks cb;
+
+  cb.newText     = [this]() { m_documentManager->newTextFile(); };
+  cb.newMarkdown = [this]() { m_documentManager->newMarkdownFile(); };
+  cb.newPlantUml = [this]() { m_documentManager->newPlantUmlFile(); };
+
+  cb.newDot     = [this]() { m_documentManager->newDotFile(); };
+  cb.newMermaid = [this]() { m_documentManager->newMermaidFile(); };
+  cb.newHtml    = [this]() { m_documentManager->newHtmlFile(); };
+
+  cb.open = [this]() {
+    const QString path = QFileDialog::getOpenFileName(
+        this, tr("Open File"), QString(), tr("All Files (*)"));
+    if (!path.isEmpty())
+      m_documentManager->openFile(path);
+  };
+
+  cb.importFiles  = [this]() { onImportFilesDialog(); };
+  cb.importFolder = [this]() { onImportFolderDialog(); };
+
+  cb.save = [this]() {
+    if (m_centralStack && m_centralStack->currentIndex() == 1) {
+      if (m_overseerPage)
+        m_overseerPage->saveAll();
+    } else {
+      m_documentManager->save();
+    }
+  };
+
+  cb.saveAll = [this]() {
+    if (m_centralStack && m_centralStack->currentIndex() == 1) {
+      if (m_overseerPage)
+        m_overseerPage->saveAll();
+    } else {
+      for (TextDocument *doc : m_documentManager->openDocuments()) {
+        if (doc && doc->isModified())
+          m_documentManager->saveDocument(doc);
+      }
+    }
+  };
+
+  cb.exit = [this]() { close(); };
+
+  cb.modeNormal   = [this]() { setMode(Mode::Normal); };
+  cb.modeOverseer = [this]() { setMode(Mode::Overseer); };
+  cb.modeSearch   = [this]() { setMode(Mode::Search); };
+
+  cb.toggleSpeech = [this]() { onToggleSpeechPanel(); };
+  cb.talkToLore   = [this]() { enterAssistantShell(); };
+
+  cb.openSettings    = [this]() { openSettings(); };
+  cb.openLlmSettings = [this]() { openLlmSettings(); };
+  cb.manageModels    = [this]() { manageModels(); };
+
+  cb.rebuildIndex = [this]() {
+    if (m_scopeIndex) {
+      m_scopeIndex->rebuild(notesRootPath());
+      m_searchIndexNeedsBuild = false;
+    }
+  };
+
+  cb.selectNormalTheme   = [this](const QString &n) { applyNormalTheme(n); };
+  cb.selectOverseerTheme = [this](const QString &n) { applyOverseerTheme(n); };
+
+  cb.about   = [this]() { about(); };
+  cb.aboutQt = [this]() { aboutQt(); };
+
+  m_titleBar->setCallbacks(cb);
+
+  m_titleBar->setNormalThemes(
+      ThemeRegistry::instance().selectableNames(), m_currentNormalTheme);
+  m_titleBar->setOverseerThemes(
+      ThemeRegistry::instance().selectableNames(), m_currentOverseerTheme);
 }
 
 bool MainWindow::loadThemeFromResource(const QString &name) {
@@ -639,13 +587,23 @@ void MainWindow::applyNormalTheme(const QString &name) {
   m_normalPage->setStyleSheet(combined);
   m_normalPage->setPalette(paletteForTokens(tokens));
 
+  if (m_searchPage) {
+    m_searchPage->setStyleSheet(combined);
+    m_searchPage->setPalette(paletteForTokens(tokens));
+  }
+
+  if (m_assistantShell) {
+    m_assistantShell->setStyleSheet(combined);
+    m_assistantShell->setPalette(paletteForTokens(tokens));
+    m_assistantShell->setThemeTokens(tokens);
+  }
+
   if (m_documentArea)
     m_documentArea->setThemeTokens(tokens);
 
-  if (m_assistantWidget) {
-    m_assistantWidget->setStyleSheet(combined);
-    m_assistantWidget->setPalette(paletteForTokens(tokens));
-    m_assistantWidget->setThemeTokens(tokens);
+  if (m_titleBar) {
+    m_titleBar->setStyleSheet(combined);
+    m_titleBar->setPalette(paletteForTokens(tokens));
   }
 
   m_currentNormalTheme = name;
@@ -679,10 +637,15 @@ void MainWindow::applyOverseerTheme(const QString &name) {
   if (m_overseerPage)
     m_overseerPage->setThemeTokens(tokens);
 
-  if (m_assistantWidget) {
-    m_assistantWidget->setStyleSheet(combined);
-    m_assistantWidget->setPalette(paletteForTokens(tokens));
-    m_assistantWidget->setThemeTokens(tokens);
+  if (m_titleBar) {
+    m_titleBar->setStyleSheet(combined);
+    m_titleBar->setPalette(paletteForTokens(tokens));
+  }
+
+  if (m_assistantShell) {
+    m_assistantShell->setStyleSheet(combined);
+    m_assistantShell->setPalette(paletteForTokens(tokens));
+    m_assistantShell->setThemeTokens(tokens);
   }
 
   m_currentOverseerTheme = name;
@@ -724,7 +687,6 @@ QPalette MainWindow::paletteForTokens(const ThemeTokens &tokens) const {
 void MainWindow::buildNormalPage() {
   m_normalPage = new QWidget(this);
 
-  m_fileWidget = new FileWidget(m_normalPage);
   m_documentManager = new DocumentManager(this);
 
   m_documentArea = new DocumentArea(m_documentManager, m_normalPage);
@@ -761,6 +723,41 @@ void MainWindow::buildNormalPage() {
           [this](const QString &text, int timeoutMs) {
             statusBar()->showMessage(text, timeoutMs);
           });
+
+  connect(m_documentManager, &DocumentManager::currentDocumentChanged,
+          m_documentArea, [this](TextDocument *document) {
+            auto *tw = m_documentArea->currentTextWidget();
+            if (!tw)
+              return;
+            const QString root =
+                document && !document->filePath().isEmpty()
+                    ? QFileInfo(document->filePath()).absolutePath()
+                    : QString();
+            tw->setProjectRoot(root);
+          });
+
+  connect(m_documentManager, &DocumentManager::currentDocumentChanged, this,
+          [this](TextDocument *) {
+            auto *editor = m_documentArea->currentEditor();
+            if (editor && m_editSession)
+              m_editSession->setEditor(editor);
+            if (m_chatWidget && editor)
+              m_chatWidget->setActiveEditor(editor);
+          });
+
+  m_normalCenterRow = new QWidget(m_normalPage);
+  auto *rowLayout = new QHBoxLayout(m_normalCenterRow);
+  rowLayout->setContentsMargins(0, 0, 0, 0);
+  rowLayout->setSpacing(0);
+
+  m_fileTreeDock =
+      new AutoHideDock(AutoHideDock::Edge::Left,
+                       QStringLiteral("normal/fileTree"), m_normalCenterRow);
+
+  m_fileTreeReservation = new DockReservation(m_fileTreeDock, m_normalCenterRow);
+
+  m_fileWidget = new FileWidget(m_fileTreeDock);
+  m_fileTreeDock->setContent(m_fileWidget);
 
   connect(m_fileWidget, &FileWidget::fileSelected, m_documentManager,
           &DocumentManager::openFile);
@@ -802,40 +799,58 @@ void MainWindow::buildNormalPage() {
             m_fileWidget->setModifiedPaths(modifiedPaths());
           });
 
-  connect(m_documentManager, &DocumentManager::currentDocumentChanged, this,
-          [this](TextDocument *document) {
-            auto *tw = m_documentArea->currentTextWidget();
-            if (!tw)
-              return;
-            const QString root =
-                document && !document->filePath().isEmpty()
-                    ? QFileInfo(document->filePath()).absolutePath()
-                    : QString();
-            tw->setProjectRoot(root);
-          });
+  connect(m_fileWidget, &FileWidget::convertToMermaidRequested,
+        m_documentManager, &DocumentManager::convertToMermaid);
 
-  connect(m_documentManager, &DocumentManager::currentDocumentChanged, this,
-          [this](TextDocument *) {
-            auto *editor = m_documentArea->currentEditor();
-            if (editor && m_editSession)
-              m_editSession->setEditor(editor);
-            if (m_chatWidget && editor)
-              m_chatWidget->setActiveEditor(editor);
-          });
+  m_chatDock =
+      new AutoHideDock(AutoHideDock::Edge::Right,
+                       QStringLiteral("normal/chat"), m_normalCenterRow);
+  m_chatReservation = new DockReservation(m_chatDock, m_normalCenterRow);
+  m_chatDock->setContent(m_chatWidget);
 
-  auto *mainSplitter = new QSplitter(Qt::Horizontal, m_normalPage);
-  mainSplitter->addWidget(m_fileWidget);
+  rowLayout->addWidget(m_fileTreeReservation, 0);
+  rowLayout->addWidget(m_documentArea, 1);
+  rowLayout->addWidget(m_chatReservation, 0);
 
-  auto *rightSplitter = new QSplitter(Qt::Vertical, mainSplitter);
-  rightSplitter->addWidget(m_documentArea);
-  rightSplitter->addWidget(m_chatWidget);
-  rightSplitter->setSizes({650, 300});
+  if (auto *view = m_fileWidget->view()) {
+    connect(view, &FileSystemView::preferredContentWidthChanged,
+            m_fileTreeDock, [this](int width) {
+              m_fileTreeDock->setPreferredContentLength(width);
+              m_fileTreeDock->fitToContentLength();
+            });
+  }
 
-  mainSplitter->setSizes({240, 960});
+  m_chatDock->setPreferredContentLength(
+      std::max(m_chatWidget->sizeHint().width(),
+               m_chatWidget->minimumSizeHint().width()));
 
   auto *layout = new QVBoxLayout(m_normalPage);
-  layout->setContentsMargins(5, 5, 5, 5);
-  layout->addWidget(mainSplitter);
+  layout->setContentsMargins(0, 0, 0, 0);
+  layout->addWidget(m_normalCenterRow);
+
+  m_fileTreeDock->showDock();
+  m_chatDock->showDock();
+
+  QTimer::singleShot(0, this, [this]() {
+    if (!m_fileWidget || !m_fileTreeDock)
+      return;
+
+    if (auto *view = m_fileWidget->view()) {
+      const int measured = view->measuredContentWidth();
+      if (measured > 0) {
+        m_fileTreeDock->setPreferredContentLength(measured);
+        m_fileTreeDock->fitToContentLength();
+      }
+    }
+
+    if (m_chatDock && m_chatWidget) {
+      const int target =
+          std::max(m_chatWidget->sizeHint().width(),
+                   m_chatWidget->minimumSizeHint().width());
+      m_chatDock->setPreferredContentLength(target);
+      m_chatDock->fitToContentLength();
+    }
+  });
 }
 
 void MainWindow::buildOverseerPage() {
@@ -856,9 +871,7 @@ void MainWindow::buildOverseerPage() {
             if (m_documentManager)
               m_documentManager->openFile(absolutePath);
 
-            if (m_normalModeAct) {
-              m_normalModeAct->setChecked(true);
-            }
+            setMode(Mode::Normal);
           });
 
   connect(m_overseerPage->fileWidget(),
@@ -1075,298 +1088,48 @@ void MainWindow::bindCurrentEditor(TextEdit *editor) {
   m_loreTriggers.insert(editor, trigger);
 }
 
-void MainWindow::createActions() {
-  auto getSafeIcon = [](const QString &themeIcon,
-                        const QString &fallbackPath = "") -> QIcon {
-    QIcon icon = QIcon::fromTheme(themeIcon);
-    if (icon.isNull() && !fallbackPath.isEmpty())
-      icon = QIcon(fallbackPath);
-    return icon;
-  };
-
-  m_newTextAct =
-      new QAction(getSafeIcon("document-new", ":/icons/document-new.png"),
-                  tr("&Text File"), this);
-  m_newTextAct->setShortcuts(QKeySequence::New);
-  connect(m_newTextAct, &QAction::triggered, m_documentManager,
-          &DocumentManager::newTextFile);
-
-  m_newMarkdownAct =
-      new QAction(getSafeIcon("document-new", ":/icons/document-new.png"),
-                  tr("&Markdown File"), this);
-  connect(m_newMarkdownAct, &QAction::triggered, m_documentManager,
-          &DocumentManager::newMarkdownFile);
-
-  m_newPlantUmlAct =
-      new QAction(getSafeIcon("document-new", ":/icons/document-new.png"),
-                  tr("&PlantUML Diagram"), this);
-  connect(m_newPlantUmlAct, &QAction::triggered, m_documentManager,
-          &DocumentManager::newPlantUmlFile);
-
-  m_openAct =
-      new QAction(getSafeIcon("document-open", ":/icons/document-open.png"),
-                  tr("&Open..."), this);
-  m_openAct->setShortcuts(QKeySequence::Open);
-  connect(m_openAct, &QAction::triggered, this, [this]() {
-    const QString path =
-        QFileDialog::getOpenFileName(this, tr("Open File"), QString(),
-                                     tr("All Files (*)"));
-    if (!path.isEmpty())
-      m_documentManager->openFile(path);
-  });
-
-  m_importFilesAct =
-      new QAction(getSafeIcon("document-import",
-                              ":/icons/document-import.png"),
-                  tr("Import &Files..."), this);
-  m_importFilesAct->setStatusTip(
-      tr("Convert documents into notes in the notes folder"));
-  connect(m_importFilesAct, &QAction::triggered, this,
-          &MainWindow::onImportFilesDialog);
-
-  m_importFolderAct =
-      new QAction(getSafeIcon("document-import",
-                              ":/icons/document-import.png"),
-                  tr("Import F&older..."), this);
-  m_importFolderAct->setStatusTip(
-      tr("Recursively convert every supported document in a folder"));
-  connect(m_importFolderAct, &QAction::triggered, this,
-          &MainWindow::onImportFolderDialog);
-
-  m_saveAct =
-      new QAction(getSafeIcon("document-save", ":/icons/document-save.png"),
-                  tr("&Save"), this);
-  m_saveAct->setShortcuts(QKeySequence::Save);
-  connect(m_saveAct, &QAction::triggered, this, [this]() {
-    if (m_centralStack && m_centralStack->currentIndex() == 1) {
-      if (m_overseerPage)
-        m_overseerPage->saveAll();
-    } else {
-      m_documentManager->save();
-    }
-  });
-
-  m_saveAllAct = new QAction(tr("Save A&ll"), this);
-  m_saveAllAct->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_S));
-  connect(m_saveAllAct, &QAction::triggered, this, [this]() {
-    if (m_centralStack && m_centralStack->currentIndex() == 1) {
-      if (m_overseerPage)
-        m_overseerPage->saveAll();
-    } else {
-      for (TextDocument *doc : m_documentManager->openDocuments()) {
-        if (doc && doc->isModified())
-          m_documentManager->saveDocument(doc);
-      }
-    }
-  });
-
-  m_exitAct = new QAction(
-      getSafeIcon("application-exit", ":/icons/application-exit.png"),
-      tr("E&xit"), this);
-  m_exitAct->setShortcuts(QKeySequence::Quit);
-  connect(m_exitAct, &QAction::triggered, this, &QWidget::close);
-
-  m_manageModelsAct = new QAction(tr("&Manage Models..."), this);
-  connect(m_manageModelsAct, &QAction::triggered, this,
-          &MainWindow::manageModels);
-
-  m_llmSettingsAct = new QAction(tr("LLM &Settings..."), this);
-  connect(m_llmSettingsAct, &QAction::triggered, this,
-          &MainWindow::openLlmSettings);
-
-  m_settingsAct = new QAction(tr("&Settings..."), this);
-  connect(m_settingsAct, &QAction::triggered, this,
-          &MainWindow::openSettings);
-
-  m_modeGroup = new QActionGroup(this);
-  m_modeGroup->setExclusive(true);
-
-  m_normalModeAct = new QAction(tr("Normal"), this);
-  m_normalModeAct->setCheckable(true);
-  m_normalModeAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_1));
-  m_modeGroup->addAction(m_normalModeAct);
-
-  m_overseerModeAct = new QAction(tr("Overseer"), this);
-  m_overseerModeAct->setCheckable(true);
-  m_overseerModeAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_2));
-  m_modeGroup->addAction(m_overseerModeAct);
-
-  m_searchModeAct = new QAction(tr("@Lore"), this);
-  m_searchModeAct->setCheckable(true);
-  m_searchModeAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_3));
-  m_modeGroup->addAction(m_searchModeAct);
-
-  connect(m_modeGroup, &QActionGroup::triggered, this,
-          &MainWindow::onModeActionTriggered);
-
-  m_toggleSpeechAct = new QAction(tr("Voice Panel"), this);
-  m_toggleSpeechAct->setShortcut(
-      QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_Space));
-  m_toggleSpeechAct->setStatusTip(
-      tr("Show or hide the voice command panel"));
-  connect(m_toggleSpeechAct, &QAction::triggered, this,
-          &MainWindow::onToggleSpeechPanel);
-
-  m_rebuildIndexAct = new QAction(tr("Rebuild Search Index"), this);
-  m_rebuildIndexAct->setStatusTip(
-      tr("Re-walk the notes folder and rebuild the search index"));
-  connect(m_rebuildIndexAct, &QAction::triggered, this, [this]() {
-    if (m_scopeIndex) {
-      m_scopeIndex->rebuild(notesRootPath());
-      m_searchIndexNeedsBuild = false;
-    }
-  });
-
-  m_aboutAct = new QAction(getSafeIcon("help-about", ":/icons/help-about.png"),
-                           tr("&About"), this);
-  connect(m_aboutAct, &QAction::triggered, this, &MainWindow::about);
-
-  m_aboutQtAct = new QAction(tr("About &Qt"), this);
-  connect(m_aboutQtAct, &QAction::triggered, this, &MainWindow::aboutQt);
-
-  addAction(m_toggleSpeechAct);
-  addAction(m_normalModeAct);
-  addAction(m_overseerModeAct);
-  addAction(m_searchModeAct);
+void MainWindow::about() {
+  QMessageBox::about(this, tr("About Lore"),
+                     tr("The <b>Lore</b> document editor."));
 }
 
-void MainWindow::createMenus() {
-  m_fileMenu = menuBar()->addMenu(tr("&File"));
+void MainWindow::aboutQt() { QMessageBox::aboutQt(this, tr("About Qt")); }
 
-  m_newMenu = m_fileMenu->addMenu(tr("&New"));
-  m_newMenu->addAction(m_newTextAct);
-  m_newMenu->addAction(m_newMarkdownAct);
-  m_newMenu->addAction(m_newPlantUmlAct);
-
-  m_fileMenu->addAction(m_openAct);
-  m_fileMenu->addSeparator();
-  m_fileMenu->addAction(m_importFilesAct);
-  m_fileMenu->addAction(m_importFolderAct);
-  m_fileMenu->addSeparator();
-  m_fileMenu->addAction(m_saveAct);
-  m_fileMenu->addAction(m_saveAllAct);
-  m_fileMenu->addSeparator();
-  m_fileMenu->addAction(m_exitAct);
-
-  m_viewMenu = menuBar()->addMenu(tr("&View"));
-  m_viewMenu->addAction(m_normalModeAct);
-  m_viewMenu->addAction(m_overseerModeAct);
-  m_viewMenu->addAction(m_searchModeAct);
-  m_viewMenu->addSeparator();
-  m_viewMenu->addAction(m_toggleSpeechAct);
-
-  m_toolsMenu = menuBar()->addMenu(tr("&Tools"));
-  m_toolsMenu->addAction(m_settingsAct);
-  m_toolsMenu->addSeparator();
-  m_toolsMenu->addAction(m_llmSettingsAct);
-  m_toolsMenu->addSeparator();
-  m_toolsMenu->addAction(m_manageModelsAct);
-  m_toolsMenu->addSeparator();
-  m_toolsMenu->addAction(m_rebuildIndexAct);
-
-  m_themeMenu = menuBar()->addMenu(tr("&Theme"));
-
-  auto *normalThemeMenu = m_themeMenu->addMenu(tr("Normal"));
-  QActionGroup *normalGroup = new QActionGroup(this);
-  normalGroup->setExclusive(true);
-
-  for (const QString &theme : ThemeRegistry::instance().selectableNames()) {
-    QAction *a = normalThemeMenu->addAction(theme);
-    a->setCheckable(true);
-    normalGroup->addAction(a);
-
-    if (theme == m_currentNormalTheme)
-      a->setChecked(true);
-
-    connect(a, &QAction::triggered, this,
-            [this, theme]() { onThemeSelected(theme); });
-  }
-
-  auto *overseerThemeMenu = m_themeMenu->addMenu(tr("Overseer"));
-  QActionGroup *overseerGroup = new QActionGroup(this);
-  overseerGroup->setExclusive(true);
-
-  for (const QString &theme : ThemeRegistry::instance().selectableNames()) {
-    QAction *a = overseerThemeMenu->addAction(theme);
-    a->setCheckable(true);
-    overseerGroup->addAction(a);
-
-    if (theme == m_currentOverseerTheme)
-      a->setChecked(true);
-
-    connect(a, &QAction::triggered, this,
-            [this, theme]() { onOverseerThemeSelected(theme); });
-  }
-
-  m_helpMenu = menuBar()->addMenu(tr("&Help"));
-  m_helpMenu->addAction(m_aboutAct);
-  m_helpMenu->addAction(m_aboutQtAct);
-}
-
-void MainWindow::onModeActionTriggered(QAction *action) {
-  if (action == m_overseerModeAct) {
-    setMode(Mode::Overseer);
-  } else if (action == m_searchModeAct) {
-    setMode(Mode::Search);
-  } else {
-    setMode(Mode::Normal);
-  }
-}
-
-void MainWindow::setMode(Mode mode) {
-  if (!m_centralStack) {
+void MainWindow::closeEvent(QCloseEvent *event) {
+  if (!confirmDiscardChanges(tr("Normal mode"))) {
+    event->ignore();
     return;
   }
 
-  const int targetIndex = static_cast<int>(mode);
-
-  if (m_centralStack->currentIndex() != targetIndex) {
-    if (targetIndex == static_cast<int>(Mode::Overseer) &&
-        !confirmDiscardChanges(tr("Normal mode"))) {
-      m_normalModeAct->setChecked(true);
+  if (m_overseerPage && m_overseerPage->hasUnsavedChanges()) {
+    if (!confirmDiscardChanges(tr("Overseer mode"))) {
+      event->ignore();
       return;
     }
-
-    if (targetIndex != static_cast<int>(Mode::Overseer) &&
-        m_overseerPage && m_centralStack->currentIndex() == 1 &&
-        !confirmDiscardChanges(tr("Overseer mode"))) {
-      m_overseerModeAct->setChecked(true);
-      return;
-    }
-
-    m_centralStack->setCurrentIndex(targetIndex);
-  }
-
-  if (mode == Mode::Overseer) {
-    ThemeRegistry::instance().setActiveTheme(m_currentOverseerTheme);
-  } else {
-    ThemeRegistry::instance().setActiveTheme(m_currentNormalTheme);
-  }
-
-  if (m_modeButton) {
-    switch (mode) {
-    case Mode::Overseer:
-      m_modeButton->setText(tr("Overseer"));
-      m_modeButton->setIcon(QIcon::fromTheme(QStringLiteral("view-grid")));
-      break;
-    case Mode::Search:
-      m_modeButton->setText(tr("@Lore"));
-      m_modeButton->setIcon(QIcon::fromTheme(QStringLiteral("edit-find")));
-      break;
-    case Mode::Normal:
-    default:
-      m_modeButton->setText(tr("Normal"));
-      m_modeButton->setIcon(QIcon::fromTheme(QStringLiteral("document-edit")));
-      break;
-    }
-  }
-
-  if (mode == Mode::Search && m_searchPage) {
-    m_searchPage->focusQuery();
   }
 
   QSettings settings;
-  settings.setValue(ModeKey, targetIndex);
+  if (m_centralStack) {
+    settings.setValue(ModeKey, m_centralStack->currentIndex());
+  }
+
+  event->accept();
+}
+
+void MainWindow::showEvent(QShowEvent *event) {
+  QMainWindow::showEvent(event);
+}
+
+void MainWindow::resizeEvent(QResizeEvent *event) {
+  QMainWindow::resizeEvent(event);
+}
+
+void MainWindow::moveEvent(QMoveEvent *event) {
+  QMainWindow::moveEvent(event);
+}
+
+void MainWindow::changeEvent(QEvent *event) {
+  QMainWindow::changeEvent(event);
 }
 
 bool MainWindow::confirmDiscardChanges(const QString &areaName) {
@@ -1418,12 +1181,61 @@ bool MainWindow::confirmDiscardChanges(const QString &areaName) {
   return true;
 }
 
-void MainWindow::onThemeSelected(const QString &theme) {
-  applyNormalTheme(theme);
-}
+void MainWindow::setMode(Mode mode) {
+  if (!m_centralStack) {
+    return;
+  }
 
-void MainWindow::onOverseerThemeSelected(const QString &theme) {
-  applyOverseerTheme(theme);
+  const int targetIndex = static_cast<int>(mode);
+
+  if (m_centralStack->currentIndex() != targetIndex) {
+    if (targetIndex == static_cast<int>(Mode::Overseer) &&
+        !confirmDiscardChanges(tr("Normal mode"))) {
+      return;
+    }
+
+    if (targetIndex != static_cast<int>(Mode::Overseer) &&
+        m_overseerPage && m_centralStack->currentIndex() == 1 &&
+        !confirmDiscardChanges(tr("Overseer mode"))) {
+      return;
+    }
+
+    m_centralStack->setCurrentIndex(targetIndex);
+  }
+
+  if (mode == Mode::Overseer) {
+    ThemeRegistry::instance().setActiveTheme(m_currentOverseerTheme);
+  } else {
+    ThemeRegistry::instance().setActiveTheme(m_currentNormalTheme);
+  }
+
+  if (m_titleBar) {
+    switch (mode) {
+    case Mode::Overseer:
+      m_titleBar->setModeText(tr("Overseer"));
+      m_titleBar->setModeIcon(QIcon::fromTheme(QStringLiteral("view-grid")));
+      break;
+    case Mode::Search:
+      m_titleBar->setModeText(tr("Search"));
+      m_titleBar->setModeIcon(QIcon::fromTheme(QStringLiteral("edit-find")));
+      break;
+    case Mode::Normal:
+    default:
+      m_titleBar->setModeText(tr("Normal"));
+      m_titleBar->setModeIcon(
+          QIcon::fromTheme(QStringLiteral("document-edit")));
+      break;
+    }
+
+    m_titleBar->setModeChecked(targetIndex);
+  }
+
+  if (mode == Mode::Search && m_searchPage) {
+    m_searchPage->focusQuery();
+  }
+
+  QSettings settings;
+  settings.setValue(ModeKey, targetIndex);
 }
 
 void MainWindow::openLlmSettings() {
@@ -1461,83 +1273,6 @@ QSet<QString> MainWindow::modifiedPaths() const {
   }
 
   return paths;
-}
-
-void MainWindow::about() {
-  QMessageBox::about(this, tr("About Lore"),
-                     tr("The <b>Lore</b> document editor."));
-}
-
-void MainWindow::aboutQt() { QMessageBox::aboutQt(this, tr("About Qt")); }
-
-void MainWindow::closeEvent(QCloseEvent *event) {
-  if (!confirmDiscardChanges(tr("Normal mode"))) {
-    event->ignore();
-    return;
-  }
-
-  if (m_overseerPage && m_overseerPage->hasUnsavedChanges()) {
-    if (!confirmDiscardChanges(tr("Overseer mode"))) {
-      event->ignore();
-      return;
-    }
-  }
-
-  if (m_assistantWidget && m_assistantWidget->isOpen()) {
-    m_assistantWidget->close();
-  }
-
-  if (m_avatar) {
-    m_avatar->close();
-  }
-
-  QSettings settings;
-  if (m_centralStack) {
-    settings.setValue(ModeKey, m_centralStack->currentIndex());
-  }
-
-  event->accept();
-}
-
-void MainWindow::showEvent(QShowEvent *event) {
-  QMainWindow::showEvent(event);
-  positionAvatarOverlay();
-}
-
-void MainWindow::resizeEvent(QResizeEvent *event) {
-  QMainWindow::resizeEvent(event);
-
-  if (m_avatarPlaced) {
-    positionAvatarOverlay();
-  }
-}
-
-void MainWindow::moveEvent(QMoveEvent *event) {
-  QMainWindow::moveEvent(event);
-
-  if (m_avatarPlaced) {
-    positionAvatarOverlay();
-  }
-}
-
-void MainWindow::changeEvent(QEvent *event) {
-  QMainWindow::changeEvent(event);
-
-  if (event->type() != QEvent::WindowStateChange) {
-    return;
-  }
-
-  if (isMinimized()) {
-    if (m_assistantIcon) {
-      m_assistantIcon->anchorToScreen();
-      m_assistantIcon->show();
-      m_assistantIcon->raise();
-    }
-  } else {
-    if (m_assistantIcon) {
-      m_assistantIcon->hide();
-    }
-  }
 }
 
 void MainWindow::buildIngestLayer() {
@@ -1650,6 +1385,7 @@ QList<MainWindow::ImportCandidate> MainWindow::collectImportableFilesIn(
 
   return result;
 }
+
 void MainWindow::onImportFilesDialog() {
   if (!m_ingestService) {
     return;
@@ -1831,6 +1567,7 @@ void MainWindow::startNextImport() {
     m_bulkImportTokens.append(token);
   }
 }
+
 void MainWindow::onBulkImportCompleted(quint64, bool ok) {
   if (ok) {
     ++m_bulkImportSucceeded;
@@ -1844,6 +1581,7 @@ void MainWindow::onBulkImportCompleted(quint64, bool ok) {
     m_importProgress->setValue(m_bulkImportCompleted);
   }
 }
+
 void MainWindow::onBulkImportCancelled() {
   if (m_bulkImportCancelled) {
     return;
@@ -2077,9 +1815,6 @@ void MainWindow::onSearchRequested() {
     m_searchIndexNeedsBuild = false;
   }
 
-  if (m_searchModeAct) {
-    m_searchModeAct->setChecked(true);
-  }
   setMode(Mode::Search);
 }
 
@@ -2093,37 +1828,17 @@ void MainWindow::onSearchOpenRequested(const QString &filePath,
 
   m_documentManager->openFile(filePath);
 
-  if (m_normalModeAct) {
-    m_normalModeAct->setChecked(true);
-  }
   setMode(Mode::Normal);
 }
 
 void MainWindow::onAssistantMessageSubmitted(const QString &text) {
-  if (!m_assistant || !m_assistantWidget) {
+  if (!m_assistant || !m_assistantShell) {
     return;
   }
 
-  m_assistantWidget->setBusy(true);
+  m_assistantShell->setBusy(true);
   m_assistant->handleUserMessage(text);
 }
-
-void MainWindow::onAssistantIconClicked() {
-  if (!m_assistantWidget) {
-    return;
-  }
-
-  m_assistantWidget->toggle();
-}
-
-void MainWindow::onTalkToLoreClicked() {
-  if (!m_assistantWidget) {
-    return;
-  }
-
-  m_assistantWidget->toggle();
-}
-
 void MainWindow::onDocumentSaved(TextDocument *document) {
   if (!document || !m_scopeIndex) {
     return;
@@ -2142,47 +1857,4 @@ void MainWindow::onDocumentSaved(TextDocument *document) {
   }
 
   m_scopeIndex->markDirty(path);
-}
-
-void MainWindow::createToolbar() {
-  m_topToolBar = addToolBar(tr("Main"));
-  m_topToolBar->setObjectName(QStringLiteral("mainToolBar"));
-  m_topToolBar->setMovable(false);
-  m_topToolBar->setFloatable(false);
-  m_topToolBar->setIconSize(QSize(18, 18));
-  m_topToolBar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-
-  m_modeButton = new QToolButton(m_topToolBar);
-  m_modeButton->setObjectName(QStringLiteral("modeButton"));
-  m_modeButton->setPopupMode(QToolButton::InstantPopup);
-  m_modeButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-  m_modeButton->setText(tr("Normal"));
-
-  m_modeMenu = new QMenu(m_modeButton);
-  m_modeMenu->addAction(m_normalModeAct);
-  m_modeMenu->addAction(m_overseerModeAct);
-  m_modeMenu->addAction(m_searchModeAct);
-
-  m_modeButton->setMenu(m_modeMenu);
-
-  m_topToolBar->addWidget(m_modeButton);
-
-  auto *spacer = new QWidget(m_topToolBar);
-  spacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
-  m_topToolBar->addWidget(spacer);
-
-  m_talkToLoreAct = new QAction(tr("Talk to Lore"), this);
-  m_talkToLoreAct->setToolTip(tr("Talk to Lore"));
-
-  auto *loreButton = new QToolButton(m_topToolBar);
-  loreButton->setObjectName(QStringLiteral("talkToLoreButton"));
-  loreButton->setDefaultAction(m_talkToLoreAct);
-  loreButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-  loreButton->setAutoRaise(true);
-  loreButton->setText(tr("Lore"));
-
-  connect(m_talkToLoreAct, &QAction::triggered, this,
-          &MainWindow::onTalkToLoreClicked);
-
-  m_topToolBar->addWidget(loreButton);
 }

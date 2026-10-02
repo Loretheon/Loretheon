@@ -21,6 +21,9 @@ public:
   QStringList facts() const { return m_facts; }
   QString prose() const;
 
+  QSize sizeHint() const override;
+  QSize minimumSizeHint() const override;
+
   signals:
     void changed();
 

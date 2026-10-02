@@ -1,6 +1,5 @@
 #include "OverseerSession.h"
 
-#include <QDateTime>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -171,23 +170,5 @@ bool OverseerSession::writeMemory(const QString &text) {
     return false;
 
   file.write(text.toUtf8());
-  return true;
-}
-
-bool OverseerSession::appendTranscriptMessage(const QString &role,
-                                              const QString &text) {
-  QFile file(m_transcriptPath);
-
-  if (!file.open(QIODevice::WriteOnly | QIODevice::Append |
-                 QIODevice::Text))
-    return false;
-
-  QTextStream stream(&file);
-  stream.setEncoding(QStringConverter::Utf8);
-
-  stream << "**" << role << "** — "
-         << QDateTime::currentDateTime().toString(Qt::ISODate) << "\n\n"
-         << text << "\n\n";
-
   return true;
 }
