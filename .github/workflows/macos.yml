@@ -33,7 +33,7 @@ jobs:
         run: |
           brew update
           brew install ninja cmake graphviz node libomp tree-sitter-cli \
-                       openblas sentencepiece tesseract leptonica
+                       openblas sentencepiece tesseract leptonica ffmpeg
 
       - name: Install mermaid-cli
         run: npm install -g @mermaid-js/mermaid-cli
@@ -73,10 +73,16 @@ jobs:
           cp "$(brew --prefix)/bin/mmdc" "$RESOURCES_DIR/usr/bin/mmdc"
           cp "$(brew --prefix)/bin/dot"  "$RESOURCES_DIR/usr/bin/dot"
 
-          # dylibs from ExternalProjects go into Contents/Frameworks
+          # dylibs from ExternalProjects install tree
           if [ -d "cmake-build-libs/install/lib" ]; then
             find cmake-build-libs/install/lib -name '*.dylib' -exec \
               cp {} "$FRAMEWORKS_DIR/" \;
+          fi
+
+          # NeMo-Speech.cpp shared libraries (built in-tree, not installed)
+          if [ -d "cmake-build-libs/QF-ML/nemo-speech/bin" ]; then
+            find cmake-build-libs/QF-ML/nemo-speech/bin -maxdepth 1 \
+              -name 'lib*.dylib' -exec cp {} "$FRAMEWORKS_DIR/" \;
           fi
 
           if [ -d "models" ]; then

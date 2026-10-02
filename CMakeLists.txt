@@ -9,8 +9,12 @@ option(LORE_WITH_AVATAR "Build the 3D avatar and its dependencies" OFF)
 find_package(OpenMP REQUIRED)
 find_package(ZLIB REQUIRED)
 find_package(BZip2 REQUIRED)
-find_package(BLAS REQUIRED)
-find_package(LAPACK REQUIRED)
+
+if (NOT WIN32)
+    find_package(BLAS REQUIRED)
+    find_package(LAPACK REQUIRED)
+endif ()
+
 find_package(Qt6 6.4 REQUIRED COMPONENTS
         Core Gui Widgets PrintSupport Pdf PdfWidgets Network Multimedia
         MultimediaWidgets Svg SvgWidgets Xml Concurrent Core5Compat)
@@ -71,8 +75,8 @@ set(EPISTEME_EXT_CMAKE_ARGS
         -DCMAKE_BUILD_TYPE=Release
         -DCMAKE_INSTALL_PREFIX=${EPISTEME_EXTERNAL_PREFIX}
         -DCMAKE_INSTALL_LIBDIR=lib
-        -DCMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}
-        -DCMAKE_PROGRAM_PATH=${EPISTEME_NODE_BIN_RESOLVED}
+        "-DCMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}"
+        "-DCMAKE_PROGRAM_PATH=${EPISTEME_NODE_BIN_RESOLVED}"
         -DCMAKE_POSITION_INDEPENDENT_CODE=ON
         -DQt6_DIR=${Qt6_DIR}
         -DOpenMP_C_FLAGS=${OpenMP_C_FLAGS}
@@ -81,6 +85,11 @@ set(EPISTEME_EXT_CMAKE_ARGS
         -DOpenMP_CXX_LIB_NAMES=${OpenMP_CXX_LIB_NAMES}
         -DOpenMP_omp_LIBRARY=${OpenMP_omp_LIBRARY}
 )
+
+if (APPLE AND CMAKE_OSX_DEPLOYMENT_TARGET)
+    list(APPEND EPISTEME_EXT_CMAKE_ARGS
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=${CMAKE_OSX_DEPLOYMENT_TARGET})
+endif ()
 
 function(lore_external name dir)
     cmake_parse_arguments(EE "" "" "BYPRODUCTS;EXTRA_CMAKE_ARGS" ${ARGN})
@@ -214,7 +223,8 @@ lore_external(quazip quazip
 lore_import_static(ep_quazip ext_quazip lib/libquazip1-qt6.a)
 
 file(GLOB QUAZIP_INCLUDE_DIRS
-        "${EPISTEME_EXTERNAL_PREFIX}/include/QuaZip-Qt6-*")
+        "${EPISTEME_EXTERNAL_PREFIX}/include/QuaZip-Qt6-*"
+        "${EPISTEME_EXTERNAL_PREFIX}/include")
 
 # =============================================================================
 # Faiss
@@ -779,9 +789,11 @@ target_link_libraries(Lore PRIVATE
         ZLIB::ZLIB
         BZip2::BZip2
         OpenMP::OpenMP_CXX
-        BLAS::BLAS
-        LAPACK::LAPACK
 )
+
+if (NOT WIN32)
+    target_link_libraries(Lore PRIVATE BLAS::BLAS LAPACK::LAPACK)
+endif ()
 
 if (WIN32)
     target_link_libraries(Lore PRIVATE faiss)
