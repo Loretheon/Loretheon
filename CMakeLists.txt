@@ -6,12 +6,14 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 option(LORE_WITH_AVATAR "Build the 3D avatar and its dependencies" OFF)
 
-find_package(QuaZip-Qt6 REQUIRED)
 find_package(OpenMP REQUIRED)
-find_package(faiss REQUIRED)
+find_package(ZLIB REQUIRED)
+find_package(BZip2 REQUIRED)
+find_package(BLAS REQUIRED)
+find_package(LAPACK REQUIRED)
 find_package(Qt6 6.4 REQUIRED COMPONENTS
         Core Gui Widgets PrintSupport Pdf PdfWidgets Network Multimedia
-        MultimediaWidgets Svg SvgWidgets Xml Concurrent)
+        MultimediaWidgets Svg SvgWidgets Xml Concurrent Core5Compat)
 
 if (LORE_WITH_AVATAR)
     find_package(Qt6 6.4 REQUIRED COMPONENTS Quick QuickWidgets Quick3D)
@@ -72,6 +74,7 @@ set(EPISTEME_EXT_CMAKE_ARGS
         -DCMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}
         -DCMAKE_PROGRAM_PATH=${EPISTEME_NODE_BIN_RESOLVED}
         -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+        -DQt6_DIR=${Qt6_DIR}
 )
 
 function(lore_external name dir)
@@ -185,6 +188,65 @@ lore_external(lunasvg lunasvg
         EXTRA_CMAKE_ARGS
         -DBUILD_SHARED_LIBS=OFF
         -DLUNASVG_BUILD_EXAMPLES=OFF)
+
+
+# =============================================================================
+# QuaZip
+# =============================================================================
+#
+# Built from source on every platform. QuaZip links against the Qt we
+# already found; Qt6_DIR is forwarded via EPISTEME_EXT_CMAKE_ARGS so the
+# nested configure cannot pick up a different Qt.
+
+lore_external(quazip quazip
+        BYPRODUCTS
+        lib/libquazip1-qt6.a
+        EXTRA_CMAKE_ARGS
+        -DBUILD_SHARED_LIBS=OFF
+        -DQUAZIP_BZIP2=ON
+        -DQUAZIP_FETCH_LIBS=OFF)
+
+lore_import_static(ep_quazip ext_quazip lib/libquazip1-qt6.a)
+
+file(GLOB QUAZIP_INCLUDE_DIRS
+        "${EPISTEME_EXTERNAL_PREFIX}/include/QuaZip-Qt6-*")
+
+# =============================================================================
+# Faiss
+# =============================================================================
+#
+# Linux and macOS build faiss from source. Windows uses the vcpkg port
+# because upstream faiss does not support MSVC. The vcpkg install step
+# in windows.yml provides faissConfig.cmake.
+
+if (WIN32)
+
+    find_package(faiss REQUIRED)
+
+else ()
+
+    if (APPLE)
+        set(FAISS_BLAS_ARGS -DBLA_VENDOR=Apple)
+    else ()
+        set(FAISS_BLAS_ARGS -DBLA_VENDOR=OpenBLAS)
+    endif ()
+
+    lore_external(faiss faiss
+            BYPRODUCTS
+            lib/libfaiss.a
+            EXTRA_CMAKE_ARGS
+            -DFAISS_ENABLE_PYTHON=OFF
+            -DFAISS_ENABLE_GPU=OFF
+            -DFAISS_ENABLE_TESTS=OFF
+            -DFAISS_ENABLE_EXAMPLES=OFF
+            -DBUILD_SHARED_LIBS=OFF
+            -DBUILD_TESTING=OFF
+            ${FAISS_BLAS_ARGS})
+
+    lore_import_static(ep_faiss ext_faiss lib/libfaiss.a)
+
+endif ()
+
 
 lore_import_static(ep_edlib ext_edlib lib/libedlib.a)
 lore_import_static(ep_tree_sitter ext_tree-sitter lib/libtree-sitter.a)
@@ -622,7 +684,12 @@ add_dependencies(Lore
         ext_tree-sitter
         ext_tree-sitter-markdown
         ext_lunasvg
+        ext_quazip
 )
+
+if (NOT WIN32)
+    add_dependencies(Lore ext_faiss)
+endif ()
 
 target_compile_definitions(Lore PRIVATE
         EPISTEME_MERMAID_CLI="${MERMAID_CLI}"
@@ -665,11 +732,13 @@ target_include_directories(Lore PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/external/lunasvg/include
         ${CMAKE_CURRENT_SOURCE_DIR}/external/lunasvg/plutovg/include
         ${CMAKE_CURRENT_SOURCE_DIR}/external/tinygltf
+        ${CMAKE_CURRENT_SOURCE_DIR}/external/faiss
 
         ${EPISTEME_EXTERNAL_PREFIX}/include
         ${EPISTEME_EXTERNAL_PREFIX}/include/tree_sitter
         ${EPISTEME_EXTERNAL_PREFIX}/include/lunasvg
         ${EPISTEME_EXTERNAL_PREFIX}/include/plutovg
+        ${QUAZIP_INCLUDE_DIRS}
 )
 
 set_target_properties(Lore PROPERTIES
@@ -700,10 +769,20 @@ target_link_libraries(Lore PRIVATE
         tree-sitter-mermaid
         ep_lunasvg
         ep_plutovg
-        QuaZip::QuaZip
-        faiss
+        ep_quazip
+        Qt6::Core5Compat
+        ZLIB::ZLIB
+        BZip2::BZip2
         OpenMP::OpenMP_CXX
+        BLAS::BLAS
+        LAPACK::LAPACK
 )
+
+if (WIN32)
+    target_link_libraries(Lore PRIVATE faiss)
+else ()
+    target_link_libraries(Lore PRIVATE ep_faiss)
+endif ()
 
 if (LORE_WITH_AVATAR)
     target_link_libraries(Lore PRIVATE

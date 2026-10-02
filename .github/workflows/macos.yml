@@ -32,7 +32,8 @@ jobs:
       - name: Install Homebrew Dependencies
         run: |
           brew update
-          brew install ninja cmake quazip faiss graphviz node libomp tree-sitter-cli
+          brew install ninja cmake graphviz node libomp tree-sitter-cli \
+                       openblas sentencepiece
 
       - name: Install mermaid-cli
         run: npm install -g @mermaid-js/mermaid-cli
@@ -41,7 +42,7 @@ jobs:
         run: >
           cmake -S . -B build -G "Ninja"
           -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }}
-          -DCMAKE_PREFIX_PATH="${{ env.QT_ROOT_DIR }};$(brew --prefix);$(brew --prefix quazip);$(brew --prefix faiss)"
+          -DCMAKE_PREFIX_PATH="${{ env.QT_ROOT_DIR }};$(brew --prefix);$(brew --prefix openblas)"
           -DCMAKE_PROGRAM_PATH="${{ env.QT_ROOT_DIR }}/bin:$(brew --prefix)/bin"
           -DEPISTEME_NODE_BIN="$(brew --prefix)/bin"
           -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0
@@ -72,6 +73,7 @@ jobs:
           cp "$(brew --prefix)/bin/mmdc" "$RESOURCES_DIR/usr/bin/mmdc"
           cp "$(brew --prefix)/bin/dot"  "$RESOURCES_DIR/usr/bin/dot"
 
+          # dylibs from ExternalProjects go into Contents/Frameworks
           if [ -d "cmake-build-libs/install/lib" ]; then
             find cmake-build-libs/install/lib -name '*.dylib' -exec \
               cp {} "$FRAMEWORKS_DIR/" \;

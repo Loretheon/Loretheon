@@ -67,3 +67,24 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# CMake/CLion build trees
+cmake-build-*/
+cmake-build-libs/
+cmake-build-debug/
+cmake-build-release/
+
+# Node (HeadTTS install, mermaid-cli)
+node_modules/
+package.json
+package-lock.json
+.npm/
+
+# OS noise
+.DS_Store
+Thumbs.db

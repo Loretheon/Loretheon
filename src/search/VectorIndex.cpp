@@ -15,15 +15,15 @@ namespace {
 class IdSetSelector : public faiss::IDSelector {
 public:
   explicit IdSetSelector(
-      const std::unordered_set<faiss::Index::idx_t> &ids)
+      const std::unordered_set<faiss::idx_t> &ids)
       : m_ids(ids) {}
 
-  bool is_member(faiss::Index::idx_t id) const override {
+  bool is_member(faiss::idx_t id) const override {
     return m_ids.count(id) > 0;
   }
 
 private:
-  const std::unordered_set<faiss::Index::idx_t> &m_ids;
+  const std::unordered_set<faiss::idx_t> &m_ids;
 };
 
 } // namespace
@@ -83,11 +83,11 @@ int VectorIndex::removeIds(const QVector<int64_t> &ids) {
     return 0;
   }
 
-  std::unordered_set<faiss::Index::idx_t> set;
+  std::unordered_set<faiss::idx_t> set;
   set.reserve(static_cast<size_t>(ids.size()));
 
   for (int64_t id : ids) {
-    set.insert(static_cast<faiss::Index::idx_t>(id));
+    set.insert(static_cast<faiss::idx_t>(id));
   }
 
   IdSetSelector selector(set);
@@ -115,7 +115,7 @@ QVector<VectorIndex::Hit> VectorIndex::search(
     return result;
   }
 
-  std::vector<faiss::Index::idx_t> ids(count);
+  std::vector<faiss::idx_t> ids(count);
   std::vector<float> distances(count);
 
   m_index->search(1, query.data(), count, distances.data(), ids.data());

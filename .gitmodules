@@ -6,16 +6,19 @@
 [submodule "external/edlib"]
 	path = external/edlib
 	url = https://github.com/Martinsos/edlib
+	ignore = dirty
 [submodule "external/tree-sitter"]
 	path = external/tree-sitter
 	url = https://github.com/tree-sitter/tree-sitter.git
+	ignore = dirty
 [submodule "external/tree-sitter-markdown"]
 	path = external/tree-sitter-markdown
 	url = https://github.com/tree-sitter-grammars/tree-sitter-markdown.git
+	ignore = dirty
 [submodule "external/lunasvg"]
 	path = external/lunasvg
 	url = https://github.com/sammycage/lunasvg.git
-	dirty = true
+	ignore = dirty
 [submodule "external/tree-sitter-dot"]
 	path = external/tree-sitter-dot
 	url = https://github.com/rydesun/tree-sitter-dot.git
@@ -36,3 +39,9 @@
 	path = external/tinygltf
 	url = https://github.com/syoyo/tinygltf.git
 	ignore = dirty
+[submodule "external/faiss"]
+	path = external/faiss
+	url = https://github.com/facebookresearch/faiss.git
+[submodule "external/quazip"]
+	path = external/quazip
+	url = https://github.com/stachenov/quazip.git
