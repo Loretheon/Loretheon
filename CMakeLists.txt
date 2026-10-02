@@ -75,6 +75,11 @@ set(EPISTEME_EXT_CMAKE_ARGS
         -DCMAKE_PROGRAM_PATH=${EPISTEME_NODE_BIN_RESOLVED}
         -DCMAKE_POSITION_INDEPENDENT_CODE=ON
         -DQt6_DIR=${Qt6_DIR}
+        -DOpenMP_C_FLAGS=${OpenMP_C_FLAGS}
+        -DOpenMP_CXX_FLAGS=${OpenMP_CXX_FLAGS}
+        -DOpenMP_C_LIB_NAMES=${OpenMP_C_LIB_NAMES}
+        -DOpenMP_CXX_LIB_NAMES=${OpenMP_CXX_LIB_NAMES}
+        -DOpenMP_omp_LIBRARY=${OpenMP_omp_LIBRARY}
 )
 
 function(lore_external name dir)
