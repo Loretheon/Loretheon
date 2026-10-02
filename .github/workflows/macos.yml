@@ -27,7 +27,7 @@ jobs:
           host: 'mac'
           arch: 'clang_64'
           cache: true
-          modules: 'qt5compat qtmultimedia qtpdf'
+          modules: 'qt5compat qtmultimedia qtpdf qtwebsockets qtwebchannel qttexttospeech'
 
       - name: Install Homebrew Dependencies
         run: |
@@ -43,6 +43,7 @@ jobs:
           -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }}
           -DCMAKE_PREFIX_PATH="${{ env.QT_ROOT_DIR }};$(brew --prefix);$(brew --prefix quazip);$(brew --prefix faiss)"
           -DCMAKE_PROGRAM_PATH="${{ env.QT_ROOT_DIR }}/bin:$(brew --prefix)/bin"
+          -DEPISTEME_NODE_BIN="$(brew --prefix)/bin"
           -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0
           -DOpenMP_C_FLAGS="-Xpreprocessor -fopenmp -I$(brew --prefix libomp)/include"
           -DOpenMP_CXX_FLAGS="-Xpreprocessor -fopenmp -I$(brew --prefix libomp)/include"
@@ -61,13 +62,20 @@ jobs:
         run: |
           APP_BUNDLE="build/bin/${{ env.APP_NAME }}.app"
           RESOURCES_DIR="$APP_BUNDLE/Contents/Resources"
+          FRAMEWORKS_DIR="$APP_BUNDLE/Contents/Frameworks"
 
           mkdir -p "$RESOURCES_DIR/usr/bin"
           mkdir -p "$RESOURCES_DIR/usr/share/Lore"
+          mkdir -p "$FRAMEWORKS_DIR"
 
-          cp "$(which node)" "$RESOURCES_DIR/usr/bin/node"
-          cp "$(which mmdc)" "$RESOURCES_DIR/usr/bin/mmdc"
-          cp "$(which dot)"  "$RESOURCES_DIR/usr/bin/dot"
+          cp "$(brew --prefix)/bin/node" "$RESOURCES_DIR/usr/bin/node"
+          cp "$(brew --prefix)/bin/mmdc" "$RESOURCES_DIR/usr/bin/mmdc"
+          cp "$(brew --prefix)/bin/dot"  "$RESOURCES_DIR/usr/bin/dot"
+
+          if [ -d "cmake-build-libs/install/lib" ]; then
+            find cmake-build-libs/install/lib -name '*.dylib' -exec \
+              cp {} "$FRAMEWORKS_DIR/" \;
+          fi
 
           if [ -d "models" ]; then
             cp -r models "$RESOURCES_DIR/usr/share/Lore/"

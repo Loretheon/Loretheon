@@ -27,7 +27,7 @@ jobs:
           host: 'windows'
           arch: 'win64_msvc2019_64'
           cache: true
-          modules: 'qt5compat qtmultimedia qtpdf'
+          modules: 'qt5compat qtmultimedia qtpdf qtwebsockets qtwebchannel qttexttospeech'
 
       - name: Set up MSVC
         uses: ilammy/msvc-dev-cmd@v1
@@ -47,13 +47,20 @@ jobs:
           choco install nodejs-lts -y
           npm install -g @mermaid-js/mermaid-cli tree-sitter-cli
 
+      - name: Set Node.js environment
+        shell: pwsh
+        run: |
+          $npm_bin = npm config get prefix
+          echo "NPM_BIN=$npm_bin" >> $env:GITHUB_ENV
+
       - name: Configure CMake
         shell: pwsh
         run: |
           cmake -S . -B build -G "Ninja" `
             -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} `
             -DCMAKE_PREFIX_PATH="${{ env.QT_ROOT_DIR }};$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows" `
-            -DCMAKE_PROGRAM_PATH="${{ env.QT_ROOT_DIR }}/bin;$env:APPDATA/npm"
+            -DCMAKE_PROGRAM_PATH="${{ env.QT_ROOT_DIR }}/bin;$env:NPM_BIN" `
+            -DEPISTEME_NODE_BIN="$env:NPM_BIN"
 
       - name: Build
         run: cmake --build build --config ${{ env.BUILD_TYPE }} --parallel
@@ -69,10 +76,20 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path deploy/usr/bin | Out-Null
           New-Item -ItemType Directory -Force -Path deploy/usr/share/Lore | Out-Null
+          New-Item -ItemType Directory -Force -Path deploy/lib | Out-Null
 
-          Copy-Item (Get-Command node).Source deploy/usr/bin/node.exe
-          Copy-Item (Get-Command mmdc).Source deploy/usr/bin/mmdc.cmd
-          Copy-Item (Get-Command dot).Source  deploy/usr/bin/dot.exe
+          Copy-Item "$env:NPM_BIN\node.exe" deploy/usr/bin/
+          Copy-Item "$env:NPM_BIN\mmdc.cmd" deploy/usr/bin/
+          Copy-Item (Get-Command dot).Source deploy/usr/bin/dot.exe
+
+          if (Test-Path "cmake-build-libs/install/lib") {
+            Copy-Item -Recurse "cmake-build-libs/install/lib/*" deploy/lib/
+          }
+          # DLLs must live next to Lore.exe or on PATH. Copy any .dll
+          # from the external install tree into deploy/ as well.
+          if (Test-Path "cmake-build-libs/install/bin") {
+            Copy-Item "cmake-build-libs/install/bin/*.dll" deploy/ -ErrorAction SilentlyContinue
+          }
 
           if (Test-Path "models") {
             Copy-Item -Recurse models deploy/usr/share/Lore/
