@@ -1,8 +1,8 @@
 [submodule "external/QF-ML"]
 	path = external/QF-ML
-	url = git@github.com:Sujan-Naik/QF-ML.git
-    ignore = dirty
-	branch = remote-api
+	url = https://github.com/Sujan-Naik/QF-ML.git
+	ignore = dirty
+	branch = alpha
 [submodule "external/edlib"]
 	path = external/edlib
 	url = https://github.com/Martinsos/edlib
@@ -35,4 +35,4 @@
 [submodule "external/tinygltf"]
 	path = external/tinygltf
 	url = https://github.com/syoyo/tinygltf.git
-    ignore = dirty
+	ignore = dirty
