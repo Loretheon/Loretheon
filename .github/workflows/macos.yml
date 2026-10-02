@@ -29,6 +29,21 @@ jobs:
           cache: true
           modules: 'qt5compat qtmultimedia qtpdf qtwebsockets qtwebchannel qtspeech'
 
+      - name: Patch Qt FindWrapOpenGL (remove AGL for Xcode 26)
+        run: |
+          WRAP_OPENGL="${{ env.QT_ROOT_DIR }}/lib/cmake/Qt6/FindWrapOpenGL.cmake"
+          if [ ! -f "$WRAP_OPENGL" ]; then
+            echo "error: $WRAP_OPENGL not found" >&2
+            exit 1
+          fi
+          echo "Patching: $WRAP_OPENGL"
+          sed -i '' 's/^\(.*find_library(WrapOpenGL_AGL NAMES AGL).*\)/# \1/' "$WRAP_OPENGL"
+          sed -i '' 's/^\(.*set(__opengl_agl_fw_path.*\)/# \1/' "$WRAP_OPENGL"
+          sed -i '' 's/^\(.*framework AGL.*\)/# \1/' "$WRAP_OPENGL"
+          sed -i '' 's/ \${__opengl_agl_fw_path}//g' "$WRAP_OPENGL"
+          echo "Patch applied. Verifying:"
+          grep -n 'AGL' "$WRAP_OPENGL" || echo "(no AGL references remain)"
+
       - name: Install Homebrew Dependencies
         run: |
           brew update
@@ -73,13 +88,11 @@ jobs:
           cp "$(brew --prefix)/bin/mmdc" "$RESOURCES_DIR/usr/bin/mmdc"
           cp "$(brew --prefix)/bin/dot"  "$RESOURCES_DIR/usr/bin/dot"
 
-          # dylibs from ExternalProjects install tree
           if [ -d "cmake-build-libs/install/lib" ]; then
             find cmake-build-libs/install/lib -name '*.dylib' -exec \
               cp {} "$FRAMEWORKS_DIR/" \;
           fi
 
-          # NeMo-Speech.cpp shared libraries (built in-tree, not installed)
           if [ -d "cmake-build-libs/QF-ML/nemo-speech/bin" ]; then
             find cmake-build-libs/QF-ML/nemo-speech/bin -maxdepth 1 \
               -name 'lib*.dylib' -exec cp {} "$FRAMEWORKS_DIR/" \;
