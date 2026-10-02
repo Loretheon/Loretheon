@@ -5,6 +5,33 @@
 #include <QProcess>
 #include <QStringList>
 
+#ifndef EPISTEME_GRAPHVIZ_DOT
+#define EPISTEME_GRAPHVIZ_DOT "dot"
+#endif
+
+namespace {
+
+QString graphvizExecutable() {
+  const QByteArray env = qgetenv("QF_GRAPHVIZ_DOT");
+
+  if (!env.isEmpty()) {
+    return QString::fromLocal8Bit(env);
+  }
+
+  return QStringLiteral(EPISTEME_GRAPHVIZ_DOT);
+}
+
+QString fmtName(GraphvizRenderer::OutputFormat f) {
+  return f == GraphvizRenderer::OutputFormat::PNG ? "png" : "pdf";
+}
+
+QString trimErr(const QByteArray &err, int code) {
+  const QString s = QString::fromUtf8(err).trimmed();
+  return s.isEmpty() ? QString("Graphviz exited with code %1").arg(code) : s;
+}
+
+} // namespace
+
 GraphvizRenderer::GraphvizRenderer(QObject *parent) : QObject(parent) {}
 
 GraphvizRenderer::~GraphvizRenderer() = default;
@@ -29,7 +56,7 @@ QByteArray GraphvizRenderer::renderToImage(const QString &dotSource,
 
 bool GraphvizRenderer::isGraphvizAvailable() {
   QProcess p;
-  p.start("dot", {"-V"});
+  p.start(graphvizExecutable(), {"-V"});
   return p.waitForFinished(2000) && p.exitCode() == 0;
 }
 
@@ -39,7 +66,7 @@ QByteArray GraphvizRenderer::runDot(const QByteArray &input,
   errorMessage.clear();
 
   QProcess p;
-  p.start("dot", {"-T" + format});
+  p.start(graphvizExecutable(), {"-T" + format});
   if (!p.waitForStarted(3000)) {
     errorMessage = "Failed to start Graphviz. Is 'dot' on PATH?";
     return {};
@@ -65,19 +92,9 @@ QByteArray GraphvizRenderer::runDot(const QByteArray &input,
   return p.readAllStandardOutput();
 }
 
-namespace {
-QString fmtName(GraphvizRenderer::OutputFormat f) {
-  return f == GraphvizRenderer::OutputFormat::PNG ? "png" : "pdf";
-}
-QString trimErr(const QByteArray &err, int code) {
-  const QString s = QString::fromUtf8(err).trimmed();
-  return s.isEmpty() ? QString("Graphviz exited with code %1").arg(code) : s;
-}
-} // namespace
-
 void GraphvizRenderer::renderToSvgAsync(const QString &dotSource) {
   auto *p = new QProcess(this);
-  p->setProgram("dot");
+  p->setProgram(graphvizExecutable());
   p->setArguments({"-Tsvg"});
 
   connect(p, &QProcess::errorOccurred, this,
@@ -113,7 +130,7 @@ void GraphvizRenderer::renderToSvgAsync(const QString &dotSource) {
 void GraphvizRenderer::renderToImageAsync(const QString &dotSource,
                                           OutputFormat format) {
   auto *p = new QProcess(this);
-  p->setProgram("dot");
+  p->setProgram(graphvizExecutable());
   p->setArguments({"-T" + fmtName(format)});
 
   connect(p, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),

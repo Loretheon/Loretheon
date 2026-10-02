@@ -8,6 +8,7 @@
 #include "../../include/assistant/AssistantToolRegistry.h"
 #include "../../include/assistant/ChatTree.h"
 #include "../../include/assistant/ChatTreeStore.h"
+#include "../../include/assistant/ConversationMode.h"
 #include "../../include/assistant/MemoryIndex.h"
 #include "../../include/assistant/NoteEditJob.h"
 #include "../../include/assistant/ProfileEditJob.h"
@@ -25,6 +26,7 @@
 #include "../../include/search/ScopeIndex.h"
 #include "../../include/search/SearchService.h"
 #include "../../include/text/DocumentArea.h"
+#include "../../include/voice/SpeechController.h"
 #include "inference/InferenceService.h"
 
 #include <QDebug>
@@ -45,10 +47,7 @@ constexpr double kTurnTemperature = 0.6;
 constexpr int kTurnTimeoutMs = 120000;
 constexpr int kMemoryRecallLimit = 4;
 constexpr int kJobWaitTimeoutMs = 180000;
-constexpr int kTurnWatchdogMs = 180000;
-
 constexpr int kPasteThresholdChars = 2000;
-
 constexpr int kRecentTailTokenBudget = 4000;
 
 int estimateTokens(const QString &text) {
@@ -117,6 +116,10 @@ LoreAssistant::LoreAssistant(const Config &config, QObject *parent)
   m_chatStore = new ChatTreeStore(this);
 
   m_animator = new SpeechAnimator(m_config.inference, m_config.avatar, this);
+
+  if (m_config.speech) {
+    m_conversation = new ConversationMode(this, m_config.speech, this);
+  }
 
   m_watchdog = new QTimer(this);
   m_watchdog->setSingleShot(false);
@@ -224,6 +227,10 @@ void LoreAssistant::stop() {
     return;
   }
 
+  if (m_conversation) {
+    m_conversation->stop();
+  }
+
   abortAll();
 
   m_activity->stopBatchTimer();
@@ -240,11 +247,15 @@ void LoreAssistant::stop() {
 }
 
 void LoreAssistant::say(const QString &text) {
-  if (text.isEmpty() || !m_config.inference) {
+  if (text.isEmpty()) {
     return;
   }
 
-  m_config.inference->speak(text);
+  if (m_config.speech) {
+    m_config.speech->speakText(text);
+  } else if (m_config.inference) {
+    m_config.inference->speak(text);
+  }
 
   emit assistantSaid(text);
 }
@@ -346,15 +357,13 @@ bool LoreAssistant::importToMemory(const QString &sourcePath,
 
   m_config.ingest->import(
       sourcePath, options,
-      [this, fileName, destination](IngestService::Outcome outcome) {
+      [this, fileName](IngestService::Outcome outcome) {
         if (!outcome.ok()) {
           emit statusMessage(
               tr("Import failed: %1").arg(outcome.error));
           return;
         }
 
-        // The ingest service may have uniquified the file name. Refresh
-        // the index for the exact path it wrote.
         if (m_memoryIndex) {
           m_memoryIndex->refreshFile(outcome.notePath);
         }
@@ -1123,8 +1132,6 @@ QString LoreAssistant::startProfileEditJob(const QString &path,
               m_profile->reload();
             }
 
-            // A topic edit under memories/ needs its index refreshed.
-            // A profile edit does not touch the index.
             if (path.contains(QStringLiteral("/memories/")) &&
                 m_memoryIndex) {
               m_memoryIndex->refreshFile(path);
@@ -1281,53 +1288,34 @@ bool LoreAssistant::waitForJob(const QString &jobId, QString *resultOut,
 }
 
 void LoreAssistant::abortJob(const QString &jobId) {
-  if (!m_jobs.contains(jobId)) {
+  auto it = m_jobs.find(jobId);
+
+  if (it == m_jobs.end() || it->isTerminal()) {
     return;
   }
 
-  const Job snapshot = m_jobs.value(jobId);
-
-  if (snapshot.isTerminal()) {
-    return;
-  }
-
-  // Take the child job objects out of their caches first. Both abort
-  // paths emit failed() synchronously, and the connected lambdas
-  // mutate m_jobs. Holding an iterator into m_jobs across those calls
-  // would invalidate it.
-  NoteEditJob *editJob = m_noteEditJobs.take(jobId);
-  ProfileEditJob *profileJob = m_profileEditJobs.take(jobId);
-  RetrievalLoop *loop = m_searchLoops.take(jobId);
-
-  m_searchBuffers.remove(jobId);
-
-  // Mark the job cancelled before the abort signals fire, so the
-  // connected lambdas see it as terminal and do not overwrite the
-  // state with Failed.
-  {
-    auto it = m_jobs.find(jobId);
-
-    if (it != m_jobs.end()) {
-      it->state = ChatNode::State::Cancelled;
-      it->error = tr("Cancelled.");
-      it->updatedAt = QDateTime::currentDateTime();
-    }
-  }
-
-  if (editJob) {
+  if (NoteEditJob *editJob = m_noteEditJobs.take(jobId)) {
     editJob->abort();
   }
 
-  if (profileJob) {
+  if (ProfileEditJob *profileJob = m_profileEditJobs.take(jobId)) {
     profileJob->abort();
   }
+
+  RetrievalLoop *loop = m_searchLoops.take(jobId);
 
   if (loop) {
     loop->cancel();
     loop->deleteLater();
   }
 
-  emit jobFailed(jobId, tr("Cancelled."));
+  m_searchBuffers.remove(jobId);
+
+  it->state = ChatNode::State::Cancelled;
+  it->error = tr("Cancelled.");
+  it->updatedAt = QDateTime::currentDateTime();
+
+  emit jobFailed(jobId, it->error);
 }
 
 void LoreAssistant::abortTurn(const QString &replyNodeId) {
@@ -1432,12 +1420,16 @@ void LoreAssistant::finishTurn(const QUuid &turnToken) {
     recordRecentTurn(userText, replyText);
   }
 
+  const bool conversationActive =
+      m_conversation && m_conversation->isActive();
+
   const Settings::AssistantSettings settings =
       Settings::getAssistantSettings();
 
-  if (settings.speakResponses && !m_lastReply.isEmpty()) {
+  if (!conversationActive && settings.speakResponses &&
+      !m_lastReply.isEmpty()) {
     say(m_lastReply);
-  }
+      }
 
   m_nodeToTurn.remove(replyNode);
   m_turns.erase(it);

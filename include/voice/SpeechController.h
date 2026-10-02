@@ -10,18 +10,16 @@
 
 class AudioRecorder;
 class InferenceService;
+class QTimer;
 
 class SpeechController : public QObject {
   Q_OBJECT
 
 public:
-  // Where a capture was requested from. The composer in the assistant
-  // shell and the editor in Normal mode are the only two destinations.
-  // A capture is tagged when it begins and the tag travels with the
-  // transcribed text so that only the originator acts on it.
   enum class Origin {
     Composer,
     Editor,
+    Conversation,
   };
   Q_ENUM(Origin)
 
@@ -48,13 +46,13 @@ signals:
   void transcribed(const QString &text, SpeechController::Origin origin);
   void transcriptionFailed(const QString &error);
 
-  // isFinal is true when the utterance is complete and the text will
-  // not change again. false while the runtime may still refine it.
   void liveTranscribed(const QString &text, bool isFinal,
                        SpeechController::Origin origin);
 
   void speakingStarted();
   void speakingFinished();
+
+  void sttStreamClosed();
 
   void stateChanged();
 
@@ -65,6 +63,7 @@ private slots:
   void onStreamOpened();
   void onStreamClosed();
   void speakNextSentence();
+  void onSpeechWatchdog();
 
 private:
   InferenceService *m_inference = nullptr;
@@ -80,6 +79,9 @@ private:
   QStringList m_sentenceQueue;
   QString m_currentSentence;
   bool m_speaking = false;
+
+  QTimer *m_watchdog = nullptr;
+  qint64 m_speakingDeadlineMs = 0;
 
   quint64 m_captureToken = 0;
 };

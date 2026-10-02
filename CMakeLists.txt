@@ -584,6 +584,8 @@ add_executable(Lore
         src/assistant/ProfileEditJob.cpp
         include/assistant/ChatTreeStore.h
         src/assistant/ChatTreeStore.cpp
+        include/assistant/ConversationMode.h
+        src/assistant/ConversationMode.cpp
 )
 
 if (LORE_WITH_AVATAR)

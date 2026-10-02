@@ -18,6 +18,16 @@
 
 namespace {
 
+QString mermaidExecutable() {
+  const QByteArray env = qgetenv("QF_MERMAID_CLI");
+
+  if (!env.isEmpty()) {
+    return QString::fromLocal8Bit(env);
+  }
+
+  return QStringLiteral(EPISTEME_MERMAID_CLI);
+}
+
 QString mermaidErrorMessage(QProcess *process) {
   const QString stderrText =
       QString::fromUtf8(process->readAllStandardError()).trimmed();
@@ -35,7 +45,7 @@ QString mermaidErrorMessage(QProcess *process) {
 void configureMermaidEnvironment(QProcess &process) {
   QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
 
-  const QFileInfo mmdcInfo(QStringLiteral(EPISTEME_MERMAID_CLI));
+  const QFileInfo mmdcInfo(mermaidExecutable());
   const QString mmdcDirectory = mmdcInfo.absolutePath();
 
   QString path = environment.value(QStringLiteral("PATH"));
@@ -58,7 +68,7 @@ void configureMermaidEnvironment(QProcess &process) {
 
 bool startMermaid(QProcess &process, const QStringList &arguments,
                   int timeout) {
-  process.setProgram(QStringLiteral(EPISTEME_MERMAID_CLI));
+  process.setProgram(mermaidExecutable());
   process.setArguments(arguments);
   configureMermaidEnvironment(process);
   process.start();
@@ -178,7 +188,7 @@ QString MermaidRenderer::runMermaid(const QString &source,
 
   if (!startMermaid(process, arguments, 5000)) {
     errorMessage = QStringLiteral("Failed to start Mermaid CLI: %1")
-                       .arg(QStringLiteral(EPISTEME_MERMAID_CLI));
+                       .arg(mermaidExecutable());
     return {};
   }
 

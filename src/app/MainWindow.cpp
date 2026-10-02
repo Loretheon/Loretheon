@@ -232,6 +232,7 @@ MainWindow::MainWindow() {
     config.promoter = m_notePromoter;
     config.scopeIndex = m_scopeIndex.get();
     config.notesRoot = notesRootPath();
+    config.speech = m_speechController;
     config.ingest = m_ingestService;
     config.root = QStandardPaths::writableLocation(
                       QStandardPaths::AppDataLocation) +

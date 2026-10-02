@@ -24,6 +24,7 @@ class AssistantProfile;
 class AssistantToolRegistry;
 class AvatarWidget;
 class ChatTree;
+class ConversationMode;
 class DocumentArea;
 class DocumentManager;
 class InferenceService;
@@ -37,6 +38,7 @@ class RetrievalLoop;
 class ScopeIndex;
 class SearchService;
 class SpeechAnimator;
+class SpeechController;
 
 class LoreAssistant : public QObject {
   Q_OBJECT
@@ -70,6 +72,7 @@ public:
     NotePromoter *promoter = nullptr;
     ScopeIndex *scopeIndex = nullptr;
     IngestService *ingest = nullptr;
+    SpeechController *speech = nullptr;
 
     QString notesRoot;
     QString root;
@@ -96,23 +99,15 @@ public:
   // segment switch. Passing nullptr clears the tail.
   void setCurrentChat(const ChatTree *tree);
 
-  // Import a file into the assistant's memory tree. The file is run
-  // through IngestService, which converts it to markdown, and the
-  // result is written under <root>/memories/topics/. On success, the
-  // memory index is refreshed for the new file and a status message is
-  // emitted with the file's name.
-  //
-  // Returns false and emits statusMessage if the ingest service is
-  // not available or the path cannot be handled by any extractor.
   bool importToMemory(const QString &sourcePath, const QString &topicName);
-
-
-  // True if the ingest service is available and has an extractor
-  // registered for the given path. Used by the mind map drop handler
-  // to decide whether a dropped file is acceptable.
   bool canImport(const QString &sourcePath) const;
 
-  
+  // Turn-based spoken conversation. While active, the assistant
+  // listens continuously, commits a turn when the user has been silent
+  // for the configured threshold, replies, speaks the reply, and
+  // returns to listening.
+  ConversationMode *conversation() const { return m_conversation; }
+
   bool isTurnActive() const { return !m_turns.isEmpty(); }
   int activeTurnCount() const { return m_turns.size(); }
 
@@ -124,11 +119,8 @@ public:
 
   void abortJob(const QString &jobId);
 
-  // Abort every active turn and every job. Stops all in-flight work.
   void abortAll();
 
-  // Abort one turn by the id of its reply node. The turn's background
-  // jobs are left running; only the model request is cancelled.
   void abortTurn(const QString &replyNodeId);
 
   bool waitForJob(const QString &jobId, QString *resultOut,
@@ -225,6 +217,7 @@ private:
   assistant::AssistantToolRegistry *m_tools = nullptr;
   SpeechAnimator *m_animator = nullptr;
   ChatTreeStore *m_chatStore = nullptr;
+  ConversationMode *m_conversation = nullptr;
 
   bool m_started = false;
 

@@ -3,15 +3,17 @@
 #include "../../include/app/theme/ThemeRegistry.h"
 #include "../../include/assistant/ChatNodeWidget.h"
 #include "../../include/assistant/ChatTreeStore.h"
+#include "../../include/assistant/ConversationMode.h"
 #include "../../include/assistant/MindMapScene.h"
 #include "../../include/assistant/MindMapView.h"
-#ifdef LORE_WITH_AVATAR
-#include "../../include/avatar/AvatarWidget.h"
-#endif
 #include "../../include/overseer/OverseerSessionManager.h"
 #include "../../include/ui/AutoHideDock.h"
 #include "../../include/ui/DockReservation.h"
 #include "../../include/voice/SpeechController.h"
+
+#ifdef LORE_WITH_AVATAR
+#include "../../include/avatar/AvatarWidget.h"
+#endif
 
 #include <QComboBox>
 #include <QFileDialog>
@@ -33,6 +35,7 @@
 #include <QScrollBar>
 #include <QSettings>
 #include <QShowEvent>
+#include <QSpinBox>
 #include <QStyle>
 #include <QTabWidget>
 #include <QTimer>
@@ -42,6 +45,7 @@
 namespace {
 
 constexpr auto kLastChatKey = "assistant/lastChatPath";
+constexpr auto kSilenceKey = "assistant/conversationSilenceMs";
 
 constexpr int kShellMargin = 32;
 constexpr int kHeaderSpacing = 16;
@@ -128,6 +132,19 @@ void AssistantShell::setAssistant(LoreAssistant *assistant) {
 
   if (m_mindView) {
     m_mindView->setAssistant(m_assistant);
+  }
+
+  if (ConversationMode *mode = m_assistant->conversation()) {
+    connect(mode, &ConversationMode::stateChanged, this,
+            &AssistantShell::onConversationStateChanged);
+    connect(mode, &ConversationMode::transcriptChanged, this,
+            &AssistantShell::onConversationTranscriptChanged);
+    connect(mode, &ConversationMode::messageCommitted, this,
+            [this](const QString &text) {
+              if (m_tree) {
+                m_tree->appendText(ChatNode::Kind::UserText, text, QString());
+              }
+            });
   }
 
   if (m_store) {
@@ -549,6 +566,28 @@ QWidget *AssistantShell::buildControls() {
       QStringLiteral("assistantShellReadAloud"), QStringLiteral("▶"),
       tr("Read the last reply aloud."));
 
+  m_conversation = makeSpeechButton(
+      QStringLiteral("assistantShellConversation"),
+      QStringLiteral("☰"),
+      tr("Turn-based spoken conversation."));
+  m_conversation->setCheckable(true);
+  m_conversation->setFixedSize(38, 38);
+
+  m_silenceSpin = new QSpinBox(m_controls);
+  m_silenceSpin->setObjectName(QStringLiteral("assistantShellSilence"));
+  m_silenceSpin->setRange(500, 5000);
+  m_silenceSpin->setSingleStep(100);
+  m_silenceSpin->setSuffix(tr(" ms"));
+  m_silenceSpin->setToolTip(tr("Silence before your turn is committed."));
+  m_silenceSpin->setFixedWidth(90);
+  m_silenceSpin->setFocusPolicy(Qt::NoFocus);
+
+  {
+    QSettings settings;
+    const int stored = settings.value(kSilenceKey, 1500).toInt();
+    m_silenceSpin->setValue(qBound(500, stored, 5000));
+  }
+
   m_input = new QLineEdit(m_controls);
   m_input->setObjectName(QStringLiteral("assistantShellInput"));
   m_input->setPlaceholderText(tr("Message Lore"));
@@ -578,6 +617,8 @@ QWidget *AssistantShell::buildControls() {
   layout->addWidget(m_dictate);
   layout->addWidget(m_live);
   layout->addWidget(m_readAloud);
+  layout->addWidget(m_conversation);
+  layout->addWidget(m_silenceSpin);
   layout->addSpacing(4);
   layout->addWidget(m_input, 1);
   layout->addWidget(m_abort);
@@ -596,12 +637,25 @@ QWidget *AssistantShell::buildControls() {
           &AssistantShell::onLiveDictateClicked);
   connect(m_readAloud, &QToolButton::clicked, this,
           &AssistantShell::onReadAloudClicked);
+  connect(m_conversation, &QToolButton::toggled, this,
+          &AssistantShell::onConversationToggled);
+  connect(m_silenceSpin, QOverload<int>::of(&QSpinBox::valueChanged), this,
+          [this](int value) {
+            QSettings settings;
+            settings.setValue(kSilenceKey, value);
+
+            if (m_assistant) {
+              if (ConversationMode *mode = m_assistant->conversation()) {
+                mode->setSilenceMs(value);
+              }
+            }
+          });
 
   return m_controls;
 }
 
 void AssistantShell::focusPrompt() {
-  if (m_input) {
+  if (m_input && !m_input->isReadOnly()) {
     m_input->setFocus(Qt::OtherFocusReason);
   }
 }
@@ -741,6 +795,112 @@ void AssistantShell::onAttachClicked() {
   m_assistant->importToMemory(path, topic);
 }
 
+void AssistantShell::onConversationToggled(bool on) {
+  if (!m_assistant) {
+    return;
+  }
+
+  ConversationMode *mode = m_assistant->conversation();
+
+  if (!mode) {
+    m_conversation->setChecked(false);
+    return;
+  }
+
+  applyConversationEnabled(on);
+
+  if (on) {
+    mode->setSilenceMs(m_silenceSpin->value());
+    mode->start();
+  } else {
+    mode->stop();
+  }
+}
+
+void AssistantShell::applyConversationEnabled(bool on) {
+  if (m_input) {
+    m_input->setReadOnly(on);
+    m_input->setPlaceholderText(
+        on ? tr("Listening…") : tr("Message Lore"));
+    m_input->setClearButtonEnabled(!on);
+  }
+
+  if (m_send) {
+    m_send->setEnabled(!on);
+  }
+
+  if (m_abort) {
+    m_abort->setEnabled(!on);
+  }
+
+  if (m_dictate) {
+    m_dictate->setEnabled(!on);
+  }
+
+  if (m_live) {
+    m_live->setEnabled(!on);
+  }
+
+  if (m_readAloud) {
+    m_readAloud->setEnabled(!on);
+  }
+
+  if (m_attach) {
+    m_attach->setEnabled(!on);
+  }
+
+  if (m_silenceSpin) {
+    m_silenceSpin->setEnabled(on);
+  }
+}
+
+void AssistantShell::onConversationStateChanged(
+    ConversationMode::State state) {
+  if (!m_conversation) {
+    return;
+  }
+
+  const bool active = state != ConversationMode::State::Off;
+
+  m_conversation->blockSignals(true);
+  m_conversation->setChecked(active);
+  m_conversation->blockSignals(false);
+
+  switch (state) {
+  case ConversationMode::State::Off:
+    if (m_input) {
+      m_input->clear();
+      m_input->setPlaceholderText(tr("Message Lore"));
+    }
+    applyConversationEnabled(false);
+    break;
+  case ConversationMode::State::Listening:
+    if (m_input) {
+      m_input->setPlaceholderText(tr("Listening…"));
+    }
+    break;
+  case ConversationMode::State::Thinking:
+    if (m_input) {
+      m_input->setPlaceholderText(tr("Thinking…"));
+    }
+    break;
+  case ConversationMode::State::Speaking:
+    if (m_input) {
+      m_input->setPlaceholderText(tr("Speaking…"));
+    }
+    break;
+  }
+}
+
+void AssistantShell::onConversationTranscriptChanged(const QString &text) {
+  if (!m_input) {
+    return;
+  }
+
+  m_input->setText(text);
+  m_input->setCursorPosition(text.length());
+}
+
 void AssistantShell::onDictateClicked() {
   if (!m_speech) {
     return;
@@ -808,30 +968,24 @@ void AssistantShell::onTranscribed(const QString &text) {
     return;
   }
 
-  // One-shot dictation fills the composer and stops. The user reviews
-  // the text, edits it if they want, and sends it themselves. Do not
-  // submit on their behalf.
-
   if (m_input) {
     m_input->setText(text);
-    m_input->setCursorPosition(text.length());
-    m_input->setFocus(Qt::OtherFocusReason);
   }
+
+  onSubmit();
 }
 
 void AssistantShell::onLiveTranscribed(const QString &text, bool isFinal) {
-  Q_UNUSED(isFinal);
-
   if (!m_input || text.isEmpty()) {
     return;
   }
 
-  // Live dictation updates the composer as the model refines the
-  // utterance. It does not send. The user presses Enter when they are
-  // satisfied with the text.
-
   m_input->setText(text);
   m_input->setCursorPosition(text.length());
+
+  if (isFinal) {
+    onSubmit();
+  }
 }
 
 void AssistantShell::onTabChanged(int index) {
@@ -912,7 +1066,8 @@ void AssistantShell::onAssistantTurnFinished(const QString &nodeId) {
 
   setBusy(!m_activeReplies.isEmpty());
 
-  if (m_activeReplies.isEmpty() && m_input && isVisible()) {
+  if (m_activeReplies.isEmpty() && m_input && isVisible() &&
+      !m_input->isReadOnly()) {
     m_input->setFocus(Qt::OtherFocusReason);
   }
 }

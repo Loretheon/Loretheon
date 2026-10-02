@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ChatTree.h"
+#include "ConversationMode.h"
 #include "LoreAssistant.h"
 #include "ThemeAware.h"
 
@@ -12,6 +13,7 @@ class AutoHideDock;
 class AvatarWidget;
 class ChatNodeWidget;
 class ChatTreeStore;
+class ConversationMode;
 class DockReservation;
 class LoreAssistant;
 class MindMapScene;
@@ -27,6 +29,7 @@ class QListWidgetItem;
 class QPoint;
 class QPushButton;
 class QScrollArea;
+class QSpinBox;
 class QTabWidget;
 class QToolButton;
 class QVBoxLayout;
@@ -74,6 +77,9 @@ private slots:
   void onLiveDictateClicked();
   void onReadAloudClicked();
   void onAttachClicked();
+  void onConversationToggled(bool on);
+  void onConversationStateChanged(ConversationMode::State state);
+  void onConversationTranscriptChanged(const QString &text);
   void onSpeechStateChanged();
   void onTranscribed(const QString &text);
   void onLiveTranscribed(const QString &text, bool isFinal);
@@ -109,6 +115,7 @@ private:
   QWidget *buildExplorer();
 
   void applySpeechButtonState(QToolButton *button, bool active);
+  void applyConversationEnabled(bool on);
 
   void appendTopLevelWidget(const QString &nodeId);
   void updateWidget(const QString &nodeId);
@@ -164,6 +171,8 @@ private:
   QToolButton *m_live = nullptr;
   QToolButton *m_readAloud = nullptr;
   QToolButton *m_attach = nullptr;
+  QToolButton *m_conversation = nullptr;
+  QSpinBox *m_silenceSpin = nullptr;
 
   QSet<QString> m_activeReplies;
 

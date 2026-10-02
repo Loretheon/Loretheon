@@ -3,8 +3,10 @@
 #include "inference/InferenceService.h"
 #include "voice/AudioRecorder.h"
 
+#include <QDateTime>
 #include <QDebug>
 #include <QRegularExpression>
+#include <QTimer>
 #include <QtConcurrent/QtConcurrentRun>
 
 namespace {
@@ -39,6 +41,8 @@ QStringList splitIntoSentences(const QString &text) {
   return merged;
 }
 
+constexpr int kSpeakingWatchdogMs = 60000;
+
 } // namespace
 
 SpeechController::SpeechController(InferenceService *inference,
@@ -48,6 +52,13 @@ SpeechController::SpeechController(InferenceService *inference,
 
   connect(m_recorder.get(), &AudioRecorder::audioChunkReady, this,
           &SpeechController::onAudioChunkReady);
+
+  m_watchdog = new QTimer(this);
+  m_watchdog->setSingleShot(false);
+  m_watchdog->setInterval(2000);
+
+  connect(m_watchdog, &QTimer::timeout, this,
+          &SpeechController::onSpeechWatchdog);
 
   if (m_inference) {
     connect(m_inference, &InferenceService::ttsSentenceFinished, this,
@@ -190,6 +201,7 @@ void SpeechController::onStreamClosed() {
   m_liveStarting = false;
 
   if (wasActive) {
+    emit sttStreamClosed();
     emit stateChanged();
   }
 }
@@ -229,6 +241,9 @@ void SpeechController::speakText(const QString &text) {
   if (m_sentenceQueue.isEmpty()) return;
 
   m_speaking = true;
+  m_speakingDeadlineMs = QDateTime::currentMSecsSinceEpoch() +
+                         kSpeakingWatchdogMs;
+  m_watchdog->start();
   emit speakingStarted();
   emit stateChanged();
   speakNextSentence();
@@ -238,6 +253,7 @@ void SpeechController::speakNextSentence() {
   if (m_sentenceQueue.isEmpty()) {
     m_speaking = false;
     m_currentSentence.clear();
+    m_watchdog->stop();
     emit speakingFinished();
     emit stateChanged();
     return;
@@ -245,8 +261,12 @@ void SpeechController::speakNextSentence() {
 
   m_currentSentence = m_sentenceQueue.takeFirst();
 
+  m_speakingDeadlineMs = QDateTime::currentMSecsSinceEpoch() +
+                         kSpeakingWatchdogMs;
+
   if (!m_inference) {
     m_speaking = false;
+    m_watchdog->stop();
     emit speakingFinished();
     emit stateChanged();
     return;
@@ -261,9 +281,28 @@ void SpeechController::stopSpeaking() {
   if (m_inference) m_inference->stopSpeech();
   if (m_speaking) {
     m_speaking = false;
+    m_watchdog->stop();
     emit speakingFinished();
     emit stateChanged();
   }
 }
 
+void SpeechController::onSpeechWatchdog() {
+  if (!m_speaking) {
+    m_watchdog->stop();
+    return;
+  }
+
+  const qint64 now = QDateTime::currentMSecsSinceEpoch();
+
+  if (now < m_speakingDeadlineMs) {
+    return;
+  }
+
+  qWarning() << "[SpeechController] TTS watchdog fired; ending utterance.";
+
+  stopSpeaking();
+}
+
 bool SpeechController::isSpeaking() const { return m_speaking; }
+
