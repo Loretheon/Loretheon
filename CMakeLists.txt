@@ -69,22 +69,34 @@ set(EPISTEME_EXTERNAL_PREFIX
 
 include(ExternalProject)
 
+# Semicolons in CMAKE_PREFIX_PATH (and any other list-valued variable)
+# get re-split by ExternalProject_Add before reaching the nested CMake
+# invocation, so each element is interpreted as a separate argument and
+# every element but the last is discarded as "an extra path". Escaping
+# each semicolon as \; preserves the list through the argument boundary.
+string(REPLACE ";" "\\;" EPISTEME_ESCAPED_PREFIX_PATH "${CMAKE_PREFIX_PATH}")
+string(REPLACE ";" "\\;" EPISTEME_ESCAPED_PROGRAM_PATH "${EPISTEME_NODE_BIN_RESOLVED}")
+
 set(EPISTEME_EXT_CMAKE_ARGS
         -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
         -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}
         -DCMAKE_BUILD_TYPE=Release
         -DCMAKE_INSTALL_PREFIX=${EPISTEME_EXTERNAL_PREFIX}
         -DCMAKE_INSTALL_LIBDIR=lib
-        "-DCMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}"
-        "-DCMAKE_PROGRAM_PATH=${EPISTEME_NODE_BIN_RESOLVED}"
+        "-DCMAKE_PREFIX_PATH=${EPISTEME_ESCAPED_PREFIX_PATH}"
+        "-DCMAKE_PROGRAM_PATH=${EPISTEME_ESCAPED_PROGRAM_PATH}"
         -DCMAKE_POSITION_INDEPENDENT_CODE=ON
         -DQt6_DIR=${Qt6_DIR}
-        -DOpenMP_C_FLAGS=${OpenMP_C_FLAGS}
-        -DOpenMP_CXX_FLAGS=${OpenMP_CXX_FLAGS}
-        -DOpenMP_C_LIB_NAMES=${OpenMP_C_LIB_NAMES}
-        -DOpenMP_CXX_LIB_NAMES=${OpenMP_CXX_LIB_NAMES}
-        -DOpenMP_omp_LIBRARY=${OpenMP_omp_LIBRARY}
 )
+
+if (NOT WIN32)
+    list(APPEND EPISTEME_EXT_CMAKE_ARGS
+            -DOpenMP_C_FLAGS=${OpenMP_C_FLAGS}
+            -DOpenMP_CXX_FLAGS=${OpenMP_CXX_FLAGS}
+            -DOpenMP_C_LIB_NAMES=${OpenMP_C_LIB_NAMES}
+            -DOpenMP_CXX_LIB_NAMES=${OpenMP_CXX_LIB_NAMES}
+            -DOpenMP_omp_LIBRARY=${OpenMP_omp_LIBRARY})
+endif ()
 
 if (APPLE AND CMAKE_OSX_DEPLOYMENT_TARGET)
     list(APPEND EPISTEME_EXT_CMAKE_ARGS
