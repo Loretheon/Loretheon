@@ -324,7 +324,7 @@ add_subdirectory(
 )
 
 
-add_executable(Lore
+qt_add_executable(Lore
         src/main.cpp
         src/app/MainWindow.cpp
         include/app/MainWindow.h
@@ -669,6 +669,15 @@ add_executable(Lore
         src/assistant/ChatTreeStore.cpp
         include/assistant/ConversationMode.h
         src/assistant/ConversationMode.cpp
+)
+
+set_target_properties(Lore PROPERTIES
+        MACOSX_BUNDLE TRUE
+        MACOSX_BUNDLE_BUNDLE_NAME "Lore"
+        MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
+        MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
+        MACOSX_BUNDLE_GUI_IDENTIFIER "com.questfarer.lore"
+        WIN32_EXECUTABLE TRUE
 )
 
 if (LORE_WITH_AVATAR)

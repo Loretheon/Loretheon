@@ -45,16 +45,15 @@ jobs:
       - name: Install vcpkg Dependencies
         shell: pwsh
         run: |
-          vcpkg install faiss:x64-windows tesseract:x64-windows leptonica:x64-windows sentencepiece:x64-windows
+          vcpkg install faiss:x64-windows tesseract:x64-windows leptonica:x64-windows sentencepiece:x64-windows ffmpeg:x64-windows
           echo "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" >> $env:GITHUB_ENV
 
-      - name: Install Graphviz, Node.js, tree-sitter CLI, pkg-config, FFmpeg
+      - name: Install Graphviz, Node.js, tree-sitter CLI, pkg-config
         shell: pwsh
         run: |
           choco install graphviz -y
           choco install nodejs-lts -y
           choco install pkgconfiglite -y
-          choco install ffmpeg -y
           npm install -g @mermaid-js/mermaid-cli tree-sitter-cli
 
       - name: Set Node.js environment
@@ -70,29 +69,13 @@ jobs:
           echo "PKG_CONFIG_PATH=$pc_path" >> $env:GITHUB_ENV
           echo "PKG_CONFIG_EXECUTABLE=$(Get-Command pkg-config).Source" >> $env:GITHUB_ENV
 
-      - name: Locate FFmpeg
-        shell: pwsh
-        run: |
-          $candidates = @(
-            "C:\ProgramData\chocolatey\lib\ffmpeg\tools\ffmpeg\bin",
-            "C:\ProgramData\chocolatey\bin"
-          )
-          foreach ($c in $candidates) {
-            if (Test-Path "$c\ffmpeg.exe") {
-              echo "FFMPEG_DIR=$c" >> $env:GITHUB_ENV
-              break
-            }
-          }
-
       - name: Configure CMake
         shell: pwsh
         run: |
-          $extraPrefix = ""
-          if ($env:FFMPEG_DIR) { $extraPrefix = ";$env:FFMPEG_DIR\.." }
           cmake -S . -B build -G "Ninja" `
             -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} `
-            -DCMAKE_PREFIX_PATH="${{ env.QT_ROOT_DIR }};$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows$extraPrefix" `
-            -DCMAKE_PROGRAM_PATH="${{ env.QT_ROOT_DIR }}/bin;$env:NPM_BIN;$env:FFMPEG_DIR" `
+            -DCMAKE_PREFIX_PATH="${{ env.QT_ROOT_DIR }};$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows" `
+            -DCMAKE_PROGRAM_PATH="${{ env.QT_ROOT_DIR }}/bin;$env:NPM_BIN" `
             -DEPISTEME_NODE_BIN="$env:NPM_BIN"
 
       - name: Build
@@ -114,10 +97,6 @@ jobs:
           Copy-Item "$env:NPM_BIN\node.exe"  deploy/usr/bin/
           Copy-Item "$env:NPM_BIN\mmdc.cmd"  deploy/usr/bin/
           Copy-Item (Get-Command dot).Source deploy/usr/bin/dot.exe
-
-          if ($env:FFMPEG_DIR) {
-            Get-ChildItem "$env:FFMPEG_DIR\*.dll" | Copy-Item -Destination deploy\ -ErrorAction SilentlyContinue
-          }
 
           Get-ChildItem "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\bin\*.dll" `
             | Copy-Item -Destination deploy\ -ErrorAction SilentlyContinue
